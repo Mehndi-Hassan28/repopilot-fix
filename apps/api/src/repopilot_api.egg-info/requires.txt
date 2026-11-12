@@ -1,0 +1,7 @@
+fastapi<1.0,>=0.115
+uvicorn[standard]<1.0,>=0.30
+
+[dev]
+httpx<1.0,>=0.27
+pytest<9.0,>=8.0
+ruff<1.0,>=0.8
