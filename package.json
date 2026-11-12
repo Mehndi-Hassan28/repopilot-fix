@@ -1,0 +1,10 @@
+{
+  "name": "repopilot-fix",
+  "private": true,
+  "workspaces": ["apps/web"],
+  "scripts": {
+    "dev": "npm run dev --workspace @repopilot/web",
+    "build": "npm run build --workspace @repopilot/web",
+    "lint": "npm run lint --workspace @repopilot/web"
+  }
+}
