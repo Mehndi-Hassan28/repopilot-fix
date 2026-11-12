@@ -34,6 +34,8 @@ uvicorn repopilot_api.main:app --app-dir apps/api/src --reload --port 8000
 
 Open http://localhost:3000 to import public repositories with a `https://github.com/owner/repository` URL. Set `CORS_ORIGINS` for deployment; do not put secrets in `NEXT_PUBLIC_*` variables. Public GitHub requests are subject to GitHub's unauthenticated API rate limits.
 
+Imported repositories can be indexed from the dashboard. Indexing is limited to public GitHub API access and supports JavaScript, TypeScript, and Python source files. It does not clone or execute repository code. Tune `INDEX_MAX_FILES`, `INDEX_MAX_FILE_BYTES`, and `INDEX_MAX_API_REQUESTS` in `.env` to control per-job resource use. The new schema requires the Day 3 migration; run `alembic -c apps/api/alembic.ini upgrade head` only after configuring your intended database.
+
 ## Checks
 
 ```sh

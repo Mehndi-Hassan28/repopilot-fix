@@ -1,15 +1,16 @@
 import os
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from httpx import Client
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from repopilot_api.code_intelligence import SUPPORTED, GitHubSource, limits, parse_symbols
 from repopilot_api.database import SessionLocal
-from repopilot_api.models import Repository
+from repopilot_api.models import CodeSymbol, IndexedFile, IndexingJob, Repository
 from repopilot_api.schemas import RepositoryImport, RepositoryRead
 
 app = FastAPI(title="RepoPilot Fix API", version="0.2.0")
@@ -117,3 +118,153 @@ def get_repository(repository_id: int, db: Session = Depends(get_db)):
     if repo is None:
         raise HTTPException(404, "Repository not found.")
     return RepositoryRead.from_model(repo)
+
+
+def process_index(job_id: int):
+    """One job at a time; each source file is bounded and persisted incrementally."""
+    with SessionLocal() as db:
+        job = db.get(IndexingJob, job_id)
+        if job is None:
+            return
+        repo = db.get(Repository, job.repository_id)
+        job.status = "running"
+        db.commit()
+        source = GitHubSource()
+        try:
+            files = source.discover(repo.owner, repo.name, job.commit_sha)
+            max_bytes = limits()[1]
+            for item in files:
+                try:
+                    content = source.fetch_file(repo.owner, repo.name, job.commit_sha, item["path"])
+                    raw_size = len(content.encode("utf-8"))
+                    if raw_size > max_bytes:
+                        continue
+                    lang = SUPPORTED["." + item["path"].rsplit(".", 1)[-1].lower()]
+                    record = IndexedFile(
+                        job_id=job.id,
+                        path=item["path"],
+                        language=lang,
+                        size_bytes=raw_size,
+                        content=content,
+                    )
+                    db.add(record)
+                    db.flush()
+                    for symbol in parse_symbols(content, lang):
+                        db.add(CodeSymbol(file_id=record.id, **symbol))
+                    job.file_count += 1
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    job = db.get(IndexingJob, job_id)
+            job.status = "completed"
+            db.commit()
+        except Exception as exc:
+            job = db.get(IndexingJob, job_id)
+            if job:
+                job.status = "failed"
+                job.error = str(exc)[:500]
+                db.commit()
+        finally:
+            source.close()
+
+
+@app.post("/api/repositories/{repository_id}/index", status_code=202)
+def start_index(repository_id: int, background: BackgroundTasks, db: Session = Depends(get_db)):
+    repo = db.get(Repository, repository_id)
+    if repo is None:
+        raise HTTPException(404, "Repository not found.")
+    source = GitHubSource()
+    try:
+        sha = source.resolve_commit(repo.owner, repo.name, repo.default_branch)
+    except RuntimeError as exc:
+        raise HTTPException(429 if "rate limit" in str(exc).lower() else 502, str(exc)) from exc
+    finally:
+        source.close()
+    job = db.scalar(
+        select(IndexingJob).where(
+            IndexingJob.repository_id == repository_id, IndexingJob.commit_sha == sha
+        )
+    )
+    created = job is None
+    if job is None:
+        job = IndexingJob(repository_id=repository_id, commit_sha=sha, status="queued")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+    if created:
+        background.add_task(process_index, job.id)
+    return {
+        "id": job.id,
+        "commit_sha": job.commit_sha,
+        "status": job.status,
+        "file_count": job.file_count,
+    }
+
+
+@app.get("/api/repositories/{repository_id}/index")
+def indexing_status(repository_id: int, db: Session = Depends(get_db)):
+    job = db.scalar(
+        select(IndexingJob)
+        .where(IndexingJob.repository_id == repository_id)
+        .order_by(IndexingJob.id.desc())
+    )
+    if job is None:
+        raise HTTPException(404, "No indexing job found.")
+    langs = db.query(IndexedFile.language).filter(IndexedFile.job_id == job.id).all()
+    symbols = db.query(CodeSymbol).join(IndexedFile).filter(IndexedFile.job_id == job.id).count()
+    return {
+        "id": job.id,
+        "commit_sha": job.commit_sha,
+        "status": job.status,
+        "file_count": job.file_count,
+        "languages": sorted({v[0] for v in langs}),
+        "symbol_count": symbols,
+        "error": job.error,
+    }
+
+
+@app.get("/api/repositories/{repository_id}/files")
+def indexed_files(repository_id: int, q: str = "", db: Session = Depends(get_db)):
+    job = db.scalar(
+        select(IndexingJob)
+        .where(IndexingJob.repository_id == repository_id)
+        .order_by(IndexingJob.id.desc())
+    )
+    if job is None:
+        return []
+    return [
+        {
+            "path": f.path,
+            "language": f.language,
+            "size_bytes": f.size_bytes,
+            "symbols": [
+                {"kind": s.kind, "name": s.name, "line": s.line}
+                for s in db.scalars(select(CodeSymbol).where(CodeSymbol.file_id == f.id))
+            ],
+        }
+        for f in db.scalars(
+            select(IndexedFile)
+            .where(IndexedFile.job_id == job.id, IndexedFile.path.ilike(f"%{q}%"))
+            .limit(500)
+        )
+    ]
+
+
+@app.get("/api/repositories/{repository_id}/search")
+def search_index(repository_id: int, q: str, db: Session = Depends(get_db)):
+    if not q.strip():
+        raise HTTPException(422, "Search query cannot be empty.")
+    job = db.scalar(
+        select(IndexingJob)
+        .where(IndexingJob.repository_id == repository_id)
+        .order_by(IndexingJob.id.desc())
+    )
+    if job is None:
+        return []
+    return [
+        {"path": f.path, "kind": s.kind, "name": s.name, "line": s.line}
+        for s, f in db.query(CodeSymbol, IndexedFile)
+        .join(IndexedFile, CodeSymbol.file_id == IndexedFile.id)
+        .filter(IndexedFile.job_id == job.id, CodeSymbol.name.ilike(f"%{q}%"))
+        .limit(100)
+    ]
