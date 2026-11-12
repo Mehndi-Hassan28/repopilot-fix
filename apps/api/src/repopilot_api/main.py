@@ -1,3 +1,4 @@
+import json
 import os
 
 import httpx
@@ -8,10 +9,18 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from repopilot_api.chat import ProviderError, ask
 from repopilot_api.code_intelligence import SUPPORTED, GitHubSource, limits, parse_symbols
 from repopilot_api.database import SessionLocal
-from repopilot_api.models import CodeSymbol, IndexedFile, IndexingJob, Repository
-from repopilot_api.schemas import RepositoryImport, RepositoryRead
+from repopilot_api.models import (
+    ChatMessage,
+    ChatSession,
+    CodeSymbol,
+    IndexedFile,
+    IndexingJob,
+    Repository,
+)
+from repopilot_api.schemas import ChatQuestion, ChatSessionCreate, RepositoryImport, RepositoryRead
 
 app = FastAPI(title="RepoPilot Fix API", version="0.2.0")
 app.add_middleware(
@@ -268,3 +277,80 @@ def search_index(repository_id: int, q: str, db: Session = Depends(get_db)):
         .filter(IndexedFile.job_id == job.id, CodeSymbol.name.ilike(f"%{q}%"))
         .limit(100)
     ]
+
+
+def _session_read(session: ChatSession):
+    return {
+        "id": session.id,
+        "repository_id": session.repository_id,
+        "commit_sha": session.commit_sha,
+        "title": session.title,
+        "created_at": session.created_at.isoformat(),
+        "updated_at": session.updated_at.isoformat(),
+    }
+
+
+@app.post("/api/chat/sessions", status_code=201)
+def create_chat_session(payload: ChatSessionCreate, db: Session = Depends(get_db)):
+    if db.get(Repository, payload.repository_id) is None:
+        raise HTTPException(404, "Repository not found.")
+    job = db.scalar(
+        select(IndexingJob)
+        .where(
+            IndexingJob.repository_id == payload.repository_id,
+            IndexingJob.status == "completed",
+        )
+        .order_by(IndexingJob.id.desc())
+    )
+    if job is None:
+        raise HTTPException(409, "Index this repository before starting a chat.")
+    session = ChatSession(repository_id=payload.repository_id, commit_sha=job.commit_sha)
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return _session_read(session)
+
+
+@app.get("/api/chat/sessions")
+def list_chat_sessions(repository_id: int | None = None, db: Session = Depends(get_db)):
+    query = select(ChatSession).order_by(ChatSession.updated_at.desc()).limit(100)
+    if repository_id is not None:
+        query = query.where(ChatSession.repository_id == repository_id)
+    return [_session_read(item) for item in db.scalars(query)]
+
+
+def _message_read(message: ChatMessage):
+    return {
+        "id": message.id,
+        "role": message.role,
+        "content": message.content,
+        "citations": json.loads(message.citations),
+        "created_at": message.created_at.isoformat(),
+    }
+
+
+@app.get("/api/chat/sessions/{session_id}")
+def chat_history(session_id: int, db: Session = Depends(get_db)):
+    session = db.get(ChatSession, session_id)
+    if session is None:
+        raise HTTPException(404, "Chat session not found.")
+    messages = db.scalars(
+        select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.id)
+    )
+    return {**_session_read(session), "messages": [_message_read(message) for message in messages]}
+
+
+@app.post("/api/chat/sessions/{session_id}/messages")
+def ask_chat(session_id: int, payload: ChatQuestion, db: Session = Depends(get_db)):
+    session = db.get(ChatSession, session_id)
+    if session is None:
+        raise HTTPException(404, "Chat session not found.")
+    try:
+        from repopilot_api.chat import get_provider
+
+        message = ask(db, session, payload.question, get_provider())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except ProviderError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return _message_read(message)

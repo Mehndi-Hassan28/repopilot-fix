@@ -52,3 +52,34 @@ class RepositoryRead(BaseModel):
         values["created_at"] = repo.created_at.isoformat()
         values["updated_at"] = repo.updated_at.isoformat()
         return cls(**values)
+
+
+class ChatSessionCreate(BaseModel):
+    repository_id: int
+
+
+class ChatQuestion(BaseModel):
+    question: str
+
+
+class CitationRead(BaseModel):
+    path: str
+    start_line: int
+    end_line: int
+
+
+class ChatMessageRead(BaseModel):
+    id: int
+    role: str
+    content: str
+    citations: list[CitationRead]
+    created_at: str
+
+
+class ChatSessionRead(BaseModel):
+    id: int
+    repository_id: int
+    commit_sha: str
+    title: str
+    created_at: str
+    updated_at: str
