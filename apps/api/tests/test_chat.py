@@ -4,7 +4,7 @@ import pytest
 from fastapi import HTTPException
 
 from repopilot_api import main
-from repopilot_api.chat import Provider, ProviderError, ask, retrieve
+from repopilot_api.chat import Provider, ProviderError, _search_tokens, ask, retrieve
 from repopilot_api.models import ChatSession, IndexedFile, IndexingJob, Repository
 from repopilot_api.schemas import ChatSessionCreate
 
@@ -52,6 +52,23 @@ def test_retrieval_scoped_to_repository_commit_and_completed_index(test_session)
     assert len(results) == 1
     assert "token" in results[0].content
     assert results[0].start_line == 1 and results[0].end_line == 2
+
+
+def test_search_tokens_preserve_words_and_add_only_safe_ing_variants():
+    tokens = _search_tokens("string indexing FastAPI")
+    assert "string" in tokens
+    assert "str" not in tokens
+    assert "indexing" in tokens
+    assert "index" in tokens
+    assert "fast" in tokens and "api" in tokens
+
+
+def test_retrieval_does_not_match_substrings_inside_identifiers(test_session):
+    with test_session() as db:
+        repo = add_repo(db)
+        job = add_index(db, repo, "2" * 40, "def stringify(value):\n    return value\n")
+        results = retrieve(db, repo.id, job.commit_sha, "Where is string handled?")
+    assert results == []
 
 
 def test_mock_answer_has_only_verified_one_based_citation(test_session):
