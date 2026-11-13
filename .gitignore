@@ -18,3 +18,7 @@ venv/
 htmlcov/
 *.log
 .DS_Store
+
+# Local database rehearsal artifacts
+/apps/api/-
+/apps/api/.venv/db-backups/
