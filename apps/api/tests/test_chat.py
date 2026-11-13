@@ -399,3 +399,213 @@ def test_question_length_is_bounded(test_session):
 
         with pytest.raises(ValueError, match="characters"):
             ask(db, session, "x" * 2001, MockProvider())
+
+
+def test_gemini_compatible_successful_response_and_citations(test_session, monkeypatch):
+    captured = {}
+
+    class GeminiResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "id": "chatcmpl-gemini-test-1",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": (
+                                "The token is validated by the authenticate function [1]."
+                            ),
+                        },
+                    }
+                ],
+            }
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return GeminiResponse()
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", fake_post)
+    monkeypatch.setenv("CHAT_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CHAT_API_KEY", "test-gemini-key")
+    monkeypatch.setenv("CHAT_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai")
+    monkeypatch.setenv("CHAT_MODEL", "gemini-2.5-flash")
+
+    with test_session() as db:
+        repo = add_repo(db)
+        job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
+        session = ChatSession(repository_id=repo.id, commit_sha=job.commit_sha)
+        db.add(session)
+        db.flush()
+
+        provider = get_provider()
+        assert isinstance(provider, CompatibleCloudProvider)
+        message = ask(db, session, "How does authenticate work?", provider)
+
+    assert message.content == "The token is validated by the authenticate function [1]."
+    citations = json.loads(message.citations)
+    assert len(citations) == 1
+    assert citations[0] == {"path": "src/auth.py", "start_line": 1, "end_line": 2}
+    expected_url = (
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    )
+    assert captured["url"] == expected_url
+    assert captured["headers"]["Authorization"] == "Bearer test-gemini-key"
+    assert captured["json"]["model"] == "gemini-2.5-flash"
+    system_prompt = captured["json"]["messages"][0]["content"]
+    assert (
+        "Reserve square brackets exclusively for supplied numeric citation labels"
+        in system_prompt
+    )
+    assert "test-gemini-key" not in message.content
+
+
+def test_gemini_compatible_invalid_bracket_and_hallucinated_citations(
+    test_session, monkeypatch
+):
+    responses = [
+        {"choices": [{"message": {"content": "Inspect element[0] for verification [1]."}}]},
+        {"choices": [{"message": {"content": "Verified in [1] and [99]."}}]},
+        {"choices": [{"message": {"content": "Implemented in src/auth.py:50-60 [1]."}}]},
+    ]
+    current = {}
+
+    class GeminiResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return current["body"]
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", lambda *args, **kwargs: GeminiResponse())
+    monkeypatch.setenv("CHAT_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CHAT_API_KEY", "test-gemini-key")
+    monkeypatch.setenv("CHAT_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai")
+    monkeypatch.setenv("CHAT_MODEL", "gemini-2.5-flash")
+
+    with test_session() as db:
+        repo = add_repo(db)
+        job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
+        session = ChatSession(repository_id=repo.id, commit_sha=job.commit_sha)
+        db.add(session)
+        db.flush()
+
+        provider = get_provider()
+        for response_body in responses:
+            current["body"] = response_body
+            msg = ask(db, session, "How does authenticate work?", provider)
+            assert "couldn't verify the source citations" in msg.content
+            assert json.loads(msg.citations) == []
+
+
+def test_gemini_compatible_http_429_quota_exceeded(test_session, monkeypatch):
+    def fake_post_429(url, **kwargs):
+        request = httpx.Request("POST", url)
+        response = httpx.Response(
+            status_code=429,
+            json={
+                "error": {
+                    "code": 429,
+                    "message": "Resource has been exhausted (e.g. check quota).",
+                    "status": "RESOURCE_EXHAUSTED",
+                }
+            },
+            request=request,
+        )
+        raise httpx.HTTPStatusError(
+            "Client error '429 RESOURCE_EXHAUSTED'", request=request, response=response
+        )
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", fake_post_429)
+    monkeypatch.setenv("CHAT_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CHAT_API_KEY", "test-gemini-key")
+    monkeypatch.setenv("CHAT_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai")
+    monkeypatch.setenv("CHAT_MODEL", "gemini-2.5-flash")
+
+    provider = get_provider()
+    with test_session() as db:
+        repo = add_repo(db)
+        auth = add_auth(db, repo)
+        job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
+        session = ChatSession(
+            repository_id=repo.id, owner_user_id=auth.user.id, commit_sha=job.commit_sha
+        )
+        db.add(session)
+        db.flush()
+
+        with pytest.raises(ProviderError, match="configured answer provider failed"):
+            ask(db, session, "How does authenticate work?", provider)
+
+        with pytest.raises(HTTPException) as exc:
+            main.ask_chat(
+                session.id, ChatQuestion(question="How does authenticate work?"), db, auth
+            )
+        assert exc.value.status_code == 502
+        assert "configured answer provider failed" in exc.value.detail
+        assert "test-gemini-key" not in exc.value.detail
+
+
+def test_gemini_compatible_timeout_handling(test_session, monkeypatch):
+    def fake_timeout(*args, **kwargs):
+        raise httpx.ReadTimeout("Request timed out after 20.0 seconds")
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", fake_timeout)
+    monkeypatch.setenv("CHAT_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CHAT_API_KEY", "test-gemini-key")
+    monkeypatch.setenv("CHAT_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai")
+    monkeypatch.setenv("CHAT_MODEL", "gemini-2.5-flash")
+
+    provider = get_provider()
+    with test_session() as db:
+        repo = add_repo(db)
+        job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
+        session = ChatSession(repository_id=repo.id, commit_sha=job.commit_sha)
+        db.add(session)
+        db.flush()
+
+        with pytest.raises(ProviderError, match="configured answer provider failed"):
+            ask(db, session, "How does authenticate work?", provider)
+
+
+def test_gemini_compatible_configuration_validation(monkeypatch):
+    monkeypatch.setenv("CHAT_PROVIDER", "gemini")
+    with pytest.raises(ProviderError, match="CHAT_PROVIDER must be mock or openai_compatible."):
+        get_provider()
+
+    monkeypatch.setenv("CHAT_PROVIDER", "openai_compatible")
+    # Missing CHAT_API_KEY
+    monkeypatch.delenv("CHAT_API_KEY", raising=False)
+    monkeypatch.setenv("CHAT_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai")
+    monkeypatch.setenv("CHAT_MODEL", "gemini-2.5-flash")
+    with pytest.raises(
+        ProviderError, match="Cloud chat requires CHAT_API_KEY, CHAT_BASE_URL, and CHAT_MODEL."
+    ):
+        get_provider()
+
+    # Missing CHAT_BASE_URL
+    monkeypatch.setenv("CHAT_API_KEY", "test-key")
+    monkeypatch.delenv("CHAT_BASE_URL", raising=False)
+    with pytest.raises(
+        ProviderError, match="Cloud chat requires CHAT_API_KEY, CHAT_BASE_URL, and CHAT_MODEL."
+    ):
+        get_provider()
+
+    # Missing CHAT_MODEL
+    monkeypatch.setenv("CHAT_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai")
+    monkeypatch.delenv("CHAT_MODEL", raising=False)
+    with pytest.raises(
+        ProviderError, match="Cloud chat requires CHAT_API_KEY, CHAT_BASE_URL, and CHAT_MODEL."
+    ):
+        get_provider()
+
+    # Valid configuration successfully instantiates CompatibleCloudProvider
+    monkeypatch.setenv("CHAT_MODEL", "gemini-2.5-flash")
+    provider = get_provider()
+    assert isinstance(provider, CompatibleCloudProvider)
+    assert provider.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert provider.model == "gemini-2.5-flash"
+    assert provider.api_key == "test-key"
