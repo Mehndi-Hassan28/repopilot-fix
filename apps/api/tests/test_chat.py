@@ -1,12 +1,30 @@
 import json
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
 from repopilot_api import main
-from repopilot_api.chat import Provider, ProviderError, _search_tokens, ask, retrieve
-from repopilot_api.models import ChatSession, IndexedFile, IndexingJob, Repository
-from repopilot_api.schemas import ChatSessionCreate
+from repopilot_api.chat import (
+    MAX_COMPLETION_TOKENS,
+    MAX_HISTORY_CHARS,
+    MAX_HISTORY_MESSAGES,
+    CompatibleCloudProvider,
+    Provider,
+    ProviderError,
+    _search_tokens,
+    ask,
+    get_provider,
+    retrieve,
+)
+from repopilot_api.models import (
+    ChatMessage,
+    ChatSession,
+    IndexedFile,
+    IndexingJob,
+    Repository,
+)
+from repopilot_api.schemas import ChatMessageRead, ChatQuestion, ChatSessionCreate
 
 
 def add_repo(session, github_id=1, full_name="team/project"):
@@ -87,15 +105,17 @@ def test_mock_answer_has_only_verified_one_based_citation(test_session):
 
 
 def test_missing_evidence_returns_insufficient_answer(test_session):
+    class NoEvidenceProvider(Provider):
+        def answer(self, question, evidence):
+            raise AssertionError("Provider must not be called without retrieved evidence")
+
     with test_session() as db:
         repo = add_repo(db)
         job = add_index(db, repo, "d" * 40, "def unrelated():\n    return 1\n")
         session = ChatSession(repository_id=repo.id, commit_sha=job.commit_sha)
         db.add(session)
         db.flush()
-        from repopilot_api.chat import MockProvider
-
-        response = ask(db, session, "Where is zzzunique implemented?", MockProvider())
+        response = ask(db, session, "Where is zzzunique implemented?", NoEvidenceProvider())
     assert "couldn't find enough" in response.content
     assert json.loads(response.citations) == []
 
@@ -119,7 +139,12 @@ class BadProvider(Provider):
 
 class FabricatingProvider(Provider):
     def answer(self, question, evidence):
-        return "See [2] and src/fake.py:900."
+        return "See [1] and src/fake.py:900."
+
+
+class InvalidLabelProvider(Provider):
+    def answer(self, question, evidence):
+        return "See [1] and [99]."
 
 
 def test_provider_failure_and_unverified_citations(test_session):
@@ -132,8 +157,197 @@ def test_provider_failure_and_unverified_citations(test_session):
         with pytest.raises(ProviderError):
             ask(db, session, "How does authenticate work?", BadProvider())
         response = ask(db, session, "How does authenticate work?", FabricatingProvider())
+        invalid_label_response = ask(
+            db, session, "How does authenticate work?", InvalidLabelProvider()
+        )
     assert "couldn't verify" in response.content
     assert json.loads(response.citations) == []
+    assert "couldn't verify" in invalid_label_response.content
+    assert json.loads(invalid_label_response.citations) == []
+
+
+def test_cloud_provider_uses_configured_model_and_validated_citation(test_session, monkeypatch):
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {"message": {"content": "Authentication is in this function [1]."}}
+                ]
+            }
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", fake_post)
+    monkeypatch.setenv("CHAT_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CHAT_API_KEY", "test-only-key")
+    monkeypatch.setenv("CHAT_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("CHAT_MODEL", "configured-test-model")
+
+    with test_session() as db:
+        repo = add_repo(db)
+        job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
+        session = ChatSession(repository_id=repo.id, commit_sha=job.commit_sha)
+        db.add(session)
+        db.flush()
+        provider = get_provider()
+        assert isinstance(provider, CompatibleCloudProvider)
+        message = ask(db, session, "How does authenticate work?", provider)
+
+    assert message.content.endswith("[1].")
+    assert json.loads(message.citations)[0]["path"] == "src/auth.py"
+    assert captured["url"] == "https://llm.example/v1/chat/completions"
+    assert captured["json"]["model"] == "configured-test-model"
+    assert captured["json"]["max_tokens"] == MAX_COMPLETION_TOKENS
+    assert captured["timeout"] > 0
+    assert "test-only-key" not in message.content
+
+
+def test_cloud_provider_requires_server_side_configuration(monkeypatch):
+    monkeypatch.setenv("CHAT_PROVIDER", "openai_compatible")
+    monkeypatch.delenv("CHAT_API_KEY", raising=False)
+    monkeypatch.setenv("CHAT_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("CHAT_MODEL", "configured-test-model")
+    with pytest.raises(ProviderError, match="CHAT_API_KEY"):
+        get_provider()
+
+
+def test_cloud_provider_timeout_returns_safe_error(monkeypatch):
+    def timeout(*args, **kwargs):
+        raise httpx.ReadTimeout("sensitive request details")
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", timeout)
+    provider = CompatibleCloudProvider("https://llm.example/v1", "test-only-key", "test-model")
+    with pytest.raises(ProviderError, match="configured answer provider failed") as error:
+        provider.answer("question", [])
+    assert "sensitive request details" not in str(error.value)
+
+
+def test_chat_api_returns_mock_and_llm_answers_with_verified_citations(
+    test_session, monkeypatch
+):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {"message": {"content": "The function returns the provided token [1]."}}
+                ]
+            }
+
+    monkeypatch.setenv("CHAT_PROVIDER", "mock")
+    monkeypatch.delenv("CHAT_API_KEY", raising=False)
+    monkeypatch.delenv("CHAT_BASE_URL", raising=False)
+    monkeypatch.delenv("CHAT_MODEL", raising=False)
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", lambda *args, **kwargs: Response())
+    with test_session() as db:
+        repo = add_repo(db)
+        job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
+        session = ChatSession(repository_id=repo.id, commit_sha=job.commit_sha)
+        db.add(session)
+        db.flush()
+
+        mock_data = main.ask_chat(
+            session.id, ChatQuestion(question="How does authenticate work?"), db
+        )
+        ChatMessageRead.model_validate(mock_data)
+        assert "evidence" in mock_data["content"]
+        assert mock_data["citations"][0]["path"] == "src/auth.py"
+
+        monkeypatch.setenv("CHAT_PROVIDER", "openai_compatible")
+        monkeypatch.setenv("CHAT_API_KEY", "test-only-key")
+        monkeypatch.setenv("CHAT_BASE_URL", "https://llm.example/v1")
+        monkeypatch.setenv("CHAT_MODEL", "configured-test-model")
+        llm_data = main.ask_chat(
+            session.id, ChatQuestion(question="How does authenticate work?"), db
+        )
+        ChatMessageRead.model_validate(llm_data)
+
+    assert llm_data["content"] == "The function returns the provided token [1]."
+    assert llm_data["citations"] == mock_data["citations"]
+    assert "test-only-key" not in str(llm_data)
+
+
+def test_chat_api_reports_provider_configuration_errors_without_secrets(
+    test_session, monkeypatch
+):
+    monkeypatch.setenv("CHAT_PROVIDER", "openai_compatible")
+    monkeypatch.delenv("CHAT_API_KEY", raising=False)
+    monkeypatch.setenv("CHAT_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("CHAT_MODEL", "configured-test-model")
+    with test_session() as db:
+        repo = add_repo(db)
+        job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
+        session = ChatSession(repository_id=repo.id, commit_sha=job.commit_sha)
+        db.add(session)
+        db.flush()
+        with pytest.raises(HTTPException) as missing:
+            main.ask_chat(session.id, ChatQuestion(question="authenticate"), db)
+        monkeypatch.setenv("CHAT_PROVIDER", "invalid-provider")
+        with pytest.raises(HTTPException) as invalid:
+            main.ask_chat(session.id, ChatQuestion(question="authenticate"), db)
+
+    assert missing.value.status_code == 502
+    assert "CHAT_API_KEY" in missing.value.detail
+    assert invalid.value.status_code == 502
+    assert "CHAT_PROVIDER must be" in invalid.value.detail
+    assert "test-only-key" not in missing.value.detail + invalid.value.detail
+
+
+def test_followup_uses_bounded_session_context(test_session):
+    class ContextProvider(Provider):
+        history = []
+        calls = 0
+
+        def answer(self, question, evidence):
+            return "The function returns the token [1]."
+
+        def answer_with_context(self, question, evidence, history):
+            self.calls += 1
+            self.history = history
+            return self.answer(question, evidence)
+
+    with test_session() as db:
+        repo = add_repo(db)
+        job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
+        session = ChatSession(repository_id=repo.id, commit_sha=job.commit_sha)
+        db.add(session)
+        db.flush()
+        for index in range(MAX_HISTORY_MESSAGES + 2):
+            db.add(
+                ChatMessage(
+                    session_id=session.id,
+                    role="user" if index % 2 == 0 else "assistant",
+                    content="x" * 900,
+                    citations="[]",
+                )
+            )
+        db.add(
+            ChatMessage(
+                session_id=session.id,
+                role="user",
+                content="How does authenticate work?",
+                citations="[]",
+            )
+        )
+        db.flush()
+        provider = ContextProvider()
+        response = ask(db, session, "What about that?", provider)
+
+    assert json.loads(response.citations)
+    assert len(provider.history) <= MAX_HISTORY_MESSAGES
+    assert sum(len(item["content"]) for item in provider.history) <= MAX_HISTORY_CHARS
+    assert provider.history[-1]["content"] == "How does authenticate work?"
+    assert provider.calls == 1
 
 
 def test_repository_text_is_untrusted_evidence_not_an_instruction(test_session):
