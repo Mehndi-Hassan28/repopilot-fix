@@ -23,7 +23,14 @@ from repopilot_api.models import (
     RepositoryAccess,
 )
 from repopilot_api.oauth import router as auth_router
-from repopilot_api.schemas import ChatQuestion, ChatSessionCreate, RepositoryImport, RepositoryRead
+from repopilot_api.schemas import (
+    ChatQuestion,
+    ChatSessionCreate,
+    IssueAnalysisRead,
+    IssueAnalyzeRequest,
+    RepositoryImport,
+    RepositoryRead,
+)
 from repopilot_api.security import AuthContext, configured_origins, get_current_auth, require_csrf
 
 app = FastAPI(title="RepoPilot Fix API", version="0.2.0")
@@ -465,3 +472,69 @@ def clear_chat_history(
     result = db.execute(delete(ChatMessage).where(ChatMessage.session_id == session.id))
     db.commit()
     return {"cleared": result.rowcount or 0}
+
+
+@app.post("/api/repositories/{repository_id}/issues/analyze", response_model=IssueAnalysisRead)
+def analyze_issue(
+    repository_id: int,
+    payload: IssueAnalyzeRequest,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(require_csrf),
+):
+    _require_repository_access(db, repository_id, auth.user.id)
+    repo = db.get(Repository, repository_id)
+    if repo is None:
+        raise HTTPException(404, "Repository not found.")
+
+    job = db.scalar(
+        select(IndexingJob)
+        .where(
+            IndexingJob.repository_id == repository_id,
+            IndexingJob.status == "completed",
+        )
+        .order_by(IndexingJob.id.desc())
+    )
+    if job is None:
+        raise HTTPException(409, "Index this repository before analyzing issues.")
+
+    source = GitHubSource()
+    try:
+        issue = source.fetch_issue(repo.owner, repo.name, payload.issue_number)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        msg = str(exc)
+        if "not found" in msg.lower() or "404" in msg:
+            raise HTTPException(
+                404, f"Issue #{payload.issue_number} was not found on GitHub."
+            ) from exc
+        if "rate limit" in msg.lower():
+            raise HTTPException(429, "GitHub rate limit reached. Please try again later.") from exc
+        raise HTTPException(502, f"Could not fetch issue from GitHub: {msg}") from exc
+    finally:
+        source.close()
+
+    from repopilot_api.chat import build_issue_query, retrieve
+
+    query = build_issue_query(issue["title"], issue["body"])
+    evidence = retrieve(db, repository_id, job.commit_sha, query)
+
+    return {
+        "repository_id": repository_id,
+        "commit_sha": job.commit_sha,
+        "issue_number": issue["number"],
+        "issue_title": issue["title"],
+        "issue_body": issue["body"],
+        "issue_url": issue["html_url"],
+        "query": query,
+        "evidence": [
+            {
+                "path": item.path,
+                "start_line": item.start_line,
+                "end_line": item.end_line,
+                "content": item.content,
+                "score": round(item.score, 4),
+            }
+            for item in evidence
+        ],
+    }

@@ -94,7 +94,12 @@ def _query_entities(query: str) -> set[str]:
     for index, word in enumerate(words):
         if word.isupper() and len(word) > 1:
             entities.add(word.lower())
-        elif index > 0 and word[0].isupper() and word.lower() not in question_words:
+        elif (
+            index > 0
+            and word[0].isupper()
+            and word.lower() not in question_words
+            and word.lower() not in STOP_WORDS
+        ):
             entities.add(word.lower())
     return entities
 
@@ -357,6 +362,24 @@ def _resolve_followup_query(question: str, history: list[dict[str, str]]) -> str
     if prior_question and has_reference and len(question_terms) <= 4:
         return f"{prior_question[:MAX_QUESTION_CHARS]} {question}"[: MAX_QUESTION_CHARS * 2]
     return question
+
+
+def build_issue_query(title: str, body: str = "", max_chars: int = 1500) -> str:
+    """Build a bounded, high-signal retrieval query from untrusted issue title and body."""
+    title_clean = (title or "").strip()
+    body_clean = (body or "").strip()
+    if not body_clean:
+        return title_clean[:max_chars]
+
+    cleaned_body = re.sub(r"https?://\S+", "", body_clean)
+    lines = [
+        line.strip()
+        for line in cleaned_body.splitlines()
+        if line.strip() and not line.strip().startswith("<!--")
+    ]
+    body_summary = " ".join(lines)
+    query = f"{title_clean} {body_summary}".strip()
+    return query[:max_chars]
 
 
 def _citation_references_are_valid(answer: str, evidence: list[Evidence]) -> bool:
