@@ -23,8 +23,11 @@ from repopilot_api.models import (
     IndexedFile,
     IndexingJob,
     Repository,
+    RepositoryAccess,
+    User,
 )
 from repopilot_api.schemas import ChatMessageRead, ChatQuestion, ChatSessionCreate
+from repopilot_api.security import AuthContext
 
 
 def add_repo(session, github_id=1, full_name="team/project"):
@@ -56,6 +59,15 @@ def add_index(session, repo, sha, content, status="completed"):
     )
     session.flush()
     return job
+
+
+def add_auth(session, repo):
+    user = User()
+    session.add(user)
+    session.flush()
+    session.add(RepositoryAccess(repository_id=repo.id, user_id=user.id, role="owner"))
+    session.flush()
+    return AuthContext(user=user, session=None)
 
 
 def test_retrieval_scoped_to_repository_commit_and_completed_index(test_session):
@@ -123,12 +135,13 @@ def test_missing_evidence_returns_insufficient_answer(test_session):
 def test_session_requires_completed_index_and_pins_latest_sha(test_session):
     with test_session() as db:
         repo = add_repo(db)
+        auth = add_auth(db, repo)
         with pytest.raises(HTTPException) as error:
-            main.create_chat_session(ChatSessionCreate(repository_id=repo.id), db)
+            main.create_chat_session(ChatSessionCreate(repository_id=repo.id), db, auth)
         assert error.value.status_code == 409
         add_index(db, repo, "a" * 40, "def ready(): pass", status="running")
         add_index(db, repo, "b" * 40, "def ready(): pass")
-        created = main.create_chat_session(ChatSessionCreate(repository_id=repo.id), db)
+        created = main.create_chat_session(ChatSessionCreate(repository_id=repo.id), db, auth)
     assert created["commit_sha"] == "b" * 40
 
 
@@ -251,13 +264,16 @@ def test_chat_api_returns_mock_and_llm_answers_with_verified_citations(
     monkeypatch.setattr("repopilot_api.chat.httpx.post", lambda *args, **kwargs: Response())
     with test_session() as db:
         repo = add_repo(db)
+        auth = add_auth(db, repo)
         job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
-        session = ChatSession(repository_id=repo.id, commit_sha=job.commit_sha)
+        session = ChatSession(
+            repository_id=repo.id, owner_user_id=auth.user.id, commit_sha=job.commit_sha
+        )
         db.add(session)
         db.flush()
 
         mock_data = main.ask_chat(
-            session.id, ChatQuestion(question="How does authenticate work?"), db
+            session.id, ChatQuestion(question="How does authenticate work?"), db, auth
         )
         ChatMessageRead.model_validate(mock_data)
         assert "evidence" in mock_data["content"]
@@ -268,7 +284,7 @@ def test_chat_api_returns_mock_and_llm_answers_with_verified_citations(
         monkeypatch.setenv("CHAT_BASE_URL", "https://llm.example/v1")
         monkeypatch.setenv("CHAT_MODEL", "configured-test-model")
         llm_data = main.ask_chat(
-            session.id, ChatQuestion(question="How does authenticate work?"), db
+            session.id, ChatQuestion(question="How does authenticate work?"), db, auth
         )
         ChatMessageRead.model_validate(llm_data)
 
@@ -286,15 +302,18 @@ def test_chat_api_reports_provider_configuration_errors_without_secrets(
     monkeypatch.setenv("CHAT_MODEL", "configured-test-model")
     with test_session() as db:
         repo = add_repo(db)
+        auth = add_auth(db, repo)
         job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
-        session = ChatSession(repository_id=repo.id, commit_sha=job.commit_sha)
+        session = ChatSession(
+            repository_id=repo.id, owner_user_id=auth.user.id, commit_sha=job.commit_sha
+        )
         db.add(session)
         db.flush()
         with pytest.raises(HTTPException) as missing:
-            main.ask_chat(session.id, ChatQuestion(question="authenticate"), db)
+            main.ask_chat(session.id, ChatQuestion(question="authenticate"), db, auth)
         monkeypatch.setenv("CHAT_PROVIDER", "invalid-provider")
         with pytest.raises(HTTPException) as invalid:
-            main.ask_chat(session.id, ChatQuestion(question="authenticate"), db)
+            main.ask_chat(session.id, ChatQuestion(question="authenticate"), db, auth)
 
     assert missing.value.status_code == 502
     assert "CHAT_API_KEY" in missing.value.detail

@@ -38,6 +38,14 @@ Imported repositories can be indexed from the dashboard. Indexing is limited to 
 
 Day 4 adds chat session and message tables. Apply the migration only to your intended database after reviewing its URL: `alembic -c apps/api/alembic.ini upgrade head`. Starting a conversation requires a completed index, and each session remains pinned to the commit SHA it started with.
 
+## GitHub sign-in and user data
+
+The authentication ownership migration is prepared as `0004_auth_ownership` and is **not applied automatically**. It adds user identities, opaque server-side sessions, repository access links, and nullable chat ownership. Existing repositories and conversations remain unassigned and inaccessible until an administrator explicitly verifies and assigns them; the migration does not backfill ownership.
+
+To test sign-in locally, create a GitHub OAuth App with homepage `http://localhost:3000` and callback `http://localhost:8000/api/auth/github/callback`. Put its client ID and secret only in the backend `.env` as `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`; set `GITHUB_OAUTH_REDIRECT_URI` to that exact callback, `FRONTEND_URL=http://localhost:3000`, `CORS_ORIGINS=http://localhost:3000`, and `COOKIE_SECURE=false` for localhost only. For deployment, use HTTPS for both origins and `COOKIE_SECURE=true`. Never use `NEXT_PUBLIC_` for credentials. Sign-in requests only `read:user`; repository import and indexing remain public-only. A GitHub login does not authorize private repository access.
+
+Before enabling this version against a database, take and verify a PostgreSQL backup, review the additive revision, and rehearse it on a staging copy. Then explicitly apply `alembic -c apps/api/alembic.ini upgrade head` to the intended database. No migration is run by application startup.
+
 ## Checks
 
 ```sh

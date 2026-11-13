@@ -1,17 +1,18 @@
 import json
-import os
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from httpx import Client
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from repopilot_api.chat import ProviderError, ask
 from repopilot_api.code_intelligence import SUPPORTED, GitHubSource, limits, parse_symbols
 from repopilot_api.database import SessionLocal
+from repopilot_api.dependencies import get_db
 from repopilot_api.models import (
     ChatMessage,
     ChatSession,
@@ -19,26 +20,21 @@ from repopilot_api.models import (
     IndexedFile,
     IndexingJob,
     Repository,
+    RepositoryAccess,
 )
+from repopilot_api.oauth import router as auth_router
 from repopilot_api.schemas import ChatQuestion, ChatSessionCreate, RepositoryImport, RepositoryRead
+from repopilot_api.security import AuthContext, configured_origins, get_current_auth, require_csrf
 
 app = FastAPI(title="RepoPilot Fix API", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        origin.strip()
-        for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
-        if origin.strip()
-    ],
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_origins=sorted(configured_origins()),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "X-CSRF-Token"],
 )
-
-
-def get_db():
-    with SessionLocal() as session:
-        yield session
+app.include_router(auth_router)
 
 
 @app.get("/health", tags=["system"])
@@ -46,8 +42,31 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "service": "repopilot-api"}
 
 
+def _require_repository_access(db: Session, repository_id: int, user_id: int):
+    access = db.get(RepositoryAccess, (repository_id, user_id))
+    if access is None:
+        raise HTTPException(404, "Repository not found.")
+    return access
+
+
+def _owned_chat_session(db: Session, session_id: int, user_id: int):
+    session = db.scalar(
+        select(ChatSession).where(
+            ChatSession.id == session_id,
+            ChatSession.owner_user_id == user_id,
+        )
+    )
+    if session is None or db.get(RepositoryAccess, (session.repository_id, user_id)) is None:
+        raise HTTPException(404, "Conversation not found.")
+    return session
+
+
 @app.post("/api/repositories/import", response_model=RepositoryRead, status_code=200)
-def import_repository(payload: RepositoryImport, db: Session = Depends(get_db)):
+def import_repository(
+    payload: RepositoryImport,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(require_csrf),
+):
     owner, name = payload.url.removeprefix("https://github.com/").split("/")
     try:
         with Client(timeout=httpx.Timeout(8.0), follow_redirects=False) as client:
@@ -89,43 +108,60 @@ def import_repository(payload: RepositoryImport, db: Session = Depends(get_db)):
         stars = data["stargazers_count"]
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(502, "GitHub returned invalid repository metadata.") from exc
+    if not isinstance(data.get("private"), bool):
+        raise HTTPException(502, "GitHub returned invalid repository visibility metadata.")
+    if data["private"]:
+        raise HTTPException(403, "Only public GitHub repositories can be imported.")
     existing = db.scalar(select(Repository).where(Repository.github_id == github_id))
     if existing:
-        return RepositoryRead.from_model(existing)
-    repo = Repository(
-        github_id=github_id,
-        owner=repo_owner,
-        name=repo_name,
-        full_name=full_name,
-        url=html_url,
-        description=data.get("description"),
-        default_branch=default_branch,
-        stars=stars,
-    )
-    db.add(repo)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        repo = db.scalar(select(Repository).where(Repository.github_id == github_id))
-        if repo is None:
-            raise HTTPException(409, "Repository conflicts with an existing record.")
+        repo = existing
     else:
-        db.refresh(repo)
+        repo = Repository(
+            github_id=github_id,
+            owner=repo_owner,
+            name=repo_name,
+            full_name=full_name,
+            url=html_url,
+            description=data.get("description"),
+            default_branch=default_branch,
+            stars=stars,
+        )
+        db.add(repo)
+        try:
+            db.flush()
+        except IntegrityError as exc:
+            db.rollback()
+            repo = db.scalar(select(Repository).where(Repository.github_id == github_id))
+            if repo is None:
+                raise HTTPException(409, "Repository conflicts with an existing record.") from exc
+    if db.get(RepositoryAccess, (repo.id, auth.user.id)) is None:
+        db.add(RepositoryAccess(repository_id=repo.id, user_id=auth.user.id, role="owner"))
+    db.commit()
+    db.refresh(repo)
     return RepositoryRead.from_model(repo)
 
 
 @app.get("/api/repositories", response_model=list[RepositoryRead])
-def list_repositories(db: Session = Depends(get_db)):
-    repos = db.scalars(select(Repository).order_by(Repository.created_at.desc())).all()
+def list_repositories(
+    db: Session = Depends(get_db), auth: AuthContext = Depends(get_current_auth)
+):
+    repos = db.scalars(
+        select(Repository)
+        .join(RepositoryAccess, RepositoryAccess.repository_id == Repository.id)
+        .where(RepositoryAccess.user_id == auth.user.id)
+        .order_by(Repository.created_at.desc())
+    ).all()
     return [RepositoryRead.from_model(repo) for repo in repos]
 
 
 @app.get("/api/repositories/{repository_id}", response_model=RepositoryRead)
-def get_repository(repository_id: int, db: Session = Depends(get_db)):
+def get_repository(
+    repository_id: int,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    _require_repository_access(db, repository_id, auth.user.id)
     repo = db.get(Repository, repository_id)
-    if repo is None:
-        raise HTTPException(404, "Repository not found.")
     return RepositoryRead.from_model(repo)
 
 
@@ -178,7 +214,13 @@ def process_index(job_id: int):
 
 
 @app.post("/api/repositories/{repository_id}/index", status_code=202)
-def start_index(repository_id: int, background: BackgroundTasks, db: Session = Depends(get_db)):
+def start_index(
+    repository_id: int,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(require_csrf),
+):
+    _require_repository_access(db, repository_id, auth.user.id)
     repo = db.get(Repository, repository_id)
     if repo is None:
         raise HTTPException(404, "Repository not found.")
@@ -211,7 +253,12 @@ def start_index(repository_id: int, background: BackgroundTasks, db: Session = D
 
 
 @app.get("/api/repositories/{repository_id}/index")
-def indexing_status(repository_id: int, db: Session = Depends(get_db)):
+def indexing_status(
+    repository_id: int,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    _require_repository_access(db, repository_id, auth.user.id)
     job = db.scalar(
         select(IndexingJob)
         .where(IndexingJob.repository_id == repository_id)
@@ -233,7 +280,13 @@ def indexing_status(repository_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/api/repositories/{repository_id}/files")
-def indexed_files(repository_id: int, q: str = "", db: Session = Depends(get_db)):
+def indexed_files(
+    repository_id: int,
+    q: str = "",
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    _require_repository_access(db, repository_id, auth.user.id)
     job = db.scalar(
         select(IndexingJob)
         .where(IndexingJob.repository_id == repository_id)
@@ -260,9 +313,15 @@ def indexed_files(repository_id: int, q: str = "", db: Session = Depends(get_db)
 
 
 @app.get("/api/repositories/{repository_id}/search")
-def search_index(repository_id: int, q: str, db: Session = Depends(get_db)):
+def search_index(
+    repository_id: int,
+    q: str,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(get_current_auth),
+):
     if not q.strip():
         raise HTTPException(422, "Search query cannot be empty.")
+    _require_repository_access(db, repository_id, auth.user.id)
     job = db.scalar(
         select(IndexingJob)
         .where(IndexingJob.repository_id == repository_id)
@@ -291,7 +350,12 @@ def _session_read(session: ChatSession):
 
 
 @app.post("/api/chat/sessions", status_code=201)
-def create_chat_session(payload: ChatSessionCreate, db: Session = Depends(get_db)):
+def create_chat_session(
+    payload: ChatSessionCreate,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(require_csrf),
+):
+    _require_repository_access(db, payload.repository_id, auth.user.id)
     if db.get(Repository, payload.repository_id) is None:
         raise HTTPException(404, "Repository not found.")
     job = db.scalar(
@@ -304,7 +368,11 @@ def create_chat_session(payload: ChatSessionCreate, db: Session = Depends(get_db
     )
     if job is None:
         raise HTTPException(409, "Index this repository before starting a chat.")
-    session = ChatSession(repository_id=payload.repository_id, commit_sha=job.commit_sha)
+    session = ChatSession(
+        repository_id=payload.repository_id,
+        owner_user_id=auth.user.id,
+        commit_sha=job.commit_sha,
+    )
     db.add(session)
     db.commit()
     db.refresh(session)
@@ -312,8 +380,21 @@ def create_chat_session(payload: ChatSessionCreate, db: Session = Depends(get_db
 
 
 @app.get("/api/chat/sessions")
-def list_chat_sessions(repository_id: int | None = None, db: Session = Depends(get_db)):
-    query = select(ChatSession).order_by(ChatSession.updated_at.desc()).limit(100)
+def list_chat_sessions(
+    repository_id: int | None = None,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    query = (
+        select(ChatSession)
+        .join(RepositoryAccess, RepositoryAccess.repository_id == ChatSession.repository_id)
+        .where(
+            ChatSession.owner_user_id == auth.user.id,
+            RepositoryAccess.user_id == auth.user.id,
+        )
+        .order_by(ChatSession.updated_at.desc())
+        .limit(100)
+    )
     if repository_id is not None:
         query = query.where(ChatSession.repository_id == repository_id)
     return [_session_read(item) for item in db.scalars(query)]
@@ -330,10 +411,12 @@ def _message_read(message: ChatMessage):
 
 
 @app.get("/api/chat/sessions/{session_id}")
-def chat_history(session_id: int, db: Session = Depends(get_db)):
-    session = db.get(ChatSession, session_id)
-    if session is None:
-        raise HTTPException(404, "Chat session not found.")
+def chat_history(
+    session_id: int,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    session = _owned_chat_session(db, session_id, auth.user.id)
     messages = db.scalars(
         select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.id)
     )
@@ -341,10 +424,13 @@ def chat_history(session_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/chat/sessions/{session_id}/messages")
-def ask_chat(session_id: int, payload: ChatQuestion, db: Session = Depends(get_db)):
-    session = db.get(ChatSession, session_id)
-    if session is None:
-        raise HTTPException(404, "Chat session not found.")
+def ask_chat(
+    session_id: int,
+    payload: ChatQuestion,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(require_csrf),
+):
+    session = _owned_chat_session(db, session_id, auth.user.id)
     try:
         from repopilot_api.chat import get_provider
 
@@ -354,3 +440,28 @@ def ask_chat(session_id: int, payload: ChatQuestion, db: Session = Depends(get_d
     except ProviderError as exc:
         raise HTTPException(502, str(exc)) from exc
     return _message_read(message)
+
+
+@app.delete("/api/chat/sessions/{session_id}", status_code=204)
+def delete_chat_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(require_csrf),
+):
+    session = _owned_chat_session(db, session_id, auth.user.id)
+    db.execute(delete(ChatMessage).where(ChatMessage.session_id == session.id))
+    db.delete(session)
+    db.commit()
+    return Response(status_code=204)
+
+
+@app.delete("/api/chat/sessions/{session_id}/messages")
+def clear_chat_history(
+    session_id: int,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(require_csrf),
+):
+    session = _owned_chat_session(db, session_id, auth.user.id)
+    result = db.execute(delete(ChatMessage).where(ChatMessage.session_id == session.id))
+    db.commit()
+    return {"cleared": result.rowcount or 0}

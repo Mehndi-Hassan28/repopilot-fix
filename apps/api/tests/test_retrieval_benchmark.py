@@ -42,6 +42,7 @@ QUALITY_PATHS = [
     "apps/api/src/repopilot_api/database.py",
     "apps/api/src/repopilot_api/main.py",
     "apps/api/src/repopilot_api/models.py",
+    "apps/api/src/repopilot_api/oauth.py",
     "apps/api/src/repopilot_api/schemas.py",
     "apps/api/tests/test_chat.py",
     "apps/api/tests/test_code_intelligence.py",
@@ -160,7 +161,10 @@ QUALITY_CASES = [
         {"apps/api/tests/test_repositories.py"},
     ),
     ("How are verified chat citations tested?", {"apps/api/tests/test_chat.py"}),
-    ("Where are OAuth callback state tokens validated?", None),
+        (
+            "Where are OAuth callback state tokens validated?",
+            {"apps/api/src/repopilot_api/oauth.py"},
+        ),
     ("Where does the app calculate cosine similarity for embeddings?", None),
     ("Which function creates and verifies JWT access tokens?", None),
     ("Where is the Redis background task queue configured?", None),
@@ -313,7 +317,7 @@ def test_retrieval_abstains_when_named_technology_is_absent(test_session):
             db,
             repo.id,
             job.commit_sha,
-            "Where are OAuth callback state tokens validated?",
+            "Where are Stripe payment webhooks validated?",
         )
     assert results == []
 
