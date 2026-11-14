@@ -1,4 +1,5 @@
 import re
+from enum import StrEnum
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -187,3 +188,48 @@ class IssueAnalysisRead(BaseModel):
     query: str
     evidence: list[IssueEvidenceRead]
     analysis: IssueAnalysisResult
+
+
+class SandboxExecutionState(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    PASSED = "passed"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    ERROR = "error"
+
+
+class SandboxExecutionRequest(BaseModel):
+    command: list[str]
+    timeout_seconds: int = 30
+    environment: dict[str, str] = {}
+
+    @field_validator("command")
+    @classmethod
+    def validate_command(cls, value: list[str]) -> list[str]:
+        if not value or not isinstance(value, list):
+            raise ValueError("Command must be a non-empty list of string arguments.")
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("Command tokens must be non-empty strings.")
+        return value
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def validate_timeout(cls, value: int) -> int:
+        if type(value) is not int or value < 1 or value > 60:
+            raise ValueError("timeout_seconds must be an integer between 1 and 60 seconds.")
+        return value
+
+
+class SandboxExecutionResult(BaseModel):
+    run_id: str
+    state: SandboxExecutionState
+    exit_code: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    duration_seconds: float = 0.0
+    command: list[str]
+    image: str
+    error_message: str | None = None
+    created_at: str
