@@ -83,3 +83,33 @@ class ChatSessionRead(BaseModel):
     title: str
     created_at: str
     updated_at: str
+
+
+class IssueAnalyzeRequest(BaseModel):
+    issue_number: int
+
+    @field_validator("issue_number")
+    @classmethod
+    def validate_issue_number(cls, value: int) -> int:
+        if type(value) is not int or value < 1:
+            raise ValueError("Issue number must be a positive integer.")
+        return value
+
+
+class IssueEvidenceRead(BaseModel):
+    path: str
+    start_line: int
+    end_line: int
+    content: str
+    score: float
+
+
+class IssueAnalysisRead(BaseModel):
+    repository_id: int
+    commit_sha: str
+    issue_number: int
+    issue_title: str
+    issue_body: str
+    issue_url: str
+    query: str
+    evidence: list[IssueEvidenceRead]

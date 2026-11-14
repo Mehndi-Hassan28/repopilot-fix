@@ -182,3 +182,41 @@ class GitHubSource:
         if b"\x00" in raw:
             raise RuntimeError("Binary file skipped")
         return raw.decode("utf-8")
+
+    def fetch_issue(self, owner: str, repo: str, issue_number: int) -> dict:
+        if type(issue_number) is not int or issue_number < 1:
+            raise ValueError("Issue number must be a positive integer.")
+        encoded_owner = quote(owner, safe="")
+        encoded_repo = quote(repo, safe="")
+        try:
+            response = self.get(
+                f"https://api.github.com/repos/{encoded_owner}/{encoded_repo}/issues/{issue_number}"
+            )
+        except RuntimeError as exc:
+            if "HTTP 404" in str(exc):
+                raise RuntimeError(f"Issue #{issue_number} not found on GitHub") from exc
+            raise
+        data = response.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("Invalid GitHub issue response")
+        if "pull_request" in data:
+            raise ValueError(f"Issue #{issue_number} is a pull request, not an issue.")
+        return {
+            "number": data.get("number", issue_number),
+            "title": (data.get("title") or "").strip()[:500],
+            "body": (data.get("body") or "").strip()[:10000],
+            "state": data.get("state", "open"),
+            "html_url": data.get(
+                "html_url", f"https://github.com/{owner}/{repo}/issues/{issue_number}"
+            ),
+            "author": (
+                data.get("user", {}).get("login", "")
+                if isinstance(data.get("user"), dict)
+                else ""
+            ),
+            "labels": [
+                label["name"]
+                for label in data.get("labels", [])
+                if isinstance(label, dict) and "name" in label
+            ],
+        }

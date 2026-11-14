@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 type Repository = {
@@ -17,8 +17,18 @@ type IndexStatus = { status: string; file_count: number; symbol_count: number; l
 type Citation = { path: string; start_line: number; end_line: number };
 type ChatMessage = { id: number; role: string; content: string; citations: Citation[] };
 type ChatSession = { id: number; repository_id: number; title: string; commit_sha: string; messages?: ChatMessage[] };
+type AuthUser = { id: number; login: string };
 
 const apiUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+
+function apiRequest(path: string, init: RequestInit = {}, csrfToken = "") {
+  const headers = new Headers(init.headers);
+  const method = (init.method || "GET").toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) {
+    headers.set("X-CSRF-Token", csrfToken);
+  }
+  return fetch(`${apiUrl}${path}`, { ...init, headers, credentials: "include" });
+}
 
 export default function Home() {
   const [repositories, setRepositories] = useState<Repository[]>([]);
@@ -34,16 +44,19 @@ export default function Home() {
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
   const [question, setQuestion] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const csrfToken = useRef("");
 
   const loadRepositories = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await fetch(`${apiUrl}/api/repositories`, { cache: "no-store" });
+      const response = await apiRequest("/api/repositories", { cache: "no-store" });
       if (!response.ok) throw new Error("Could not load repositories. Check that the API is running.");
       const items = await response.json() as Repository[];
       setRepositories(items);
       const statuses = await Promise.all(items.map(async (repo) => {
-        const statusResponse = await fetch(`${apiUrl}/api/repositories/${repo.id}/index`, { cache: "no-store" });
+        const statusResponse = await apiRequest(`/api/repositories/${repo.id}/index`, { cache: "no-store" });
         if (!statusResponse.ok) return null;
         return [repo.id, await statusResponse.json() as IndexStatus] as const;
       }));
@@ -56,12 +69,50 @@ export default function Home() {
     }
   }, []);
 
-  useEffect(() => { void loadRepositories(); }, [loadRepositories]);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await apiRequest("/api/auth/session", { cache: "no-store" });
+        const session = await response.json();
+        if (session.authenticated) {
+          setCurrentUser(session.user as AuthUser);
+          csrfToken.current = session.csrf_token as string;
+          await loadRepositories();
+        } else {
+          setRepositories([]);
+          setLoading(false);
+        }
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "Could not check sign-in status.");
+        setLoading(false);
+      } finally {
+        setAuthLoading(false);
+      }
+    })();
+  }, [loadRepositories]);
+
+  function signIn() {
+    window.location.assign(`${apiUrl}/api/auth/github/login`);
+  }
+
+  async function signOut() {
+    try {
+      const response = await apiRequest("/api/auth/logout", { method: "POST" }, csrfToken.current);
+      if (!response.ok) throw new Error("Could not sign out.");
+      csrfToken.current = "";
+      setCurrentUser(null);
+      setRepositories([]);
+      setSessions([]);
+      setActiveSession(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not sign out.");
+    }
+  }
 
   async function loadSessions(repositoryId: number) {
     setChatRepository(repositoryId); setActiveSession(null);
     try {
-      const response = await fetch(`${apiUrl}/api/chat/sessions?repository_id=${repositoryId}`, { cache: "no-store" });
+      const response = await apiRequest(`/api/chat/sessions?repository_id=${repositoryId}`, { cache: "no-store" });
       if (!response.ok) throw new Error("Could not load chat history.");
       setSessions(await response.json() as ChatSession[]);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not load chat history."); }
@@ -70,7 +121,7 @@ export default function Home() {
   async function openSession(session: ChatSession) {
     setChatBusy(true);
     try {
-      const response = await fetch(`${apiUrl}/api/chat/sessions/${session.id}`, { cache: "no-store" });
+      const response = await apiRequest(`/api/chat/sessions/${session.id}`, { cache: "no-store" });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Could not load conversation.");
       setActiveSession(data as ChatSession);
@@ -78,11 +129,34 @@ export default function Home() {
     finally { setChatBusy(false); }
   }
 
+  async function deleteChat(session: ChatSession) {
+    if (!window.confirm(`Permanently delete “${session.title}” and its messages?`)) return;
+    try {
+      const response = await apiRequest(`/api/chat/sessions/${session.id}`, { method: "DELETE" }, csrfToken.current);
+      if (!response.ok) throw new Error("Could not delete conversation.");
+      setSessions((items) => items.filter((item) => item.id !== session.id));
+      setActiveSession((current) => current?.id === session.id ? null : current);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not delete conversation."); }
+  }
+
+  async function clearChatHistory() {
+    if (!activeSession || !window.confirm("Delete all messages in this conversation?")) return;
+    try {
+      const response = await apiRequest(
+        `/api/chat/sessions/${activeSession.id}/messages`,
+        { method: "DELETE" },
+        csrfToken.current,
+      );
+      if (!response.ok) throw new Error("Could not clear conversation history.");
+      setActiveSession((current) => current ? { ...current, messages: [] } : current);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not clear conversation history."); }
+  }
+
   async function newSession() {
     if (!chatRepository) return;
     setChatBusy(true); setError("");
     try {
-      const response = await fetch(`${apiUrl}/api/chat/sessions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repository_id: chatRepository }) });
+      const response = await apiRequest("/api/chat/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repository_id: chatRepository }) }, csrfToken.current);
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Could not start chat.");
       const session = data as ChatSession;
@@ -96,7 +170,7 @@ export default function Home() {
     if (!activeSession || !question.trim()) return;
     const text = question.trim(); setQuestion(""); setChatBusy(true); setError("");
     try {
-      const response = await fetch(`${apiUrl}/api/chat/sessions/${activeSession.id}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: text }) });
+      const response = await apiRequest(`/api/chat/sessions/${activeSession.id}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: text }) }, csrfToken.current);
       const data = await response.json() as ChatMessage & { detail?: string };
       if (!response.ok) throw new Error(data.detail || "Question could not be answered.");
       setActiveSession((current) => current ? { ...current, messages: [...(current.messages || []), { id: Date.now(), role: "user", content: text, citations: [] }, data] } : current);
@@ -111,9 +185,9 @@ export default function Home() {
     setError("");
     setNotice("");
     try {
-      const response = await fetch(`${apiUrl}/api/repositories/import`, {
+      const response = await apiRequest("/api/repositories/import", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }),
-      });
+      }, csrfToken.current);
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Repository import failed.");
       setRepositories((items) => items.some((item) => item.id === data.id) ? items : [data as Repository, ...items]);
@@ -129,13 +203,13 @@ export default function Home() {
   async function startIndex(repositoryId: number) {
     setIndexing(repositoryId); setError("");
     try {
-      const response = await fetch(`${apiUrl}/api/repositories/${repositoryId}/index`, { method: "POST" });
+      const response = await apiRequest(`/api/repositories/${repositoryId}/index`, { method: "POST" }, csrfToken.current);
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Indexing could not be started.");
       setIndexes((state) => ({ ...state, [repositoryId]: data }));
       for (let attempt = 0; attempt < 30; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 1500));
-        const statusResponse = await fetch(`${apiUrl}/api/repositories/${repositoryId}/index`, { cache: "no-store" });
+        const statusResponse = await apiRequest(`/api/repositories/${repositoryId}/index`, { cache: "no-store" });
         if (!statusResponse.ok) break;
         const status = await statusResponse.json() as IndexStatus;
         setIndexes((state) => ({ ...state, [repositoryId]: status }));
@@ -152,9 +226,13 @@ export default function Home() {
           <span className="grid size-9 place-items-center rounded-xl bg-[var(--accent)] text-sm font-black text-[#092018]">RP</span>
           <span>RepoPilot <span className="text-[var(--accent)]">Fix</span></span>
         </Link>
-        <span className="flex items-center gap-2 rounded-full border border-[var(--line)] px-3 py-2 text-xs text-[var(--muted)]"><span className="size-2 rounded-full bg-emerald-400" /> Public repositories</span>
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-2 rounded-full border border-[var(--line)] px-3 py-2 text-xs text-[var(--muted)]"><span className="size-2 rounded-full bg-emerald-400" /> Public repositories only</span>
+          {currentUser ? <><span className="text-sm text-[var(--muted)]">{currentUser.login}</span><button onClick={() => void signOut()} className="rounded-lg border border-[var(--line)] px-3 py-2 text-xs">Sign out</button></> : !authLoading && <button onClick={signIn} className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-[#092018]">Sign in with GitHub</button>}
+        </div>
       </header>
 
+      {authLoading ? <p className="mx-auto max-w-6xl py-20 text-center text-sm text-[var(--muted)]">Checking sign-in…</p> : !currentUser ? <section className="mx-auto max-w-2xl py-24 text-center"><h1 className="text-3xl font-semibold">Sign in to your private workspace</h1><p className="mt-3 text-sm text-[var(--muted)]">Your repositories and conversations are visible only to your account.</p><button onClick={signIn} className="mt-7 rounded-xl bg-[var(--accent)] px-6 py-3 font-semibold text-[#092018]">Continue with GitHub</button></section> : <>
       <section className="mx-auto max-w-6xl pb-20 pt-12 md:pt-20">
         <div className="max-w-3xl">
           <p className="mb-4 text-xs font-semibold uppercase tracking-[0.22em] text-[var(--accent)]">Your code, in focus</p>
@@ -179,14 +257,16 @@ export default function Home() {
             <label className="sr-only" htmlFor="chat-repository">Choose a repository</label><select id="chat-repository" value={chatRepository ?? ""} onChange={(event) => { const id = Number(event.target.value); if (id) void loadSessions(id); else { setChatRepository(null); setActiveSession(null); setSessions([]); } }} className="rounded-xl border border-[var(--line)] bg-[#0e141b] px-4 py-3 text-sm"><option value="">Choose a repository</option>{repositories.map((repo) => <option key={repo.id} value={repo.id}>{repo.full_name}</option>)}</select>
           </div>
           {chatRepository !== null && <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
-            <aside className="rounded-2xl border border-[var(--line)] bg-[#0e141b] p-3"><button onClick={() => void newSession()} disabled={chatBusy || indexes[chatRepository]?.status !== "completed"} className="w-full rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-[#092018] disabled:opacity-50">New conversation</button><p className="px-2 pb-2 pt-4 text-xs uppercase tracking-wider text-[var(--muted)]">History</p>{sessions.map((session) => <button key={session.id} onClick={() => void openSession(session)} className="mb-1 w-full truncate rounded-lg px-3 py-2 text-left text-sm text-[var(--muted)] hover:bg-[#182129] hover:text-white">{session.title}</button>)}</aside>
+            <aside className="rounded-2xl border border-[var(--line)] bg-[#0e141b] p-3"><button onClick={() => void newSession()} disabled={chatBusy || indexes[chatRepository]?.status !== "completed"} className="w-full rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-[#092018] disabled:opacity-50">New conversation</button><p className="px-2 pb-2 pt-4 text-xs uppercase tracking-wider text-[var(--muted)]">History</p>{sessions.map((session) => <div key={session.id} className="mb-1 flex items-center gap-1"><button onClick={() => void openSession(session)} className="min-w-0 flex-1 truncate rounded-lg px-3 py-2 text-left text-sm text-[var(--muted)] hover:bg-[#182129] hover:text-white">{session.title}</button><button aria-label={`Delete ${session.title}`} onClick={() => void deleteChat(session)} className="rounded-lg px-2 py-2 text-xs text-rose-300 hover:bg-[#182129]">Delete</button></div>)}</aside>
             <div className="flex min-h-[440px] flex-col rounded-2xl border border-[var(--line)] bg-[#0e141b] p-4 sm:p-6">
+              {activeSession && <div className="mb-3 flex justify-end"><button onClick={() => void clearChatHistory()} className="rounded-lg border border-[var(--line)] px-3 py-2 text-xs text-[var(--muted)]">Clear history</button></div>}
               <div className="flex-1 space-y-4" aria-live="polite">{!activeSession ? <p className="pt-20 text-center text-sm text-[var(--muted)]">{indexes[chatRepository]?.status === "completed" ? "Start a conversation about this indexed repository." : "Complete source indexing before starting a conversation."}</p> : (activeSession.messages || []).map((message) => <article key={message.id} className={`max-w-3xl rounded-2xl p-4 ${message.role === "user" ? "ml-auto bg-[#1b2a2b]" : "bg-[#111a21]"}`}><p className="whitespace-pre-wrap text-sm leading-6">{message.content}</p>{message.citations.length > 0 && <div className="mt-3 flex flex-wrap gap-2" aria-label="Source citations">{message.citations.map((citation) => <span key={`${citation.path}:${citation.start_line}`} className="rounded-lg border border-[var(--line)] px-2 py-1 font-mono text-xs text-[var(--accent)]">{citation.path}:{citation.start_line}–{citation.end_line}</span>)}</div>}</article>)}{chatBusy && activeSession && <p className="text-sm text-[var(--muted)]">Searching indexed source…</p>}</div>
               {activeSession && <form onSubmit={sendQuestion} className="mt-5 flex gap-2 border-t border-[var(--line)] pt-4"><label htmlFor="chat-question" className="sr-only">Ask a question about this repository</label><input id="chat-question" value={question} onChange={(event) => setQuestion(event.target.value)} maxLength={2000} placeholder="Where is authentication handled?" className="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[#090d12] px-4 py-3 text-sm outline-none focus:border-[var(--accent)]"/><button disabled={chatBusy || !question.trim()} className="rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-[#092018] disabled:opacity-50">Ask</button></form>}
             </div>
           </div>}
         </section>
       </section>
+      </>}
       <footer className="mx-auto max-w-6xl border-t border-[var(--line)] pt-5 text-xs text-[var(--muted)]">Public repository metadata · Source code is never executed.</footer>
     </main>
   );
