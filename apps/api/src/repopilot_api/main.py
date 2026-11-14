@@ -514,10 +514,38 @@ def analyze_issue(
     finally:
         source.close()
 
-    from repopilot_api.chat import build_issue_query, retrieve
+    from repopilot_api.chat import (
+        build_issue_query,
+        get_provider,
+        parse_and_validate_analysis,
+        retrieve,
+    )
 
     query = build_issue_query(issue["title"], issue["body"])
     evidence = retrieve(db, repository_id, job.commit_sha, query)
+    if not evidence:
+        raise HTTPException(
+            422, "No relevant code evidence found in indexed files to analyze this issue."
+        )
+
+    indexed_files = {
+        f.path: f.content
+        for f in db.scalars(select(IndexedFile).where(IndexedFile.job_id == job.id)).all()
+    }
+
+    provider = get_provider()
+    try:
+        raw_analysis = provider.analyze_issue(issue, evidence)
+    except ProviderError as exc:
+        raise HTTPException(502, "The configured answer provider failed.") from exc
+
+    try:
+        analysis_result = parse_and_validate_analysis(raw_analysis, evidence, indexed_files)
+    except ValueError as exc:
+        msg = str(exc)
+        if "not valid JSON" in msg or "JSON" in msg:
+            raise HTTPException(502, f"The AI provider returned malformed JSON: {msg}") from exc
+        raise HTTPException(502, f"Model analysis failed validation: {msg}") from exc
 
     return {
         "repository_id": repository_id,
@@ -537,4 +565,5 @@ def analyze_issue(
             }
             for item in evidence
         ],
+        "analysis": analysis_result,
     }

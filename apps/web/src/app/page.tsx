@@ -19,6 +19,52 @@ type ChatMessage = { id: number; role: string; content: string; citations: Citat
 type ChatSession = { id: number; repository_id: number; title: string; commit_sha: string; messages?: ChatMessage[] };
 type AuthUser = { id: number; login: string };
 
+type FileCitation = {
+  path: string;
+  start_line: number;
+  end_line: number;
+  explanation?: string;
+};
+
+type PatchProposal = {
+  file_path: string;
+  explanation: string;
+  diff: string;
+};
+
+type ProposedFix = {
+  explanation: string;
+  patches: PatchProposal[];
+};
+
+type IssueAnalysis = {
+  summary: string;
+  root_cause_hypothesis: string;
+  relevant_files: FileCitation[];
+  proposed_fix: ProposedFix;
+  confidence: "low" | "medium" | "high";
+  confidence_reasoning?: string;
+  limitations: string[];
+};
+
+type IssueAnalysisResponse = {
+  repository_id: number;
+  commit_sha: string;
+  issue_number: number;
+  issue_title: string;
+  issue_body: string;
+  issue_url: string;
+  query: string;
+  evidence: Array<{
+    path: string;
+    start_line: number;
+    end_line: number;
+    content: string;
+    score: number;
+  }>;
+  analysis: IssueAnalysis;
+};
+
 const apiUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 
 function apiRequest(path: string, init: RequestInit = {}, csrfToken = "") {
@@ -44,6 +90,11 @@ export default function Home() {
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
   const [question, setQuestion] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
+  const [analysisRepo, setAnalysisRepo] = useState<number | null>(null);
+  const [issueNumber, setIssueNumber] = useState("");
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState("");
+  const [analysisResult, setAnalysisResult] = useState<IssueAnalysisResponse | null>(null);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const csrfToken = useRef("");
@@ -219,6 +270,39 @@ export default function Home() {
     finally { setIndexing(null); }
   }
 
+  async function submitIssueAnalysis(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!analysisRepo || !issueNumber.trim()) return;
+    const num = parseInt(issueNumber.trim(), 10);
+    if (isNaN(num) || num < 1) {
+      setAnalysisError("Please enter a valid positive issue number.");
+      return;
+    }
+    setAnalyzing(true);
+    setAnalysisError("");
+    setAnalysisResult(null);
+    try {
+      const response = await apiRequest(
+        `/api/repositories/${analysisRepo}/issues/analyze`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ issue_number: num }),
+        },
+        csrfToken.current
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Failed to analyze issue.");
+      }
+      setAnalysisResult(data as IssueAnalysisResponse);
+    } catch (reason) {
+      setAnalysisError(reason instanceof Error ? reason.message : "Analysis failed.");
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
   return (
     <main className="min-h-screen px-5 py-6 md:px-12 md:py-8">
       <header className="mx-auto flex max-w-6xl items-center justify-between border-b border-[var(--line)] pb-5">
@@ -264,6 +348,227 @@ export default function Home() {
               {activeSession && <form onSubmit={sendQuestion} className="mt-5 flex gap-2 border-t border-[var(--line)] pt-4"><label htmlFor="chat-question" className="sr-only">Ask a question about this repository</label><input id="chat-question" value={question} onChange={(event) => setQuestion(event.target.value)} maxLength={2000} placeholder="Where is authentication handled?" className="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[#090d12] px-4 py-3 text-sm outline-none focus:border-[var(--accent)]"/><button disabled={chatBusy || !question.trim()} className="rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-[#092018] disabled:opacity-50">Ask</button></form>}
             </div>
           </div>}
+        </section>
+
+        <section className="mt-14" aria-labelledby="issues-heading">
+          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent)]">
+                Autonomous Diagnostics
+              </p>
+              <h2 id="issues-heading" className="mt-2 text-2xl font-semibold">
+                Issue Analysis & Fix Proposal
+              </h2>
+            </div>
+          </div>
+
+          <form
+            onSubmit={submitIssueAnalysis}
+            className="flex flex-col gap-3 rounded-2xl border border-[var(--line)] bg-[#0e141b] p-4 sm:flex-row sm:items-center sm:p-5"
+          >
+            <label className="sr-only" htmlFor="analysis-repository">
+              Select repository
+            </label>
+            <select
+              id="analysis-repository"
+              required
+              value={analysisRepo ?? ""}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                setAnalysisRepo(val || null);
+                setAnalysisResult(null);
+                setAnalysisError("");
+              }}
+              className="min-w-[200px] rounded-xl border border-[var(--line)] bg-[#090d12] px-4 py-3 text-sm text-white outline-none focus:border-[var(--accent)]"
+            >
+              <option value="">Select indexed repository</option>
+              {repositories.map((repo) => (
+                <option key={repo.id} value={repo.id}>
+                  {repo.full_name}
+                </option>
+              ))}
+            </select>
+
+            <label htmlFor="issue-number-input" className="sr-only">
+              GitHub issue number
+            </label>
+            <input
+              id="issue-number-input"
+              type="number"
+              min={1}
+              required
+              value={issueNumber}
+              onChange={(e) => setIssueNumber(e.target.value)}
+              placeholder="Issue # (e.g. 42)"
+              className="w-full sm:w-44 rounded-xl border border-[var(--line)] bg-[#090d12] px-4 py-3 text-sm outline-none placeholder:text-[#64717e] focus:border-[var(--accent)]"
+            />
+
+            <button
+              disabled={
+                analyzing ||
+                !analysisRepo ||
+                !issueNumber ||
+                indexes[analysisRepo]?.status !== "completed"
+              }
+              className="rounded-xl bg-[var(--accent)] px-6 py-3 text-sm font-semibold text-[#092018] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {analyzing ? "Analyzing issue…" : "Analyze Issue & Propose Fix"}
+            </button>
+          </form>
+
+          {analysisError && (
+            <div className="mt-3 rounded-xl border border-rose-900/50 bg-rose-950/20 p-4 text-sm text-rose-300">
+              {analysisError}
+            </div>
+          )}
+
+          {analysisResult && (
+            <div className="mt-6 space-y-6">
+              <article className="rounded-2xl border border-[var(--line)] bg-[#0e141b] p-6 shadow-xl">
+                <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--line)] pb-4">
+                  <div>
+                    <span className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+                      Issue #{analysisResult.issue_number}
+                    </span>
+                    <h3 className="mt-1 text-xl font-semibold">
+                      <a
+                        href={analysisResult.issue_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="hover:text-[var(--accent)] transition"
+                      >
+                        {analysisResult.issue_title}
+                      </a>
+                    </h3>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wider ${
+                        analysisResult.analysis.confidence === "high"
+                          ? "bg-emerald-950/60 text-emerald-400 border border-emerald-800/40"
+                          : analysisResult.analysis.confidence === "medium"
+                          ? "bg-amber-950/60 text-amber-300 border border-amber-800/40"
+                          : "bg-rose-950/60 text-rose-300 border border-rose-800/40"
+                      }`}
+                    >
+                      {analysisResult.analysis.confidence} confidence
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-5 space-y-2">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+                    Summary
+                  </h4>
+                  <p className="text-sm leading-relaxed text-[#c0d0d8]">
+                    {analysisResult.analysis.summary}
+                  </p>
+                </div>
+
+                <div className="mt-6 rounded-xl border border-amber-900/30 bg-amber-950/10 p-4">
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-md bg-amber-500/20 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-amber-300 border border-amber-500/30">
+                      Hypothesis
+                    </span>
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-amber-200">
+                      Suspected Root Cause
+                    </h4>
+                  </div>
+                  <p className="mt-2 text-sm leading-relaxed text-[#dfd9cb]">
+                    {analysisResult.analysis.root_cause_hypothesis}
+                  </p>
+                </div>
+
+                {analysisResult.analysis.relevant_files.length > 0 && (
+                  <div className="mt-6">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+                      Relevant Files & Validated Lines
+                    </h4>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {analysisResult.analysis.relevant_files.map((file, idx) => (
+                        <div
+                          key={`${file.path}:${file.start_line}-${idx}`}
+                          className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[#111a21] px-3 py-1.5 text-xs font-mono"
+                        >
+                          <span className="text-[var(--accent)]">{file.path}</span>
+                          <span className="text-[var(--muted)]">
+                            L{file.start_line}–L{file.end_line}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </article>
+
+              <article className="rounded-2xl border border-[var(--line)] bg-[#0e141b] p-6 shadow-xl">
+                <div className="flex items-center justify-between border-b border-[var(--line)] pb-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-[var(--accent)]">
+                      Human Review Only
+                    </p>
+                    <h3 className="mt-1 text-lg font-semibold">Proposed Fix & Code Patch</h3>
+                  </div>
+                  <span className="rounded-lg border border-amber-800/40 bg-amber-950/30 px-3 py-1 text-xs text-amber-300">
+                    Not automatically executed
+                  </span>
+                </div>
+
+                <p className="mt-4 text-sm leading-relaxed text-[#c0d0d8]">
+                  {analysisResult.analysis.proposed_fix.explanation}
+                </p>
+
+                <div className="mt-6 space-y-4">
+                  {analysisResult.analysis.proposed_fix.patches.map((patch, idx) => (
+                    <div
+                      key={`${patch.file_path}-${idx}`}
+                      className="overflow-hidden rounded-xl border border-[var(--line)] bg-[#090d12]"
+                    >
+                      <div className="flex items-center justify-between border-b border-[var(--line)] bg-[#0d151c] px-4 py-2.5 text-xs font-mono">
+                        <span className="text-[var(--accent)]">{patch.file_path}</span>
+                        {patch.explanation && (
+                          <span className="text-[var(--muted)] font-sans truncate max-w-md">
+                            {patch.explanation}
+                          </span>
+                        )}
+                      </div>
+                      <pre className="overflow-x-auto p-4 text-xs font-mono leading-5">
+                        {patch.diff.split("\n").map((line, lineIdx) => {
+                          let lineStyle = "text-[#94a3b8]";
+                          if (line.startsWith("+") && !line.startsWith("+++")) {
+                            lineStyle = "text-emerald-400 bg-emerald-950/30 -mx-4 px-4 block";
+                          } else if (line.startsWith("-") && !line.startsWith("---")) {
+                            lineStyle = "text-rose-400 bg-rose-950/30 -mx-4 px-4 block";
+                          } else if (line.startsWith("@@")) {
+                            lineStyle = "text-sky-400 font-semibold";
+                          }
+                          return (
+                            <span key={lineIdx} className={lineStyle}>
+                              {line}
+                              {"\n"}
+                            </span>
+                          );
+                        })}
+                      </pre>
+                    </div>
+                  ))}
+                </div>
+
+                {analysisResult.analysis.limitations.length > 0 && (
+                  <div className="mt-6 border-t border-[var(--line)] pt-4">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+                      Limitations & Caveats
+                    </h4>
+                    <ul className="mt-2 list-inside list-disc space-y-1 text-xs text-[var(--muted)]">
+                      {analysisResult.analysis.limitations.map((item, idx) => (
+                        <li key={idx}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </article>
+            </div>
+          )}
         </section>
       </section>
       </>}
