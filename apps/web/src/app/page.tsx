@@ -91,6 +91,8 @@ export default function Home() {
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
   const [question, setQuestion] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
+  const [chatError, setChatError] = useState("");
+  const [lastFailedQuestion, setLastFailedQuestion] = useState<{ text: string; mode: string } | null>(null);
   const [chatMode, setChatMode] = useState<"auto" | "general" | "coding" | "repository" | "verified_fix">("auto");
   const [analysisRepo, setAnalysisRepo] = useState<number | null>(null);
   const [issueNumber, setIssueNumber] = useState("");
@@ -163,7 +165,10 @@ export default function Home() {
   }
 
   async function loadSessions(repositoryId: number) {
-    setChatRepository(repositoryId); setActiveSession(null);
+    setChatRepository(repositoryId);
+    setActiveSession(null);
+    setChatError("");
+    setLastFailedQuestion(null);
     try {
       const response = await apiRequest(`/api/chat/sessions?repository_id=${repositoryId}`, { cache: "no-store" });
       if (!response.ok) throw new Error("Could not load chat history.");
@@ -173,6 +178,8 @@ export default function Home() {
 
   async function openSession(session: ChatSession) {
     setChatBusy(true);
+    setChatError("");
+    setLastFailedQuestion(null);
     try {
       const response = await apiRequest(`/api/chat/sessions/${session.id}`, { cache: "no-store" });
       const data = await response.json();
@@ -189,6 +196,10 @@ export default function Home() {
       if (!response.ok) throw new Error("Could not delete conversation.");
       setSessions((items) => items.filter((item) => item.id !== session.id));
       setActiveSession((current) => current?.id === session.id ? null : current);
+      if (activeSession?.id === session.id) {
+        setChatError("");
+        setLastFailedQuestion(null);
+      }
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not delete conversation."); }
   }
 
@@ -202,12 +213,17 @@ export default function Home() {
       );
       if (!response.ok) throw new Error("Could not clear conversation history.");
       setActiveSession((current) => current ? { ...current, messages: [] } : current);
+      setChatError("");
+      setLastFailedQuestion(null);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not clear conversation history."); }
   }
 
   async function newSession() {
     if (!chatRepository) return;
-    setChatBusy(true); setError("");
+    setChatBusy(true);
+    setError("");
+    setChatError("");
+    setLastFailedQuestion(null);
     try {
       const response = await apiRequest("/api/chat/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repository_id: chatRepository }) }, csrfToken.current);
       const data = await response.json();
@@ -222,28 +238,31 @@ export default function Home() {
     event.preventDefault();
     if (!activeSession || !question.trim()) return;
     const text = question.trim();
+    const modeToUse = chatMode;
     setQuestion("");
     setChatBusy(true);
-    setError("");
+    setChatError("");
     try {
       const response = await apiRequest(
         `/api/chat/sessions/${activeSession.id}/messages`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: text, mode: chatMode === "auto" ? null : chatMode }),
+          body: JSON.stringify({ question: text, mode: modeToUse === "auto" ? null : modeToUse }),
         },
         csrfToken.current
       );
       const data = (await response.json()) as ChatMessage & { detail?: string };
-      if (!response.ok) throw new Error(data.detail || "Question could not be answered.");
+      if (!response.ok) {
+        throw new Error(data.detail || "Question could not be answered.");
+      }
       setActiveSession((current) =>
         current
           ? {
               ...current,
               messages: [
                 ...(current.messages || []),
-                { id: Date.now(), role: "user", content: text, citations: [], mode: chatMode },
+                { id: Date.now(), role: "user", content: text, citations: [], mode: modeToUse },
                 data,
               ],
             }
@@ -256,9 +275,61 @@ export default function Home() {
             : item
         )
       );
+      setLastFailedQuestion(null);
     } catch (reason) {
       setQuestion(text);
-      setError(reason instanceof Error ? reason.message : "Question could not be answered.");
+      const msg = reason instanceof Error ? reason.message : "Question could not be answered.";
+      setChatError(msg);
+      setLastFailedQuestion({ text, mode: modeToUse });
+    } finally {
+      setChatBusy(false);
+    }
+  }
+
+  async function retryLastQuestion() {
+    if (!lastFailedQuestion || !activeSession || chatBusy) return;
+    const { text, mode } = lastFailedQuestion;
+    setChatBusy(true);
+    setChatError("");
+    try {
+      const response = await apiRequest(
+        `/api/chat/sessions/${activeSession.id}/messages`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: text, mode: mode === "auto" ? null : mode }),
+        },
+        csrfToken.current
+      );
+      const data = (await response.json()) as ChatMessage & { detail?: string };
+      if (!response.ok) {
+        throw new Error(data.detail || "Question could not be answered.");
+      }
+      setActiveSession((current) =>
+        current
+          ? {
+              ...current,
+              messages: [
+                ...(current.messages || []),
+                { id: Date.now(), role: "user", content: text, citations: [], mode },
+                data,
+              ],
+            }
+          : current
+      );
+      setSessions((items) =>
+        items.map((item) =>
+          item.id === activeSession.id && item.title === "New conversation"
+            ? { ...item, title: text.slice(0, 200) }
+            : item
+        )
+      );
+      setLastFailedQuestion(null);
+      setQuestion("");
+    } catch (reason) {
+      setQuestion(text);
+      const msg = reason instanceof Error ? reason.message : "Question could not be answered.";
+      setChatError(msg);
     } finally {
       setChatBusy(false);
     }
@@ -618,6 +689,43 @@ export default function Home() {
                               ? "Verified Fix Agent reviewing Proof-of-Fix workflow…"
                               : "Searching indexed source & verifying citations…"}
                       </span>
+                    </div>
+                  )}
+
+                  {chatError && (
+                    <div
+                      role="alert"
+                      className="rounded-xl border border-rose-500/40 bg-rose-950/30 p-3.5 text-xs text-rose-200"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start gap-2">
+                          <span className="font-semibold text-rose-400">⚠️ Provider Error:</span>
+                          <span className="leading-5">{chatError}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setChatError("")}
+                          className="shrink-0 rounded p-0.5 text-rose-400 transition hover:bg-rose-900/50 hover:text-white"
+                          aria-label="Dismiss error"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      {lastFailedQuestion && (
+                        <div className="mt-2.5 flex items-center gap-3 border-t border-rose-500/20 pt-2">
+                          <button
+                            type="button"
+                            onClick={() => void retryLastQuestion()}
+                            disabled={chatBusy}
+                            className="rounded-lg bg-rose-500/20 px-3 py-1 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/30 disabled:opacity-50"
+                          >
+                            🔄 Retry Request
+                          </button>
+                          <span className="text-[11px] text-rose-300/70">
+                            Your input has been preserved.
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

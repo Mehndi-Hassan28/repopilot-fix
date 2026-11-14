@@ -239,6 +239,53 @@ def test_cloud_provider_timeout_returns_safe_error(monkeypatch):
     with pytest.raises(ProviderError, match="configured answer provider failed") as error:
         provider.answer("question", [])
     assert "sensitive request details" not in str(error.value)
+    assert "Request timed out" in str(error.value)
+
+
+def test_cloud_provider_status_error_handling(monkeypatch):
+    provider = CompatibleCloudProvider("https://llm.example/v1", "test-key", "gemini-old-model")
+
+    # 404 Model not found or deprecated
+    def mock_404(*args, **kwargs):
+        request = httpx.Request("POST", "https://llm.example/v1/chat/completions")
+        response = httpx.Response(
+            404,
+            json={"error": {"message": "models/gemini-old-model is no longer available"}},
+            request=request,
+        )
+        raise httpx.HTTPStatusError("Not Found", request=request, response=response)
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", mock_404)
+    with pytest.raises(ProviderError, match="404") as exc:
+        provider.answer_general("hello")
+    assert "gemini-old-model" in str(exc.value)
+    assert "no longer available" in str(exc.value)
+
+    # 429 Rate limit / quota
+    def mock_429(*args, **kwargs):
+        request = httpx.Request("POST", "https://llm.example/v1/chat/completions")
+        response = httpx.Response(
+            429,
+            json={"error": {"message": "Resource has been exhausted"}},
+            request=request,
+        )
+        raise httpx.HTTPStatusError("Too Many Requests", request=request, response=response)
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", mock_429)
+    with pytest.raises(ProviderError, match="429") as exc:
+        provider.answer_coding("hello")
+    assert "quota exceeded" in str(exc.value)
+
+    # 401 Authentication error
+    def mock_401(*args, **kwargs):
+        request = httpx.Request("POST", "https://llm.example/v1/chat/completions")
+        response = httpx.Response(401, json={"error": "API key invalid"}, request=request)
+        raise httpx.HTTPStatusError("Unauthorized", request=request, response=response)
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", mock_401)
+    with pytest.raises(ProviderError, match="Authentication error") as exc:
+        provider.answer("hello", [])
+    assert "CHAT_API_KEY" in str(exc.value)
 
 
 def test_chat_api_returns_mock_and_llm_answers_with_verified_citations(test_session, monkeypatch):

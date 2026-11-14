@@ -561,6 +561,71 @@ class MockProvider(Provider):
         )
 
 
+def _handle_cloud_error(exc: Exception, model: str) -> ProviderError:
+    """Map provider HTTP and connection exceptions to safe, informative ProviderErrors."""
+    if isinstance(exc, ProviderError):
+        return exc
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        error_detail = ""
+        try:
+            body = exc.response.json()
+            if isinstance(body, dict):
+                error_obj = body.get("error")
+                if isinstance(error_obj, dict) and "message" in error_obj:
+                    error_detail = str(error_obj["message"])
+                elif isinstance(error_obj, str):
+                    error_detail = error_obj
+        except Exception:
+            pass
+
+        # Sanitize error detail to never leak potential API keys or secrets
+        if error_detail:
+            error_detail = re.sub(r"(?:AIza|sk-|key=)[A-Za-z0-9_-]+", "***", error_detail)
+            error_detail = error_detail.strip()[:200]
+
+        if status == 404:
+            msg = (
+                f"The configured answer provider failed: Model '{model}' was not found "
+                f"or is deprecated by the provider (HTTP 404)."
+            )
+            if error_detail:
+                msg += f" {error_detail}"
+            return ProviderError(msg)
+        if status == 429:
+            msg = (
+                "The configured answer provider failed: Rate limit or quota exceeded (HTTP 429). "
+                "Please try again shortly or check provider billing."
+            )
+            if error_detail:
+                msg += f" ({error_detail})"
+            return ProviderError(msg)
+        if status in (401, 403):
+            return ProviderError(
+                f"The configured answer provider failed: Authentication error (HTTP {status}). "
+                "Check CHAT_API_KEY configuration."
+            )
+        msg = f"The configured answer provider failed: Provider returned HTTP {status}."
+        if error_detail:
+            msg += f" {error_detail}"
+        return ProviderError(msg)
+    if isinstance(exc, httpx.TimeoutException):
+        return ProviderError(
+            "The configured answer provider failed: Request timed out. Please try again."
+        )
+    if isinstance(exc, httpx.ConnectError):
+        return ProviderError(
+            "The configured answer provider failed: Could not connect to provider endpoint. "
+            "Please check CHAT_BASE_URL."
+        )
+    if isinstance(exc, (ValueError, KeyError, IndexError, TypeError)):
+        return ProviderError(
+            "The configured answer provider failed: Provider returned an "
+            "unexpected or malformed response."
+        )
+    return ProviderError(f"The configured answer provider failed: {type(exc).__name__}.")
+
+
 class CompatibleCloudProvider(Provider):
     def __init__(self, base_url: str, api_key: str, model: str):
         self.base_url, self.api_key, self.model = base_url.rstrip("/"), api_key, model
@@ -600,8 +665,8 @@ class CompatibleCloudProvider(Provider):
             if not isinstance(answer, str):
                 raise ValueError("invalid response from cloud provider")
             return answer[:6000]
-        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
-            raise ProviderError("The configured answer provider failed.") from exc
+        except Exception as exc:
+            raise _handle_cloud_error(exc, self.model) from exc
 
     def answer_coding(self, question: str, history: list[dict[str, str]] | None = None) -> str:
         system = (
@@ -638,8 +703,8 @@ class CompatibleCloudProvider(Provider):
             if not isinstance(answer, str):
                 raise ValueError("invalid response from cloud provider")
             return answer[:6000]
-        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
-            raise ProviderError("The configured answer provider failed.") from exc
+        except Exception as exc:
+            raise _handle_cloud_error(exc, self.model) from exc
 
     def answer(self, question: str, evidence: list[Evidence]) -> str:
         return self.answer_with_context(question, evidence, [])
@@ -690,8 +755,8 @@ class CompatibleCloudProvider(Provider):
             if not isinstance(answer, str):
                 raise ValueError("invalid response")
             return answer[:6000]
-        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
-            raise ProviderError("The configured answer provider failed.") from exc
+        except Exception as exc:
+            raise _handle_cloud_error(exc, self.model) from exc
 
     def analyze_issue(self, issue: dict, evidence: list[Evidence]) -> str:
         blocks = [
@@ -746,8 +811,8 @@ class CompatibleCloudProvider(Provider):
             if not isinstance(answer, str):
                 raise ValueError("invalid response from cloud provider")
             return answer
-        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
-            raise ProviderError("The configured answer provider failed.") from exc
+        except Exception as exc:
+            raise _handle_cloud_error(exc, self.model) from exc
 
 
 def validate_patch_diff(diff: str, file_content: str) -> None:
