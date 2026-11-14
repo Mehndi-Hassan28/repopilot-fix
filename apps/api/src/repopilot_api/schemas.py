@@ -56,12 +56,20 @@ class RepositoryRead(BaseModel):
         return cls(**values)
 
 
+class ChatModeEnum(StrEnum):
+    GENERAL = "general"
+    CODING = "coding"
+    REPOSITORY = "repository"
+    VERIFIED_FIX = "verified_fix"
+
+
 class ChatSessionCreate(BaseModel):
     repository_id: int
 
 
 class ChatQuestion(BaseModel):
     question: str
+    mode: str | None = None
 
 
 class CitationRead(BaseModel):
@@ -76,6 +84,7 @@ class ChatMessageRead(BaseModel):
     content: str
     citations: list[CitationRead]
     created_at: str
+    mode: str | None = None
 
 
 class ChatSessionRead(BaseModel):

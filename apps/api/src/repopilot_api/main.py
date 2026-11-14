@@ -164,9 +164,7 @@ def import_repository(
 
 
 @app.get("/api/repositories", response_model=list[RepositoryRead])
-def list_repositories(
-    db: Session = Depends(get_db), auth: AuthContext = Depends(get_current_auth)
-):
+def list_repositories(db: Session = Depends(get_db), auth: AuthContext = Depends(get_current_auth)):
     repos = db.scalars(
         select(Repository)
         .join(RepositoryAccess, RepositoryAccess.repository_id == Repository.id)
@@ -423,12 +421,16 @@ def list_chat_sessions(
 
 
 def _message_read(message: ChatMessage):
+    from repopilot_api.chat import infer_message_mode
+
+    mode = getattr(message, "mode", None) or infer_message_mode(message)
     return {
         "id": message.id,
         "role": message.role,
         "content": message.content,
-        "citations": json.loads(message.citations),
+        "citations": json.loads(message.citations) if message.citations else [],
         "created_at": message.created_at.isoformat(),
+        "mode": mode,
     }
 
 
@@ -456,7 +458,7 @@ def ask_chat(
     try:
         from repopilot_api.chat import get_provider
 
-        message = ask(db, session, payload.question, get_provider())
+        message = ask(db, session, payload.question, get_provider(), mode=payload.mode)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except ProviderError as exc:

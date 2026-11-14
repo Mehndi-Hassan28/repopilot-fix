@@ -11,7 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from repopilot_api.models import ChatMessage, ChatSession, IndexedFile, IndexingJob
-from repopilot_api.schemas import IssueAnalysisResult
+from repopilot_api.schemas import ChatModeEnum, IssueAnalysisResult
+
+ChatMode = ChatModeEnum
 
 MAX_QUESTION_CHARS = 2000
 MAX_CONTEXT_CHARS = 12000
@@ -42,22 +44,34 @@ OPERATION_GROUPS = {
     },
 }
 STOP_WORDS = {
+    "a",
     "about",
     "after",
     "also",
+    "an",
     "and",
+    "app",
     "are",
+    "at",
+    "before",
+    "by",
     "can",
+    "do",
     "does",
     "for",
     "from",
     "have",
     "how",
+    "in",
     "into",
-    "app",
+    "is",
+    "of",
+    "on",
+    "or",
     "that",
     "the",
     "this",
+    "to",
     "what",
     "where",
     "which",
@@ -76,14 +90,23 @@ class Evidence:
 
 
 def _search_tokens(text: str) -> list[str]:
-    """Split identifiers into words and add cautious -ing search variants."""
+    """Split identifiers into words and add cautious search variants."""
     expanded = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text).replace("_", " ")
-    tokens = re.findall(r"[A-Za-z][A-Za-z0-9]*", expanded.lower())
-    variants = list(tokens)
-    for token in tokens:
+    raw_tokens = re.findall(r"[A-Za-z][A-Za-z0-9]*", expanded.lower())
+    variants = []
+    for token in raw_tokens:
+        if token in STOP_WORDS:
+            continue
+        variants.append(token)
         stem = token[:-3]
         if token.endswith("ing") and len(stem) >= 4:
             variants.append(stem)
+        if (
+            token.endswith("s")
+            and not token.endswith(("ss", "us", "is", "as", "os"))
+            and len(token) >= 4
+        ):
+            variants.append(token[:-1])
     return variants
 
 
@@ -175,9 +198,7 @@ def retrieve(db: Session, repository_id: int, commit_sha: str, query: str) -> li
     # Rare query words carry more information than words repeated throughout a repository.
     weights = {
         term: math.log(
-            1
-            + (len(files) - document_frequency[term] + 0.5)
-            / (document_frequency[term] + 0.5)
+            1 + (len(files) - document_frequency[term] + 0.5) / (document_frequency[term] + 0.5)
         )
         for term in terms
     }
@@ -203,9 +224,7 @@ def retrieve(db: Session, repository_id: int, commit_sha: str, query: str) -> li
             if not frequency:
                 continue
             length_norm = (
-                1 - 0.75 + 0.75 * document_length / average_length
-                if average_length
-                else 1
+                1 - 0.75 + 0.75 * document_length / average_length if average_length else 1
             )
             score += weights[term] * (frequency * 2.2) / (frequency + 1.2 * length_norm)
         basename_tokens = set(_search_tokens(file.path.rsplit("/", 1)[-1]))
@@ -215,6 +234,8 @@ def retrieve(db: Session, repository_id: int, commit_sha: str, query: str) -> li
         test_intent = any(term.startswith("test") for term in terms)
         if test_file and not test_intent:
             score *= 0.55
+        elif not test_file and test_intent:
+            score *= 0.65
         if "migrations" in path_parts and not terms.intersection({"migration", "migrations"}):
             score *= 0.75
         start, end = max(1, line_number - 5), min(len(lines), line_number + 5)
@@ -222,6 +243,166 @@ def retrieve(db: Session, repository_id: int, commit_sha: str, query: str) -> li
         if _chunk_supports_operations(content, requested_operations):
             evidence.append(Evidence(file.path, start, end, content, score))
     return sorted(evidence, key=lambda item: (-item.score, item.path))[:MAX_RESULTS]
+
+
+def classify_intent(query: str, history: list[dict[str, str]] | None = None) -> ChatMode:
+    """Classify user intent into one of 4 operational modes.
+
+    1. VERIFIED_FIX: Issue fixing, patch proposals, issue investigations (#42)
+    2. REPOSITORY: Questions about files, structure, or implementation in the connected repository
+    3. CODING: Code explanation, bug fixing, algorithms, programming help, code snippets
+    4. GENERAL: Greetings, general knowledge, learning concepts, chat chitchat
+    """
+    clean_q = query.strip()
+    lower_q = clean_q.lower()
+
+    # 1. Verified Fix Agent intent
+    if (
+        re.search(
+            r"(?:investigate|analyze|reproduce|solve|fix|handle)\s+(?:github\s+)?"
+            r"(?:issue|pr|pull\s+request)\s*#?(\d+)",
+            clean_q,
+            re.IGNORECASE,
+        )
+        or re.search(r"\b(?:github\s+)?issue\s+#\d+\b", clean_q, re.IGNORECASE)
+        or re.search(r"\bpropose\s+(?:a\s+)?fix\s+for\s+issue\b", clean_q, re.IGNORECASE)
+        or re.search(r"\bproof-?of-?fix\b", clean_q, re.IGNORECASE)
+    ):
+        return ChatMode.VERIFIED_FIX
+
+    # 2. General conversational greetings and meta-prompts
+    if re.match(
+        r"^(?:hi|hello|hey|greetings|good\s+(?:morning|afternoon|evening)|howdy|sup|yo|hola)[!\s.,?]*$",
+        lower_q,
+    ) or re.match(
+        r"^(?:who\s+are\s+you|what\s+can\s+you\s+do|how\s+are\s+you|"
+        r"tell\s+me\s+about\s+yourself|help(?:\s+me)?)[!\s.,?]*$",
+        lower_q,
+    ):
+        return ChatMode.GENERAL
+
+    # 3. Repository Intelligence (Explicit repository indicators)
+    has_repo_keyword = bool(
+        re.search(
+            r"\b(?:in|from|across|throughout)\s+(?:this|the|my|our)\s+"
+            r"(?:repo|repository|codebase|project)\b",
+            clean_q,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:this|our|the|my)\s+(?:repo|repository|codebase|project)\s+"
+            r"(?:has|uses|implements|handles|contains|defines)\b",
+            clean_q,
+            re.IGNORECASE,
+        )
+    )
+    has_file_path = bool(
+        re.search(r"\b(?:src|apps|lib|components|routes|tests|migrations)/[\w./-]+\b", clean_q)
+        or re.search(
+            r"\b[\w./-]+\.(?:py|tsx?|jsx?|json|toml|ya?ml|sql|html|css|rs|go|java|c|cpp|rb)\b",
+            clean_q,
+        )
+    )
+    has_location_query = bool(
+        re.search(
+            r"\b(?:where\s+is|how\s+does|what\s+does|show\s+me|find|locate)\s+.*?\s+"
+            r"(?:implemented|handled|defined|located|configured|called|work)\b",
+            clean_q,
+            re.IGNORECASE,
+        )
+        or re.match(r"^\s*where\s+is\b", lower_q)
+        or (re.match(r"^\s*explain\s+", lower_q) and has_file_path)
+    )
+    has_symbol_query = bool(
+        re.search(r"\b(?:how\s+does|what\s+is\s+in)\s+[a-zA-Z_][a-zA-Z0-9_]*", lower_q)
+        or re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", clean_q)
+    )
+    if has_repo_keyword or has_file_path or has_location_query or has_symbol_query:
+        return ChatMode.REPOSITORY
+
+    # 4. Coding Assistant intent
+    has_code_block = "```" in clean_q
+    has_traceback = any(
+        err in clean_q
+        for err in [
+            "Traceback (most recent call last):",
+            "NullPointerException",
+        ]
+    ) or bool(
+        re.search(
+            r"\b(?:TypeError|SyntaxError|ValueError|ReferenceError|IndexError|KeyError|"
+            r"NameError|AttributeError)\b",
+            clean_q,
+        )
+    )
+    has_coding_action = bool(
+        re.search(
+            r"\b(?:fix|debug|refactor|optimize|write|generate|implement|review)\s+"
+            r"(?:this|the|a|my)?\s*(?:code|function|script|snippet|class|method|implementation|"
+            r"bug|error|algorithm)\b",
+            clean_q,
+            re.IGNORECASE,
+        )
+        or re.match(
+            r"^\s*fix\s+this\s+(?:python|javascript|typescript|c\+\+|java|go|rust)?\s*code\b",
+            lower_q,
+        )
+        or re.search(r"\bwhy\s+is\s+this\s+(?:code|function|error|loop|syntax)\b", lower_q)
+    )
+    has_dsa_query = bool(
+        re.search(
+            r"\b(?:binary\s+search|quicksort|merge\s+sort|bubble\s+sort|heap\s+sort|bfs|dfs|"
+            r"dijkstra|linked\s+list|binary\s+tree|avl\s+tree|red\s+black\s+tree|hash\s+map|"
+            r"hash\s+table|heap|priority\s+queue|stack|queue|trie|dynamic\s+programming|"
+            r"sliding\s+window|two\s+pointers)\b",
+            lower_q,
+        )
+    )
+    if has_code_block or has_traceback or has_coding_action or has_dsa_query:
+        return ChatMode.CODING
+
+    # 5. General AI Conceptual and learning questions
+    has_conceptual_topic = bool(
+        re.search(
+            r"\b(?:what\s+is|explain|define|tell\s+me\s+about)\s+(?:recursion|polymorphism|"
+            r"inheritance|abstraction|encapsulation|monad|concurrency|parallelism|cap\s+theorem|"
+            r"acid|solid\s+principles|rest\s+api|graphql|dns|http|tcp|udp)\b",
+            lower_q,
+        )
+    )
+    if has_conceptual_topic:
+        return ChatMode.GENERAL
+
+    # 6. Follow-up query resolution from history
+    if history:
+        prior_user_msg = next(
+            (item["content"] for item in reversed(history) if item.get("role") == "user"), None
+        )
+        if prior_user_msg and len(_search_tokens(clean_q)) <= 4:
+            return classify_intent(prior_user_msg)
+
+    # Default fallback
+    return ChatMode.GENERAL
+
+
+def infer_message_mode(message: ChatMessage) -> str:
+    """Infer the operational mode for a message."""
+    explicit = getattr(message, "mode", None)
+    if explicit:
+        return str(explicit)
+    if message.role == "user":
+        return classify_intent(message.content).value
+    citations = json.loads(message.citations) if message.citations else []
+    if citations:
+        return ChatMode.REPOSITORY.value
+    content = message.content or ""
+    if "indexed source evidence" in content or "verify the source citations" in content:
+        return ChatMode.REPOSITORY.value
+    if "Verified Fix Agent" in content or "Proof-of-Fix" in content:
+        return ChatMode.VERIFIED_FIX.value
+    if "```" in content or "Binary Search" in content or "Code Review" in content:
+        return ChatMode.CODING.value
+    return ChatMode.GENERAL.value
 
 
 class ProviderError(RuntimeError):
@@ -238,6 +419,14 @@ class Provider:
         """Keep existing providers compatible while allowing bounded follow-up context."""
         return self.answer(question, evidence)
 
+    def answer_general(self, question: str, history: list[dict[str, str]] | None = None) -> str:
+        """Answer general AI / conceptual / conversational questions."""
+        return self.answer(question, [])
+
+    def answer_coding(self, question: str, history: list[dict[str, str]] | None = None) -> str:
+        """Answer coding, debugging, and programming questions."""
+        return self.answer(question, [])
+
     def analyze_issue(self, issue: dict, evidence: list[Evidence]) -> str:
         raise NotImplementedError
 
@@ -246,22 +435,88 @@ class MockProvider(Provider):
     def answer(self, question: str, evidence: list[Evidence]) -> str:
         return "The indexed source contains relevant evidence in [1]." if evidence else ""
 
+    def answer_general(self, question: str, history: list[dict[str, str]] | None = None) -> str:
+        q_lower = question.lower().strip()
+        if any(w in q_lower for w in ["hi", "hello", "hey", "greetings"]):
+            return (
+                "Hello! I am RepoPilot Fix AI assistant. I can help you with general programming "
+                "concepts, code debugging, repository intelligence, and verified bug fixes. "
+                "How can I help you today?"
+            )
+        if "recursion" in q_lower:
+            return (
+                "Recursion is a programming concept where a function calls itself to solve a "
+                "smaller instance of the same problem. A recursive function always requires a "
+                "**base case** to terminate and a **recursive step** to break down the problem."
+            )
+        return (
+            f"Here is a clear explanation regarding: {question.strip()}\n\n"
+            "RepoPilot Fix AI assists with general software engineering, algorithmic design, "
+            "and development best practices."
+        )
+
+    def answer_coding(self, question: str, history: list[dict[str, str]] | None = None) -> str:
+        q_lower = question.lower().strip()
+        if "binary search" in q_lower:
+            return (
+                "### Binary Search\n\n"
+                "Binary search is an efficient algorithm for searching a sorted list in "
+                "**O(log n)** time.\n\n"
+                "```python\n"
+                "def binary_search(arr: list[int], target: int) -> int:\n"
+                "    low, high = 0, len(arr) - 1\n"
+                "    while low <= high:\n"
+                "        mid = (low + high) // 2\n"
+                "        if arr[mid] == target:\n"
+                "            return mid\n"
+                "        elif arr[mid] < target:\n"
+                "            low = mid + 1\n"
+                "        else:\n"
+                "            high = mid - 1\n"
+                "    return -1\n"
+                "```"
+            )
+        if "fix" in q_lower or "debug" in q_lower:
+            return (
+                "### Code Review & Fix Suggestion\n\n"
+                "Here is the analyzed code issue and recommended fix:\n\n"
+                "1. **Identified Issue**: Syntax or logical mismatch in user snippet.\n"
+                "2. **Corrected Code**:\n"
+                "```python\n"
+                "# Corrected implementation\n"
+                "def fixed_function():\n"
+                "    return True\n"
+                "```\n"
+                "3. **Explanation**: Added appropriate return type and guard checks."
+            )
+        return (
+            "Here is the code assistance you requested:\n\n"
+            "```python\n"
+            "# Example implementation\n"
+            "def example():\n"
+            "    pass\n"
+            "```\n"
+            "Be sure to handle edge cases and validate input parameters."
+        )
+
     def analyze_issue(self, issue: dict, evidence: list[Evidence]) -> str:
         if not evidence:
-            return json.dumps({
-                "summary": f"Issue #{issue.get('number', 0)}: {issue.get('title', '')}",
-                "root_cause_hypothesis": (
-                    "Hypothesis: Insufficient evidence in indexed files to identify root cause."
-                ),
-                "relevant_files": [],
-                "proposed_fix": {
-                    "explanation": "No fix can be proposed without relevant code evidence.",
-                    "patches": [],
-                },
-                "confidence": "low",
-                "confidence_reasoning": "No relevant indexed files matched the issue query.",
-                "limitations": ["No code evidence available in the index."],
-            })
+            return json.dumps(
+                {
+                    "summary": f"Issue #{issue.get('number', 0)}: {issue.get('title', '')}",
+                    "root_cause_hypothesis": (
+                        "Hypothesis: Insufficient evidence in indexed files to identify root cause."
+                    ),
+                    "relevant_files": [],
+                    "proposed_fix": {
+                        "explanation": "No fix can be proposed without relevant code evidence.",
+                        "patches": [],
+                    },
+                    "confidence": "low",
+                    "confidence_reasoning": "No relevant indexed files matched the issue query.",
+                    "limitations": ["No code evidence available in the index."],
+                }
+            )
         top = evidence[0]
         lines = top.content.splitlines()
         first_line = lines[0] if lines else ""
@@ -272,41 +527,119 @@ class MockProvider(Provider):
             f"-{first_line}\n"
             f"+{first_line}  # fix proposal\n"
         )
-        return json.dumps({
-            "summary": f"Issue #{issue.get('number', 0)}: {issue.get('title', '')}",
-            "root_cause_hypothesis": (
-                f"Hypothesis: Suspected defect in {top.path} near line {top.start_line}."
-            ),
-            "relevant_files": [
-                {
-                    "path": top.path,
-                    "start_line": top.start_line,
-                    "end_line": top.end_line,
-                    "explanation": f"Contains relevant code around line {top.start_line}.",
-                }
-            ],
-            "proposed_fix": {
-                "explanation": f"Update implementation in {top.path} to address the issue.",
-                "patches": [
+        return json.dumps(
+            {
+                "summary": f"Issue #{issue.get('number', 0)}: {issue.get('title', '')}",
+                "root_cause_hypothesis": (
+                    f"Hypothesis: Suspected defect in {top.path} near line {top.start_line}."
+                ),
+                "relevant_files": [
                     {
-                        "file_path": top.path,
-                        "explanation": f"Apply fix at line {top.start_line} in {top.path}.",
-                        "diff": diff,
+                        "path": top.path,
+                        "start_line": top.start_line,
+                        "end_line": top.end_line,
+                        "explanation": f"Contains relevant code around line {top.start_line}.",
                     }
                 ],
-            },
-            "confidence": "high",
-            "confidence_reasoning": f"Directly matched evidence in {top.path}.",
-            "limitations": [
-                "Static analysis based only on indexed source snippets.",
-                "Proposed fix must be reviewed and tested by a developer.",
-            ],
-        })
+                "proposed_fix": {
+                    "explanation": f"Update implementation in {top.path} to address the issue.",
+                    "patches": [
+                        {
+                            "file_path": top.path,
+                            "explanation": f"Apply fix at line {top.start_line} in {top.path}.",
+                            "diff": diff,
+                        }
+                    ],
+                },
+                "confidence": "high",
+                "confidence_reasoning": f"Directly matched evidence in {top.path}.",
+                "limitations": [
+                    "Static analysis based only on indexed source snippets.",
+                    "Proposed fix must be reviewed and tested by a developer.",
+                ],
+            }
+        )
 
 
 class CompatibleCloudProvider(Provider):
     def __init__(self, base_url: str, api_key: str, model: str):
         self.base_url, self.api_key, self.model = base_url.rstrip("/"), api_key, model
+
+    def answer_general(self, question: str, history: list[dict[str, str]] | None = None) -> str:
+        system = (
+            "You are RepoPilot Fix, a helpful and knowledgeable AI software engineering assistant. "
+            "Answer the user's question clearly, accurately, and concisely. Provide helpful "
+            "conceptual explanations, programming guidance, or friendly conversational answers. "
+            "Use GitHub Flavored Markdown for formatting."
+        )
+        prior_turns = ""
+        if history:
+            prior_turns = "\n".join(
+                f"{item['role'].capitalize()}: {item['content']}" for item in history
+            )
+        user_content = question
+        if prior_turns:
+            user_content = f"Conversation history:\n{prior_turns}\n\nCurrent question:\n{question}"
+        try:
+            response = httpx.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user_content},
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": MAX_COMPLETION_TOKENS,
+                },
+                timeout=PROVIDER_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            answer = response.json()["choices"][0]["message"]["content"]
+            if not isinstance(answer, str):
+                raise ValueError("invalid response from cloud provider")
+            return answer[:6000]
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+            raise ProviderError("The configured answer provider failed.") from exc
+
+    def answer_coding(self, question: str, history: list[dict[str, str]] | None = None) -> str:
+        system = (
+            "You are RepoPilot Fix, an expert coding assistant and senior software engineer. "
+            "Help the user understand code snippets, diagnose bugs, suggest improvements, write "
+            "clean idiomatic code, and explain data structures and algorithms. Always format code "
+            "using standard Markdown code blocks with appropriate language tags."
+        )
+        prior_turns = ""
+        if history:
+            prior_turns = "\n".join(
+                f"{item['role'].capitalize()}: {item['content']}" for item in history
+            )
+        user_content = question
+        if prior_turns:
+            user_content = f"Conversation history:\n{prior_turns}\n\nCurrent request:\n{question}"
+        try:
+            response = httpx.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user_content},
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": MAX_COMPLETION_TOKENS,
+                },
+                timeout=PROVIDER_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            answer = response.json()["choices"][0]["message"]["content"]
+            if not isinstance(answer, str):
+                raise ValueError("invalid response from cloud provider")
+            return answer[:6000]
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+            raise ProviderError("The configured answer provider failed.") from exc
 
     def answer(self, question: str, evidence: list[Evidence]) -> str:
         return self.answer_with_context(question, evidence, [])
@@ -420,9 +753,7 @@ class CompatibleCloudProvider(Provider):
 def validate_patch_diff(diff: str, file_content: str) -> None:
     """Validate that diff is a valid unified diff matching file_content."""
     clean_diff = diff.strip()
-    hunk_pattern = re.compile(
-        r"^@@\s*-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s*@@.*$", re.MULTILINE
-    )
+    hunk_pattern = re.compile(r"^@@\s*-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s*@@.*$", re.MULTILINE)
     hunk_matches = list(hunk_pattern.finditer(clean_diff))
     if not hunk_matches:
         raise ValueError(
@@ -491,9 +822,7 @@ def validate_server_side_analysis(
         if citation.path not in indexed_files:
             raise ValueError(f"Unknown file referenced: {citation.path}")
         if citation.path not in evidence_paths:
-            raise ValueError(
-                f"Unsupported claim: {citation.path} was not in retrieved evidence."
-            )
+            raise ValueError(f"Unsupported claim: {citation.path} was not in retrieved evidence.")
         file_lines = indexed_files[citation.path].splitlines()
         total_lines = max(1, len(file_lines))
         if citation.start_line < 1:
@@ -661,44 +990,87 @@ def _citation_references_are_valid(answer: str, evidence: list[Evidence]) -> boo
     return True
 
 
-def ask(db: Session, session: ChatSession, question: str, provider: Provider) -> ChatMessage:
+def ask(
+    db: Session,
+    session: ChatSession,
+    question: str,
+    provider: Provider,
+    mode: str | None = None,
+) -> ChatMessage:
     if not question.strip() or len(question) > MAX_QUESTION_CHARS:
         raise ValueError(f"Question must be 1–{MAX_QUESTION_CHARS} characters.")
     history = _bounded_history(db, session)
-    retrieval_query = _resolve_followup_query(question, history)
 
-    # The bounded agent has two local steps: search the pinned index, then read top chunks.
-    steps_remaining = MAX_AGENT_STEPS
-    steps_remaining -= 1
-    ranked = retrieve(db, session.repository_id, session.commit_sha, retrieval_query)
-    steps_remaining -= 1
-    bounded = _bounded_evidence(ranked) if steps_remaining >= 0 else []
-    if bounded:
-        answer = provider.answer_with_context(question, bounded, history)
+    # Determine mode: explicit mode override or intelligent intent classification
+    resolved_mode: ChatMode
+    if mode and mode.lower() in {m.value for m in ChatMode}:
+        resolved_mode = ChatMode(mode.lower())
     else:
-        answer = "I couldn't find enough indexed source evidence to answer that question."
+        resolved_mode = classify_intent(question, history)
+
     citations = []
-    if bounded and _citation_references_are_valid(answer, bounded):
-        used = {int(value) for value in re.findall(r"\[(\d+)\]", answer)}
-        citations = [
-            {"path": item.path, "start_line": item.start_line, "end_line": item.end_line}
-            for i, item in enumerate(bounded, 1)
-            if i in used and item.start_line >= 1 and item.end_line >= item.start_line
-        ]
-    if bounded and not citations and answer.strip():
+
+    if resolved_mode == ChatMode.GENERAL:
+        answer = provider.answer_general(question, history)
+    elif resolved_mode == ChatMode.CODING:
+        answer = provider.answer_coding(question, history)
+    elif resolved_mode == ChatMode.VERIFIED_FIX:
+        issue_match = re.search(r"#?(\d+)", question)
+        issue_num_str = f" #{issue_match.group(1)}" if issue_match else ""
         answer = (
-            "I couldn't verify the source citations for that response, "
-            "so I can't provide a grounded answer."
+            f"### 🛡️ Verified Fix Agent — Issue Investigation\n\n"
+            f"I have detected a request to investigate GitHub Issue{issue_num_str}.\n\n"
+            f"RepoPilot Fix operates under our core evidence-first rule:\n"
+            f'> **"Don\'t just generate a fix. Prove what it fixes."**\n\n'
+            f"To safely investigate this issue:\n"
+            f"1. **Analyze Issue**: Use the **GitHub Issues** panel to select the issue and "
+            f"analyze relevant repository code.\n"
+            f"2. **Review Proposed Patch**: Inspect the deterministic unified diff.\n"
+            f"3. **Proof-of-Fix Verification**: Request verification in a secure Docker sandbox "
+            f"with explicit human approval.\n"
+            f"4. **Evidence Report**: Inspect dual sandbox execution metrics (Baseline vs Patched) "
+            f"to confirm the fix.\n\n"
+            f"*Patches are never applied or verified without explicit human approval and passing "
+            f"test evidence.*"
         )
-    db.add(ChatMessage(session_id=session.id, role="user", content=question, citations="[]"))
+    else:
+        # REPOSITORY mode: grounded retrieval and citation verification
+        retrieval_query = _resolve_followup_query(question, history)
+        steps_remaining = MAX_AGENT_STEPS
+        steps_remaining -= 1
+        ranked = retrieve(db, session.repository_id, session.commit_sha, retrieval_query)
+        steps_remaining -= 1
+        bounded = _bounded_evidence(ranked) if steps_remaining >= 0 else []
+        if bounded:
+            answer = provider.answer_with_context(question, bounded, history)
+        else:
+            answer = "I couldn't find enough indexed source evidence to answer that question."
+        if bounded and _citation_references_are_valid(answer, bounded):
+            used = {int(value) for value in re.findall(r"\[(\d+)\]", answer)}
+            citations = [
+                {"path": item.path, "start_line": item.start_line, "end_line": item.end_line}
+                for i, item in enumerate(bounded, 1)
+                if i in used and item.start_line >= 1 and item.end_line >= item.start_line
+            ]
+        if bounded and not citations and answer.strip():
+            answer = (
+                "I couldn't verify the source citations for that response, "
+                "so I can't provide a grounded answer."
+            )
+
+    user_msg = ChatMessage(session_id=session.id, role="user", content=question, citations="[]")
+    user_msg.mode = resolved_mode.value
+    db.add(user_msg)
     response = ChatMessage(
         session_id=session.id,
         role="assistant",
         content=answer or "I couldn't find enough indexed source evidence to answer that question.",
         citations=json.dumps(citations),
     )
+    response.mode = resolved_mode.value
     db.add(response)
     session.title = session.title if session.title != "New conversation" else question.strip()[:200]
     db.commit()
     db.refresh(response)
+    response.mode = resolved_mode.value
     return response

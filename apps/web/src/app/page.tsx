@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { VerificationPanel } from "@/components/VerificationPanel";
 
 type Repository = {
   id: number;
@@ -15,7 +16,7 @@ type Repository = {
 };
 type IndexStatus = { status: string; file_count: number; symbol_count: number; languages: string[]; commit_sha: string; error?: string | null };
 type Citation = { path: string; start_line: number; end_line: number };
-type ChatMessage = { id: number; role: string; content: string; citations: Citation[] };
+type ChatMessage = { id: number; role: string; content: string; citations: Citation[]; mode?: string };
 type ChatSession = { id: number; repository_id: number; title: string; commit_sha: string; messages?: ChatMessage[] };
 type AuthUser = { id: number; login: string };
 
@@ -90,6 +91,7 @@ export default function Home() {
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
   const [question, setQuestion] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
+  const [chatMode, setChatMode] = useState<"auto" | "general" | "coding" | "repository" | "verified_fix">("auto");
   const [analysisRepo, setAnalysisRepo] = useState<number | null>(null);
   const [issueNumber, setIssueNumber] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
@@ -219,15 +221,47 @@ export default function Home() {
   async function sendQuestion(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!activeSession || !question.trim()) return;
-    const text = question.trim(); setQuestion(""); setChatBusy(true); setError("");
+    const text = question.trim();
+    setQuestion("");
+    setChatBusy(true);
+    setError("");
     try {
-      const response = await apiRequest(`/api/chat/sessions/${activeSession.id}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: text }) }, csrfToken.current);
-      const data = await response.json() as ChatMessage & { detail?: string };
+      const response = await apiRequest(
+        `/api/chat/sessions/${activeSession.id}/messages`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: text, mode: chatMode === "auto" ? null : chatMode }),
+        },
+        csrfToken.current
+      );
+      const data = (await response.json()) as ChatMessage & { detail?: string };
       if (!response.ok) throw new Error(data.detail || "Question could not be answered.");
-      setActiveSession((current) => current ? { ...current, messages: [...(current.messages || []), { id: Date.now(), role: "user", content: text, citations: [] }, data] } : current);
-      setSessions((items) => items.map((item) => item.id === activeSession.id && item.title === "New conversation" ? { ...item, title: text.slice(0, 200) } : item));
-    } catch (reason) { setQuestion(text); setError(reason instanceof Error ? reason.message : "Question could not be answered."); }
-    finally { setChatBusy(false); }
+      setActiveSession((current) =>
+        current
+          ? {
+              ...current,
+              messages: [
+                ...(current.messages || []),
+                { id: Date.now(), role: "user", content: text, citations: [], mode: chatMode },
+                data,
+              ],
+            }
+          : current
+      );
+      setSessions((items) =>
+        items.map((item) =>
+          item.id === activeSession.id && item.title === "New conversation"
+            ? { ...item, title: text.slice(0, 200) }
+            : item
+        )
+      );
+    } catch (reason) {
+      setQuestion(text);
+      setError(reason instanceof Error ? reason.message : "Question could not be answered.");
+    } finally {
+      setChatBusy(false);
+    }
   }
 
   async function importRepository(event: FormEvent<HTMLFormElement>) {
@@ -337,17 +371,291 @@ export default function Home() {
           {repositories.length > 0 && <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{repositories.map((repo) => { const status = indexes[repo.id]; return <article key={`index-${repo.id}`} className="rounded-xl border border-[var(--line)] bg-[#0e141b] p-4"><div className="flex items-center justify-between gap-3"><h3 className="truncate text-sm font-medium">{repo.full_name}</h3><button onClick={() => void startIndex(repo.id)} disabled={indexing === repo.id} className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-[#092018] disabled:opacity-60">{indexing === repo.id ? "Indexing…" : status ? "Reindex" : "Index source"}</button></div>{status && <div className="mt-3 text-xs leading-5 text-[var(--muted)]"><p>{status.status} · {status.file_count} files · {status.symbol_count} symbols</p><p>{status.languages?.join(", ") || "Waiting for files"}</p>{status.error && <p className="text-rose-300">{status.error}</p>}</div>}</article>; })}</div>}
         </section>
         <section className="mt-14" aria-labelledby="chat-heading">
-          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent)]">Ask the codebase</p><h2 id="chat-heading" className="mt-2 text-2xl font-semibold">Repository chat</h2></div>
-            <label className="sr-only" htmlFor="chat-repository">Choose a repository</label><select id="chat-repository" value={chatRepository ?? ""} onChange={(event) => { const id = Number(event.target.value); if (id) void loadSessions(id); else { setChatRepository(null); setActiveSession(null); setSessions([]); } }} className="rounded-xl border border-[var(--line)] bg-[#0e141b] px-4 py-3 text-sm"><option value="">Choose a repository</option>{repositories.map((repo) => <option key={repo.id} value={repo.id}>{repo.full_name}</option>)}</select>
-          </div>
-          {chatRepository !== null && <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
-            <aside className="rounded-2xl border border-[var(--line)] bg-[#0e141b] p-3"><button onClick={() => void newSession()} disabled={chatBusy || indexes[chatRepository]?.status !== "completed"} className="w-full rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-[#092018] disabled:opacity-50">New conversation</button><p className="px-2 pb-2 pt-4 text-xs uppercase tracking-wider text-[var(--muted)]">History</p>{sessions.map((session) => <div key={session.id} className="mb-1 flex items-center gap-1"><button onClick={() => void openSession(session)} className="min-w-0 flex-1 truncate rounded-lg px-3 py-2 text-left text-sm text-[var(--muted)] hover:bg-[#182129] hover:text-white">{session.title}</button><button aria-label={`Delete ${session.title}`} onClick={() => void deleteChat(session)} className="rounded-lg px-2 py-2 text-xs text-rose-300 hover:bg-[#182129]">Delete</button></div>)}</aside>
-            <div className="flex min-h-[440px] flex-col rounded-2xl border border-[var(--line)] bg-[#0e141b] p-4 sm:p-6">
-              {activeSession && <div className="mb-3 flex justify-end"><button onClick={() => void clearChatHistory()} className="rounded-lg border border-[var(--line)] px-3 py-2 text-xs text-[var(--muted)]">Clear history</button></div>}
-              <div className="flex-1 space-y-4" aria-live="polite">{!activeSession ? <p className="pt-20 text-center text-sm text-[var(--muted)]">{indexes[chatRepository]?.status === "completed" ? "Start a conversation about this indexed repository." : "Complete source indexing before starting a conversation."}</p> : (activeSession.messages || []).map((message) => <article key={message.id} className={`max-w-3xl rounded-2xl p-4 ${message.role === "user" ? "ml-auto bg-[#1b2a2b]" : "bg-[#111a21]"}`}><p className="whitespace-pre-wrap text-sm leading-6">{message.content}</p>{message.citations.length > 0 && <div className="mt-3 flex flex-wrap gap-2" aria-label="Source citations">{message.citations.map((citation) => <span key={`${citation.path}:${citation.start_line}`} className="rounded-lg border border-[var(--line)] px-2 py-1 font-mono text-xs text-[var(--accent)]">{citation.path}:{citation.start_line}–{citation.end_line}</span>)}</div>}</article>)}{chatBusy && activeSession && <p className="text-sm text-[var(--muted)]">Searching indexed source…</p>}</div>
-              {activeSession && <form onSubmit={sendQuestion} className="mt-5 flex gap-2 border-t border-[var(--line)] pt-4"><label htmlFor="chat-question" className="sr-only">Ask a question about this repository</label><input id="chat-question" value={question} onChange={(event) => setQuestion(event.target.value)} maxLength={2000} placeholder="Where is authentication handled?" className="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[#090d12] px-4 py-3 text-sm outline-none focus:border-[var(--accent)]"/><button disabled={chatBusy || !question.trim()} className="rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-[#092018] disabled:opacity-50">Ask</button></form>}
+          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent)]">
+                AI Coding Assistant & Repo Intelligence
+              </p>
+              <h2 id="chat-heading" className="mt-2 text-2xl font-semibold">
+                Unified AI Chat
+              </h2>
             </div>
-          </div>}
+            <label className="sr-only" htmlFor="chat-repository">
+              Choose a repository
+            </label>
+            <select
+              id="chat-repository"
+              value={chatRepository ?? ""}
+              onChange={(event) => {
+                const id = Number(event.target.value);
+                if (id) void loadSessions(id);
+                else {
+                  setChatRepository(null);
+                  setActiveSession(null);
+                  setSessions([]);
+                }
+              }}
+              className="rounded-xl border border-[var(--line)] bg-[#0e141b] px-4 py-3 text-sm"
+            >
+              <option value="">Choose a repository</option>
+              {repositories.map((repo) => (
+                <option key={repo.id} value={repo.id}>
+                  {repo.full_name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {chatRepository !== null && (
+            <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
+              <aside className="rounded-2xl border border-[var(--line)] bg-[#0e141b] p-3">
+                <button
+                  onClick={() => void newSession()}
+                  disabled={chatBusy || indexes[chatRepository]?.status !== "completed"}
+                  className="w-full rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-[#092018] disabled:opacity-50"
+                >
+                  New conversation
+                </button>
+                <p className="px-2 pb-2 pt-4 text-xs uppercase tracking-wider text-[var(--muted)]">
+                  History
+                </p>
+                {sessions.map((session) => (
+                  <div key={session.id} className="mb-1 flex items-center gap-1">
+                    <button
+                      onClick={() => void openSession(session)}
+                      className="min-w-0 flex-1 truncate rounded-lg px-3 py-2 text-left text-sm text-[var(--muted)] hover:bg-[#182129] hover:text-white"
+                    >
+                      {session.title}
+                    </button>
+                    <button
+                      aria-label={`Delete ${session.title}`}
+                      onClick={() => void deleteChat(session)}
+                      className="rounded-lg px-2 py-2 text-xs text-rose-300 hover:bg-[#182129]"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                ))}
+              </aside>
+
+              <div className="flex min-h-[480px] flex-col rounded-2xl border border-[var(--line)] bg-[#0e141b] p-4 sm:p-6">
+                {activeSession && (
+                  <div className="mb-3 flex items-center justify-between border-b border-[var(--line)] pb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-[var(--muted)]">Mode:</span>
+                      <div className="flex flex-wrap gap-1.5 text-xs">
+                        {(
+                          [
+                            { id: "auto", label: "⚡ Auto Detect" },
+                            { id: "general", label: "💡 General AI" },
+                            { id: "coding", label: "💻 Coding" },
+                            { id: "repository", label: "📂 Repo Search" },
+                            { id: "verified_fix", label: "🛡️ Verified Fix" },
+                          ] as const
+                        ).map((modeOption) => (
+                          <button
+                            key={modeOption.id}
+                            type="button"
+                            onClick={() => setChatMode(modeOption.id)}
+                            className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
+                              chatMode === modeOption.id
+                                ? "bg-[var(--accent)] text-[#092018]"
+                                : "border border-[var(--line)] text-[var(--muted)] hover:text-white"
+                            }`}
+                          >
+                            {modeOption.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => void clearChatHistory()}
+                      className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-xs text-[var(--muted)] hover:text-rose-300"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex-1 space-y-4 overflow-y-auto" aria-live="polite">
+                  {!activeSession ? (
+                    <div className="pt-20 text-center">
+                      <p className="text-sm text-[var(--muted)]">
+                        {indexes[chatRepository]?.status === "completed"
+                          ? "Start a new conversation to ask general questions, debug code, or search the repository."
+                          : "Complete source indexing before starting a conversation."}
+                      </p>
+                    </div>
+                  ) : (activeSession.messages || []).length === 0 ? (
+                    <div className="py-8">
+                      <p className="mb-4 text-center text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+                        Try asking or click a quick prompt:
+                      </p>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {[
+                          { text: "hi", label: "👋 Say Hello", desc: "General greeting & overview", mode: "general" as const },
+                          { text: "What is recursion?", label: "💡 What is recursion?", desc: "Conceptual DSA explanation", mode: "general" as const },
+                          { text: "Explain binary search", label: "💻 Explain binary search", desc: "Algorithm & Python code example", mode: "coding" as const },
+                          { text: "Where is authentication handled in this repo?", label: "📂 Repository Search", desc: "Indexed source evidence & citations", mode: "repository" as const },
+                          { text: "Investigate GitHub issue #42", label: "🛡️ Investigate Issue #42", desc: "Proof-of-Fix agent workflow", mode: "verified_fix" as const },
+                        ].map((prompt, idx) => (
+                          <button
+                            key={idx}
+                            type="button"
+                            onClick={() => {
+                              setQuestion(prompt.text);
+                              setChatMode(prompt.mode);
+                            }}
+                            className="flex flex-col items-start rounded-xl border border-[var(--line)] bg-[#111a21] p-3 text-left transition hover:border-[var(--accent)] hover:bg-[#182129]"
+                          >
+                            <span className="text-xs font-semibold text-white">{prompt.label}</span>
+                            <span className="mt-1 text-[11px] text-[var(--muted)]">{prompt.desc}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    (activeSession.messages || []).map((message) => {
+                      const modeKey = message.mode || "general";
+                      const modeStyles: Record<string, { label: string; badge: string }> = {
+                        general: {
+                          label: "💡 General AI",
+                          badge: "border-violet-500/30 bg-violet-950/40 text-violet-300",
+                        },
+                        coding: {
+                          label: "💻 Coding Assistant",
+                          badge: "border-sky-500/30 bg-sky-950/40 text-sky-300",
+                        },
+                        repository: {
+                          label: "📂 Repository Intelligence",
+                          badge: "border-emerald-500/30 bg-emerald-950/40 text-emerald-300",
+                        },
+                        verified_fix: {
+                          label: "🛡️ Verified Fix Agent",
+                          badge: "border-amber-500/30 bg-amber-950/40 text-amber-300",
+                        },
+                      };
+                      const currentModeInfo = modeStyles[modeKey] || modeStyles.general;
+
+                      return (
+                        <article
+                          key={message.id}
+                          className={`max-w-3xl rounded-2xl p-4 ${
+                            message.role === "user"
+                              ? "ml-auto border border-[#2d4a41]/40 bg-[#1b2a2b]"
+                              : "border border-[var(--line)] bg-[#111a21]"
+                          }`}
+                        >
+                          {message.role === "assistant" && (
+                            <div className="mb-2 flex items-center justify-between">
+                              <span
+                                className={`rounded-md border px-2 py-0.5 font-mono text-[11px] font-medium ${currentModeInfo.badge}`}
+                              >
+                                {currentModeInfo.label}
+                              </span>
+                            </div>
+                          )}
+
+                          {message.content.includes("```") ? (
+                            <div className="space-y-2">
+                              {message.content.split(/(```[\s\S]*?```)/g).map((part, i) => {
+                                if (part.startsWith("```") && part.endsWith("```")) {
+                                  const code = part.slice(3, -3).replace(/^\w*\n/, "");
+                                  const lang = (part.slice(3).match(/^(\w+)/) || [])[1] || "";
+                                  return (
+                                    <div
+                                      key={i}
+                                      className="my-2 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950"
+                                    >
+                                      {lang && (
+                                        <div className="border-b border-zinc-800 bg-zinc-900 px-3 py-1 font-mono text-[10px] text-zinc-400">
+                                          {lang}
+                                        </div>
+                                      )}
+                                      <pre className="overflow-x-auto p-3 font-mono text-xs text-emerald-300">
+                                        <code>{code}</code>
+                                      </pre>
+                                    </div>
+                                  );
+                                }
+                                return (
+                                  <p key={i} className="whitespace-pre-wrap text-sm leading-6">
+                                    {part}
+                                  </p>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <p className="whitespace-pre-wrap text-sm leading-6">{message.content}</p>
+                          )}
+
+                          {message.citations.length > 0 && (
+                            <div className="mt-3 flex flex-wrap gap-2" aria-label="Source citations">
+                              {message.citations.map((citation) => (
+                                <span
+                                  key={`${citation.path}:${citation.start_line}`}
+                                  className="rounded-lg border border-[var(--line)] px-2 py-1 font-mono text-xs text-[var(--accent)]"
+                                >
+                                  {citation.path}:{citation.start_line}–{citation.end_line}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })
+                  )}
+
+                  {chatBusy && activeSession && (
+                    <div className="flex items-center gap-2 text-sm text-[var(--muted)]">
+                      <span className="inline-block size-2 animate-pulse rounded-full bg-[var(--accent)]" />
+                      <span>
+                        {chatMode === "general"
+                          ? "RepoPilot General AI is thinking…"
+                          : chatMode === "coding"
+                            ? "Coding Assistant analyzing & generating solution…"
+                            : chatMode === "verified_fix"
+                              ? "Verified Fix Agent reviewing Proof-of-Fix workflow…"
+                              : "Searching indexed source & verifying citations…"}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {activeSession && (
+                  <form onSubmit={sendQuestion} className="mt-5 flex gap-2 border-t border-[var(--line)] pt-4">
+                    <label htmlFor="chat-question" className="sr-only">
+                      Ask a question
+                    </label>
+                    <input
+                      id="chat-question"
+                      value={question}
+                      onChange={(event) => setQuestion(event.target.value)}
+                      maxLength={2000}
+                      placeholder={
+                        chatMode === "general"
+                          ? "Ask a general question, e.g. What is recursion?"
+                          : chatMode === "coding"
+                            ? "Ask a coding question or paste code to debug…"
+                            : chatMode === "repository"
+                              ? "Ask about this repo, e.g. Where is authentication handled?"
+                              : chatMode === "verified_fix"
+                                ? "Investigate an issue, e.g. Investigate GitHub issue #42"
+                                : "Ask anything: greetings, code debugging, repo search, or issue fixes…"
+                      }
+                      className="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[#090d12] px-4 py-3 text-sm outline-none focus:border-[var(--accent)]"
+                    />
+                    <button
+                      disabled={chatBusy || !question.trim()}
+                      className="rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-[#092018] disabled:opacity-50"
+                    >
+                      Ask
+                    </button>
+                  </form>
+                )}
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="mt-14" aria-labelledby="issues-heading">
@@ -567,12 +875,23 @@ export default function Home() {
                   </div>
                 )}
               </article>
+
+              <VerificationPanel
+                repositoryId={analysisResult.repository_id}
+                commitSha={analysisResult.commit_sha}
+                issueNumber={analysisResult.issue_number}
+                patches={analysisResult.analysis.proposed_fix.patches}
+                hypothesis={analysisResult.analysis.root_cause_hypothesis}
+                csrfToken={csrfToken.current}
+              />
             </div>
           )}
         </section>
       </section>
       </>}
-      <footer className="mx-auto max-w-6xl border-t border-[var(--line)] pt-5 text-xs text-[var(--muted)]">Public repository metadata · Source code is never executed.</footer>
+      <footer className="mx-auto max-w-6xl border-t border-[var(--line)] pt-5 text-xs text-[var(--muted)]">
+        Public repository metadata &amp; analysis operate in read-only mode · Verification uses isolated sandbox containers only when explicitly authorized by human approval. Container isolation provides containment but cannot guarantee absolute security.
+      </footer>
     </main>
   );
 }

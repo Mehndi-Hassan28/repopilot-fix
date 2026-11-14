@@ -188,9 +188,7 @@ def test_cloud_provider_uses_configured_model_and_validated_citation(test_sessio
 
         def json(self):
             return {
-                "choices": [
-                    {"message": {"content": "Authentication is in this function [1]."}}
-                ]
+                "choices": [{"message": {"content": "Authentication is in this function [1]."}}]
             }
 
     def fake_post(url, **kwargs):
@@ -243,9 +241,7 @@ def test_cloud_provider_timeout_returns_safe_error(monkeypatch):
     assert "sensitive request details" not in str(error.value)
 
 
-def test_chat_api_returns_mock_and_llm_answers_with_verified_citations(
-    test_session, monkeypatch
-):
+def test_chat_api_returns_mock_and_llm_answers_with_verified_citations(test_session, monkeypatch):
     class Response:
         def raise_for_status(self):
             return None
@@ -293,9 +289,7 @@ def test_chat_api_returns_mock_and_llm_answers_with_verified_citations(
     assert "test-only-key" not in str(llm_data)
 
 
-def test_chat_api_reports_provider_configuration_errors_without_secrets(
-    test_session, monkeypatch
-):
+def test_chat_api_reports_provider_configuration_errors_without_secrets(test_session, monkeypatch):
     monkeypatch.setenv("CHAT_PROVIDER", "openai_compatible")
     monkeypatch.delenv("CHAT_API_KEY", raising=False)
     monkeypatch.setenv("CHAT_BASE_URL", "https://llm.example/v1")
@@ -416,9 +410,7 @@ def test_gemini_compatible_successful_response_and_citations(test_session, monke
                         "index": 0,
                         "message": {
                             "role": "assistant",
-                            "content": (
-                                "The token is validated by the authenticate function [1]."
-                            ),
+                            "content": ("The token is validated by the authenticate function [1]."),
                         },
                     }
                 ],
@@ -450,23 +442,18 @@ def test_gemini_compatible_successful_response_and_citations(test_session, monke
     citations = json.loads(message.citations)
     assert len(citations) == 1
     assert citations[0] == {"path": "src/auth.py", "start_line": 1, "end_line": 2}
-    expected_url = (
-        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-    )
+    expected_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
     assert captured["url"] == expected_url
     assert captured["headers"]["Authorization"] == "Bearer test-gemini-key"
     assert captured["json"]["model"] == "gemini-2.5-flash"
     system_prompt = captured["json"]["messages"][0]["content"]
     assert (
-        "Reserve square brackets exclusively for supplied numeric citation labels"
-        in system_prompt
+        "Reserve square brackets exclusively for supplied numeric citation labels" in system_prompt
     )
     assert "test-gemini-key" not in message.content
 
 
-def test_gemini_compatible_invalid_bracket_and_hallucinated_citations(
-    test_session, monkeypatch
-):
+def test_gemini_compatible_invalid_bracket_and_hallucinated_citations(test_session, monkeypatch):
     responses = [
         {"choices": [{"message": {"content": "Inspect element[0] for verification [1]."}}]},
         {"choices": [{"message": {"content": "Verified in [1] and [99]."}}]},
@@ -609,3 +596,196 @@ def test_gemini_compatible_configuration_validation(monkeypatch):
     assert provider.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
     assert provider.model == "gemini-2.5-flash"
     assert provider.api_key == "test-key"
+
+
+def test_intent_classification_for_all_modes():
+    from repopilot_api.chat import ChatMode, classify_intent
+
+    # General AI
+    assert classify_intent("hi") == ChatMode.GENERAL
+    assert classify_intent("hello!") == ChatMode.GENERAL
+    assert classify_intent("good morning") == ChatMode.GENERAL
+    assert classify_intent("What is recursion?") == ChatMode.GENERAL
+    assert classify_intent("Explain CAP theorem") == ChatMode.GENERAL
+
+    # Coding Assistant
+    assert classify_intent("Explain binary search") == ChatMode.CODING
+    assert classify_intent("Fix this Python code: def add(a, b): return a") == ChatMode.CODING
+    assert classify_intent("Why is this TypeError occurring?") == ChatMode.CODING
+    assert classify_intent("```python\ndef test(): pass\n```") == ChatMode.CODING
+
+    # Repository Intelligence
+    assert classify_intent("Where is authentication implemented in my repo?") == ChatMode.REPOSITORY
+    assert classify_intent("Explain src/auth.py from this repository") == ChatMode.REPOSITORY
+    assert classify_intent("How does authenticate work?") == ChatMode.REPOSITORY
+    assert classify_intent("Where is zzzunique implemented?") == ChatMode.REPOSITORY
+    assert classify_intent("authenticate") == ChatMode.REPOSITORY
+
+    # Verified Fix Agent
+    assert classify_intent("Investigate GitHub issue #42") == ChatMode.VERIFIED_FIX
+    assert classify_intent("Fix issue #15") == ChatMode.VERIFIED_FIX
+    assert classify_intent("Analyze GitHub issue 99") == ChatMode.VERIFIED_FIX
+
+
+def test_greetings_and_general_questions_via_api(test_session):
+    with test_session() as db:
+        repo = add_repo(db)
+        auth = add_auth(db, repo)
+        job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
+        session = ChatSession(
+            repository_id=repo.id, owner_user_id=auth.user.id, commit_sha=job.commit_sha
+        )
+        db.add(session)
+        db.flush()
+
+        # "hi" does not require repo indexing evidence and returns a friendly answer
+        msg_data = main.ask_chat(session.id, ChatQuestion(question="hi"), db, auth)
+        assert msg_data["mode"] == "general"
+        assert "Hello!" in msg_data["content"]
+        assert msg_data["citations"] == []
+
+        # "What is recursion?" returns a conceptual answer
+        rec_data = main.ask_chat(session.id, ChatQuestion(question="What is recursion?"), db, auth)
+        assert rec_data["mode"] == "general"
+        assert "Recursion" in rec_data["content"]
+        assert rec_data["citations"] == []
+
+
+def test_coding_assistant_via_api(test_session):
+    with test_session() as db:
+        repo = add_repo(db)
+        auth = add_auth(db, repo)
+        job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
+        session = ChatSession(
+            repository_id=repo.id, owner_user_id=auth.user.id, commit_sha=job.commit_sha
+        )
+        db.add(session)
+        db.flush()
+
+        # "Explain binary search" returns code snippet and DSA explanation
+        bs_data = main.ask_chat(
+            session.id, ChatQuestion(question="Explain binary search"), db, auth
+        )
+        assert bs_data["mode"] == "coding"
+        assert "Binary Search" in bs_data["content"]
+        assert "def binary_search" in bs_data["content"]
+        assert bs_data["citations"] == []
+
+        # "Fix this Python code: ..."
+        fix_data = main.ask_chat(
+            session.id,
+            ChatQuestion(question="Fix this Python code: def broken(): return"),
+            db,
+            auth,
+        )
+        assert fix_data["mode"] == "coding"
+        assert "Fix Suggestion" in fix_data["content"]
+        assert fix_data["citations"] == []
+
+
+def test_repository_intelligence_via_api(test_session):
+    with test_session() as db:
+        repo = add_repo(db)
+        auth = add_auth(db, repo)
+        job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
+        session = ChatSession(
+            repository_id=repo.id, owner_user_id=auth.user.id, commit_sha=job.commit_sha
+        )
+        db.add(session)
+        db.flush()
+
+        # Repository question with evidence
+        repo_data = main.ask_chat(
+            session.id,
+            ChatQuestion(question="Where is authenticate implemented in my repo?"),
+            db,
+            auth,
+        )
+        assert repo_data["mode"] == "repository"
+        assert len(repo_data["citations"]) > 0
+        assert repo_data["citations"][0]["path"] == "src/auth.py"
+
+        # Repository question with missing evidence returns exact limitation
+        missing_data = main.ask_chat(
+            session.id,
+            ChatQuestion(question="Where is zzzunique implemented in my repo?"),
+            db,
+            auth,
+        )
+        assert missing_data["mode"] == "repository"
+        assert "couldn't find enough indexed source evidence" in missing_data["content"]
+        assert missing_data["citations"] == []
+
+
+def test_verified_fix_agent_via_api(test_session):
+    with test_session() as db:
+        repo = add_repo(db)
+        auth = add_auth(db, repo)
+        job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
+        session = ChatSession(
+            repository_id=repo.id, owner_user_id=auth.user.id, commit_sha=job.commit_sha
+        )
+        db.add(session)
+        db.flush()
+
+        fix_data = main.ask_chat(
+            session.id, ChatQuestion(question="Investigate GitHub issue #42"), db, auth
+        )
+        assert fix_data["mode"] == "verified_fix"
+        assert "Verified Fix Agent" in fix_data["content"]
+        assert "Issue #42" in fix_data["content"]
+        assert "Proof-of-Fix" in fix_data["content"]
+
+
+def test_explicit_mode_override(test_session):
+    with test_session() as db:
+        repo = add_repo(db)
+        auth = add_auth(db, repo)
+        job = add_index(db, repo, "a" * 40, "def authenticate(token):\n    return token\n")
+        session = ChatSession(
+            repository_id=repo.id, owner_user_id=auth.user.id, commit_sha=job.commit_sha
+        )
+        db.add(session)
+        db.flush()
+
+        # Explicitly force coding mode for a greeting
+        data = main.ask_chat(session.id, ChatQuestion(question="hi", mode="coding"), db, auth)
+        assert data["mode"] == "coding"
+
+        # Explicitly force general mode for a repo question
+        gen_data = main.ask_chat(
+            session.id,
+            ChatQuestion(question="Where is authentication?", mode="general"),
+            db,
+            auth,
+        )
+        assert gen_data["mode"] == "general"
+
+
+def test_cloud_provider_general_and_coding_modes(monkeypatch):
+    captured = []
+
+    class CloudResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "General AI explanation about programming."}}]
+            }
+
+    def fake_post(url, **kwargs):
+        captured.append({"url": url, **kwargs})
+        return CloudResponse()
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", fake_post)
+    provider = CompatibleCloudProvider("https://llm.example/v1", "test-key", "test-model")
+
+    general_answer = provider.answer_general("What is an API?")
+    assert "General AI" in general_answer
+    assert captured[-1]["json"]["messages"][0]["role"] == "system"
+    assert "RepoPilot Fix" in captured[-1]["json"]["messages"][0]["content"]
+
+    coding_answer = provider.answer_coding("How does quicksort work?")
+    assert "General AI" in coding_answer
+    assert captured[-1]["json"]["messages"][0]["role"] == "system"
