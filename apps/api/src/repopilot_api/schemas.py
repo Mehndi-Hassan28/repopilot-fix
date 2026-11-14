@@ -1,4 +1,5 @@
 import re
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, field_validator
@@ -104,6 +105,78 @@ class IssueEvidenceRead(BaseModel):
     score: float
 
 
+class FileCitation(BaseModel):
+    path: str
+    start_line: int
+    end_line: int
+    explanation: str = ""
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        clean = value.strip().replace("\\", "/")
+        if ".." in clean.split("/") or clean.startswith("/"):
+            raise ValueError("Path must be a clean relative path.")
+        return clean
+
+    @field_validator("start_line", "end_line")
+    @classmethod
+    def validate_lines(cls, value: int) -> int:
+        if type(value) is not int or value < 1:
+            raise ValueError("Line numbers must be positive integers.")
+        return value
+
+
+class PatchProposal(BaseModel):
+    file_path: str
+    explanation: str = ""
+    diff: str
+
+    @field_validator("file_path")
+    @classmethod
+    def validate_file_path(cls, value: str) -> str:
+        clean = value.strip().replace("\\", "/")
+        if ".." in clean.split("/") or clean.startswith("/"):
+            raise ValueError("file_path must be a clean relative path.")
+        return clean
+
+    @field_validator("diff")
+    @classmethod
+    def validate_diff(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Patch diff cannot be empty.")
+        return value
+
+
+class ProposedFix(BaseModel):
+    explanation: str
+    patches: list[PatchProposal] = []
+
+
+class IssueAnalysisResult(BaseModel):
+    summary: str
+    root_cause_hypothesis: str
+    relevant_files: list[FileCitation] = []
+    proposed_fix: ProposedFix
+    confidence: Literal["low", "medium", "high"]
+    confidence_reasoning: str = ""
+    limitations: list[str] = []
+
+    @field_validator("root_cause_hypothesis")
+    @classmethod
+    def validate_hypothesis(cls, value: str) -> str:
+        clean = value.strip()
+        if not clean:
+            raise ValueError("Root cause hypothesis cannot be empty.")
+        if not re.search(
+            r"\b(hypothesis|hypothesize|possible|potential|suspected|likely)\b",
+            clean,
+            re.IGNORECASE,
+        ):
+            return f"Hypothesis: {clean}"
+        return clean
+
+
 class IssueAnalysisRead(BaseModel):
     repository_id: int
     commit_sha: str
@@ -113,3 +186,4 @@ class IssueAnalysisRead(BaseModel):
     issue_url: str
     query: str
     evidence: list[IssueEvidenceRead]
+    analysis: IssueAnalysisResult

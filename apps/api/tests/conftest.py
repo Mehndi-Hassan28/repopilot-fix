@@ -11,6 +11,11 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def default_mock_provider(monkeypatch):
+    monkeypatch.setenv("CHAT_PROVIDER", "mock")
+
+
 @pytest.fixture
 def test_session():
     engine = create_engine(
