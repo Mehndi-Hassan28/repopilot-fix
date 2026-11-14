@@ -14,7 +14,11 @@ dev = ["pytest>=8.0,<9.0", "ruff>=0.8,<1.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
+markers = [
+    "docker: Opt-in integration tests requiring real Docker daemon (deselect with '-m \"not docker\"')"
+]
+addopts = "-m 'not docker'"
 
 [tool.ruff]
 line-length = 100

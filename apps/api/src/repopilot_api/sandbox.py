@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Constants & Defaults
 DEFAULT_SANDBOX_IMAGE = (
-    "python:3.11-slim@sha256:d480e64e1f73ecf349d9796eec50e68f3a38891f13b194d23d8c119ba3ae11bc"
+    "python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535"
 )
 DEFAULT_MEMORY_LIMIT = "512m"
 DEFAULT_CPU_LIMIT = "1.0"
@@ -445,6 +445,16 @@ class MockSandboxRunner(SandboxRunner):
             await self.limiter.release(run_id)
 
 
+def get_default_sandbox_user() -> str:
+    """Return a non-root container user string matching host non-root uid (e.g. '1000:1000')."""
+    if hasattr(os, "getuid") and hasattr(os, "getgid"):
+        uid = os.getuid()
+        gid = os.getgid()
+        if uid != 0:
+            return f"{uid}:{gid}"
+    return "1000:1000"
+
+
 class DockerSandboxRunner(SandboxRunner):
     """Secure Docker runner enforcing non-root, read-only rootfs, zero networking and limits."""
 
@@ -469,6 +479,7 @@ class DockerSandboxRunner(SandboxRunner):
         cpu_limit: str = DEFAULT_CPU_LIMIT,
         pids_limit: int = DEFAULT_PIDS_LIMIT,
         require_digest: bool = True,
+        user: str | None = None,
         limiter: SandboxConcurrencyLimiter | None = None,
         scratch_root: str | None = None,
     ):
@@ -476,6 +487,9 @@ class DockerSandboxRunner(SandboxRunner):
         self.memory_limit = memory_limit
         self.cpu_limit = cpu_limit
         self.pids_limit = pids_limit
+        self.user = user or get_default_sandbox_user()
+        if self.user in ("0", "0:0", "root"):
+            raise SandboxSecurityError("Root execution inside container is strictly forbidden.")
         self.limiter = limiter or GLOBAL_CONCURRENCY_LIMITER
         self.scratch_root = scratch_root
 
@@ -489,7 +503,17 @@ class DockerSandboxRunner(SandboxRunner):
             "--rm",
             "--name",
             container_name,
-            *self.DEFAULT_SECURITY_ARGS,
+            "--network",
+            "none",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--user",
+            self.user,
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,size=64m",
             "--memory",
             self.memory_limit,
             "--memory-swap",

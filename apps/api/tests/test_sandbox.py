@@ -19,6 +19,7 @@ from repopilot_api.sandbox import (
     SandboxConfigurationError,
     SandboxSecurityError,
     WorkspaceManager,
+    get_default_sandbox_user,
     get_sandbox_runner,
 )
 from repopilot_api.schemas import (
@@ -482,3 +483,52 @@ def test_get_sandbox_runner_factory(monkeypatch):
     monkeypatch.setenv("SANDBOX_PROVIDER", "unsupported")
     with pytest.raises(SandboxConfigurationError, match="Unsupported SANDBOX_PROVIDER"):
         get_sandbox_runner()
+
+
+def test_get_default_sandbox_user():
+    user = get_default_sandbox_user()
+    assert isinstance(user, str)
+    assert user not in ("0", "0:0", "root")
+    assert ":" in user
+
+
+def test_docker_runner_rejects_root_execution():
+    with pytest.raises(
+        SandboxSecurityError, match="Root execution inside container is strictly forbidden"
+    ):
+        DockerSandboxRunner(image=DEFAULT_SANDBOX_IMAGE, user="0")
+
+    with pytest.raises(
+        SandboxSecurityError, match="Root execution inside container is strictly forbidden"
+    ):
+        DockerSandboxRunner(image=DEFAULT_SANDBOX_IMAGE, user="0:0")
+
+    with pytest.raises(
+        SandboxSecurityError, match="Root execution inside container is strictly forbidden"
+    ):
+        DockerSandboxRunner(image=DEFAULT_SANDBOX_IMAGE, user="root")
+
+
+def test_sandbox_fixtures_deterministic_verification():
+    from repopilot_api.patcher import apply_unified_diff
+    from tests.fixtures.sandbox_fixtures import (
+        CALC_FIX_PATCH,
+        FAILING_FIXTURE_FILES,
+        PASSING_FIXTURE_FILES,
+    )
+
+    # 1. Verify passing fixture content
+    assert "return a + b" in PASSING_FIXTURE_FILES["calc.py"]
+    assert "self.assertEqual(add(1, 2), 3)" in PASSING_FIXTURE_FILES["test_calc.py"]
+
+    # 2. Verify failing fixture has the intentional bug
+    failing_orig = FAILING_FIXTURE_FILES["calc.py"]
+    assert "return a - b" in failing_orig
+
+    # 3. Deterministically apply patch to failing fixture in-memory
+    patched, hunks, added, deleted = apply_unified_diff(failing_orig, CALC_FIX_PATCH)
+    assert hunks == 1
+    assert added == 1
+    assert deleted == 1
+    assert "return a + b" in patched
+    assert "return a - b" not in patched
