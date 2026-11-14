@@ -4,6 +4,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     PrimaryKeyConstraint,
@@ -66,9 +67,7 @@ class RepositoryAccess(Base):
         CheckConstraint("role IN ('owner', 'collaborator')", name="ck_repository_access_role"),
     )
 
-    repository_id: Mapped[int] = mapped_column(
-        ForeignKey("repositories.id", ondelete="CASCADE")
-    )
+    repository_id: Mapped[int] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"))
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     role: Mapped[str] = mapped_column(String(20), default="owner", server_default="owner")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -169,4 +168,51 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text)
     citations: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class VerificationRun(Base):
+    __tablename__ = "verification_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    repository_id: Mapped[int] = mapped_column(
+        ForeignKey("repositories.id", ondelete="CASCADE"), index=True
+    )
+    commit_sha: Mapped[str] = mapped_column(String(40), index=True)
+    issue_number: Mapped[int] = mapped_column(Integer, index=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    baseline_exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    baseline_stdout: Mapped[str] = mapped_column(Text, default="")
+    baseline_stderr: Mapped[str] = mapped_column(Text, default="")
+    patched_exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    patched_stdout: Mapped[str] = mapped_column(Text, default="")
+    patched_stderr: Mapped[str] = mapped_column(Text, default="")
+    patch_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    patch_diff: Mapped[str] = mapped_column(Text, default="")
+    duration_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    sandbox_image: Mapped[str] = mapped_column(String(255))
+    error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProofReport(Base):
+    __tablename__ = "proof_reports"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    verification_run_id: Mapped[int] = mapped_column(
+        ForeignKey("verification_runs.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    verdict: Mapped[str] = mapped_column(String(30), index=True)
+    hypothesis: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str] = mapped_column(Text)
+    baseline_summary: Mapped[str] = mapped_column(Text)
+    patched_summary: Mapped[str] = mapped_column(Text)
+    confidence: Mapped[str] = mapped_column(String(20), default="high")
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

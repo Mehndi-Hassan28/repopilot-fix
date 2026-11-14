@@ -233,3 +233,21 @@ class SandboxExecutionResult(BaseModel):
     image: str
     error_message: str | None = None
     created_at: str
+
+
+class PatchFileResult(BaseModel):
+    file_path: str
+    original_sha256: str
+    patched_sha256: str
+    hunks_applied: int
+    lines_added: int
+    lines_deleted: int
+
+
+class PatchApplicationResult(BaseModel):
+    success: bool
+    changed_files: list[str]
+    patch_hash: str
+    failure_reason: str | None = None
+    applied_at: str
+    file_results: list[PatchFileResult] = []
