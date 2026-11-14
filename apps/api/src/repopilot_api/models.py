@@ -183,7 +183,19 @@ class VerificationRun(Base):
     user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True
     )
-    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    spec_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    approved_spec_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    approved_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejection_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    test_command: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    hypothesis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    max_retries: Mapped[int] = mapped_column(Integer, default=2, server_default="2")
     baseline_exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     baseline_stdout: Mapped[str] = mapped_column(Text, default="")
     baseline_stderr: Mapped[str] = mapped_column(Text, default="")
@@ -192,9 +204,15 @@ class VerificationRun(Base):
     patched_stderr: Mapped[str] = mapped_column(Text, default="")
     patch_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     patch_diff: Mapped[str] = mapped_column(Text, default="")
+    patches_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
     duration_seconds: Mapped[float] = mapped_column(Float, default=0.0)
     sandbox_image: Mapped[str] = mapped_column(String(255))
     error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    cancellation_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -215,4 +233,21 @@ class ProofReport(Base):
     patched_summary: Mapped[str] = mapped_column(Text)
     confidence: Mapped[str] = mapped_column(String(20), default="high")
     evidence_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class VerificationAuditEvent(Base):
+    __tablename__ = "verification_audit_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    verification_run_id: Mapped[int] = mapped_column(
+        ForeignKey("verification_runs.id", ondelete="CASCADE"), index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(50), index=True)
+    actor_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    from_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    details_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -354,3 +354,142 @@ class ProofOfFixResult(BaseModel):
     is_persisted: bool = False
     persistence_error: str | None = None
     created_at: str
+
+
+class VerificationJobStatus(StrEnum):
+    DRAFT = "draft"
+    PENDING_APPROVAL = "pending_approval"
+    APPROVED = "approved"
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
+    REJECTED = "rejected"
+
+
+class VerificationAuditEventType(StrEnum):
+    CREATED = "created"
+    SPEC_UPDATED = "spec_updated"
+    SUBMITTED_FOR_APPROVAL = "submitted_for_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    QUEUED = "queued"
+    STARTED = "started"
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    RETRIED = "retried"
+    RECOVERED = "recovered"
+
+
+class VerificationCreateRequest(BaseModel):
+    commit_sha: str
+    issue_number: int
+    test_command: list[str]
+    patches: list[PatchProposal] | ProposedFix
+    hypothesis: str | None = None
+    sandbox_image: str | None = None
+    timeout_seconds: int = 30
+    auto_submit_approval: bool = True
+    idempotency_key: str | None = None
+
+    @field_validator("commit_sha")
+    @classmethod
+    def validate_commit_sha(cls, value: str) -> str:
+        clean = value.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", clean):
+            raise ValueError("commit_sha must be a valid 40-character hex string.")
+        return clean
+
+    @field_validator("issue_number")
+    @classmethod
+    def validate_issue_number(cls, value: int) -> int:
+        if type(value) is not int or value < 1:
+            raise ValueError("issue_number must be a positive integer.")
+        return value
+
+    @field_validator("test_command")
+    @classmethod
+    def validate_test_command(cls, value: list[str]) -> list[str]:
+        if not value or not isinstance(value, list):
+            raise ValueError("test_command must be a non-empty list of tokens.")
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("test_command tokens must be non-empty strings.")
+        return value
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def validate_timeout(cls, value: int) -> int:
+        if type(value) is not int or value < 1 or value > 60:
+            raise ValueError("timeout_seconds must be an integer between 1 and 60 seconds.")
+        return value
+
+
+class VerificationApprovalRequest(BaseModel):
+    expected_spec_hash: str | None = None
+    auto_queue: bool = True
+    comment: str | None = None
+
+
+class VerificationRejectionRequest(BaseModel):
+    reason: str = ""
+
+
+class VerificationCancelRequest(BaseModel):
+    reason: str = ""
+
+
+class VerificationAuditEventRead(BaseModel):
+    id: int
+    verification_run_id: int
+    event_type: str
+    actor_user_id: int | None
+    from_status: str | None
+    to_status: str | None
+    details: dict = {}
+    created_at: str
+
+
+class ProofReportRead(BaseModel):
+    id: int
+    verification_run_id: int
+    verdict: str
+    hypothesis: str
+    summary: str
+    baseline_summary: str
+    patched_summary: str
+    confidence: str
+    evidence: dict
+    created_at: str
+
+
+class VerificationRunRead(BaseModel):
+    id: int
+    repository_id: int
+    commit_sha: str
+    issue_number: int
+    user_id: int | None
+    status: str
+    spec_hash: str | None
+    approved_spec_hash: str | None
+    approved_by_user_id: int | None
+    approved_at: str | None
+    rejection_reason: str | None
+    test_command: list[str]
+    sandbox_image: str
+    duration_seconds: float
+    baseline_exit_code: int | None
+    patched_exit_code: int | None
+    patch_hash: str | None
+    retry_count: int
+    max_retries: int
+    error_message: str | None
+    cancelled_at: str | None
+    cancelled_by_user_id: int | None
+    cancellation_reason: str | None
+    report: ProofReportRead | None = None
+    created_at: str
+    updated_at: str

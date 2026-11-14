@@ -1,4 +1,5 @@
 import json
+from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
@@ -32,8 +33,21 @@ from repopilot_api.schemas import (
     RepositoryRead,
 )
 from repopilot_api.security import AuthContext, configured_origins, get_current_auth, require_csrf
+from repopilot_api.verification_router import router as verification_router
+from repopilot_api.verification_service import VerificationJobManager
 
-app = FastAPI(title="RepoPilot Fix API", version="0.2.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        with SessionLocal() as db:
+            VerificationJobManager.recover_stale_jobs(db)
+    except Exception:
+        pass
+    yield
+
+
+app = FastAPI(title="RepoPilot Fix API", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=sorted(configured_origins()),
@@ -42,6 +56,7 @@ app.add_middleware(
     allow_headers=["Content-Type", "X-CSRF-Token"],
 )
 app.include_router(auth_router)
+app.include_router(verification_router)
 
 
 @app.get("/health", tags=["system"])

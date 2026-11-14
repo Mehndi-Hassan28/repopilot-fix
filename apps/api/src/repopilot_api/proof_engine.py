@@ -9,6 +9,7 @@ Orchestrates deterministic dual-sandbox verification:
 6. Generates reproducible cryptographic evidence report and persists to database models.
 """
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -47,6 +48,10 @@ logger = logging.getLogger(__name__)
 
 class ProofOfFixError(Exception):
     """Base exception for Proof-of-Fix engine errors."""
+
+
+class ProofOfFixCancelledError(ProofOfFixError):
+    """Raised when a verification run is cancelled while executing."""
 
 
 class TestOutputParser:
@@ -195,6 +200,8 @@ class ProofOfFixEngine:
         self,
         request: ProofOfFixRequest,
         db: Session | None = None,
+        verification_run: VerificationRun | None = None,
+        cancellation_token: asyncio.Event | None = None,
     ) -> ProofOfFixResult:
         """Run complete Proof-of-Fix verification lifecycle with deterministic state transitions."""
         run_id = f"proof_{uuid.uuid4().hex[:12]}"
@@ -239,9 +246,9 @@ class ProofOfFixEngine:
                 "Cannot resolve repository files: request.files is None and db is None."
             )
 
-        # 3. Create VerificationRun DB Record if db session is provided
-        vrun: VerificationRun | None = None
-        if db is not None:
+        # 3. Create or attach VerificationRun DB Record
+        vrun: VerificationRun | None = verification_run
+        if vrun is None and db is not None:
             try:
                 vrun = VerificationRun(
                     repository_id=request.repository_id,
@@ -258,6 +265,11 @@ class ProofOfFixEngine:
                 db.refresh(vrun)
             except Exception as db_init_exc:
                 logger.warning("Failed to initialize VerificationRun in DB: %s", db_init_exc)
+        elif vrun is not None:
+            vrun.patch_diff = combined_diff
+            vrun.patch_hash = patch_hash
+            if not vrun.sandbox_image:
+                vrun.sandbox_image = getattr(self.runner, "image", "default")
 
         # Workspaces tracking for guaranteed cleanup
         baseline_ws: str | None = None
@@ -278,9 +290,15 @@ class ProofOfFixEngine:
         confidence = "low"
 
         try:
+            if cancellation_token and cancellation_token.is_set():
+                raise ProofOfFixCancelledError("Verification cancelled before baseline start.")
+
             # 4. Prepare Baseline Workspace
             stage = VerificationStage.PREPARING_BASELINE
             baseline_ws = self.manager.create_workspace(f"{run_id}_base", files)
+
+            if cancellation_token and cancellation_token.is_set():
+                raise ProofOfFixCancelledError("Verification cancelled during baseline setup.")
 
             # 5. Run Baseline Sandbox
             stage = VerificationStage.RUNNING_BASELINE
@@ -338,6 +356,11 @@ class ProofOfFixEngine:
                     "not a clean test failure."
                 )
             else:
+                if cancellation_token and cancellation_token.is_set():
+                    raise ProofOfFixCancelledError(
+                        "Verification cancelled before patch application."
+                    )
+
                 # Bug reproduced in baseline! Now prepare identical patched workspace
                 stage = VerificationStage.PREPARING_PATCHED
                 patched_ws = self.manager.create_workspace(f"{run_id}_patch", files)
@@ -355,6 +378,11 @@ class ProofOfFixEngine:
                     patch_app_res = None
 
                 if patch_app_res is not None and patch_app_res.success:
+                    if cancellation_token and cancellation_token.is_set():
+                        raise ProofOfFixCancelledError(
+                            "Verification cancelled before patched execution."
+                        )
+
                     # 7. Run Patched Sandbox with identical command and environment
                     stage = VerificationStage.RUNNING_PATCHED
                     patched_res = await self.runner.run(patched_ws, exec_req)
@@ -508,12 +536,13 @@ class ProofOfFixEngine:
         # 9. Persist to Database if session is available
         if db is not None and vrun is not None:
             try:
-                db_status = (
-                    "passed"
-                    if verdict == ProofVerdict.VERIFIED_FIX
-                    else ("timed_out" if verdict == ProofVerdict.TIMEOUT else "failed")
-                )
-                vrun.status = db_status
+                if verification_run is None:
+                    db_status = (
+                        "passed"
+                        if verdict == ProofVerdict.VERIFIED_FIX
+                        else ("timed_out" if verdict == ProofVerdict.TIMEOUT else "failed")
+                    )
+                    vrun.status = db_status
                 vrun.duration_seconds = duration
                 vrun.baseline_exit_code = evidence.baseline_exit_code
                 vrun.baseline_stdout = evidence.baseline_stdout
