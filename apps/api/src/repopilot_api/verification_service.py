@@ -501,6 +501,8 @@ class VerificationJobManager:
         run_id: int,
         runner: SandboxRunner | None = None,
         scratch_root: str | None = None,
+        user_id: int | None = None,
+        fixture_registry: object | None = None,
     ) -> ProofOfFixResult:
         """Execute an approved, queued verification job with strict security and state controls."""
         run = db.get(VerificationRun, run_id)
@@ -587,6 +589,21 @@ class VerificationJobManager:
                 "Real Docker execution is disabled in normal API flows. "
                 "Set ALLOW_DOCKER_VERIFICATION_EXECUTION=true after security review."
             )
+
+        # Guard: Execution Policy Checks (user auth, repo trust, trusted fixture integrity)
+        from repopilot_api.fixture_registry import ExecutionPolicyGuard, TrustedFixtureRegistry
+
+        active_registry = (
+            fixture_registry
+            if isinstance(fixture_registry, TrustedFixtureRegistry)
+            else None
+        )
+        ExecutionPolicyGuard.validate_all(
+            db=db,
+            run=run,
+            user_id=user_id,
+            registry=active_registry,
+        )
 
         # Transition to RUNNING
         prev_status = run.status

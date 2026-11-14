@@ -321,7 +321,9 @@ async def execute_verification(
     _get_run_or_404(db, repository_id, verification_id)
 
     try:
-        result = await VerificationJobManager.execute_job(db, verification_id)
+        result = await VerificationJobManager.execute_job(
+            db, verification_id, user_id=auth.user.id
+        )
         return result
     except VerificationSpecificationMismatchError as spec_err:
         raise HTTPException(status.HTTP_409_CONFLICT, str(spec_err)) from spec_err
