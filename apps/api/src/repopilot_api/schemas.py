@@ -251,3 +251,106 @@ class PatchApplicationResult(BaseModel):
     failure_reason: str | None = None
     applied_at: str
     file_results: list[PatchFileResult] = []
+
+
+class ProofVerdict(StrEnum):
+    VERIFIED_FIX = "verified_fix"
+    UNREPRODUCED = "unreproduced"
+    FIX_FAILED = "fix_failed"
+    REGRESSION_DETECTED = "regression_detected"
+    PATCH_APPLICATION_ERROR = "patch_error"
+    TIMEOUT = "timed_out"
+    ERROR = "error"
+    INCONCLUSIVE = "inconclusive"
+
+
+class VerificationStage(StrEnum):
+    INITIALIZED = "initialized"
+    PREPARING_BASELINE = "preparing_baseline"
+    RUNNING_BASELINE = "running_baseline"
+    ANALYZING_BASELINE = "analyzing_baseline"
+    PREPARING_PATCHED = "preparing_patched"
+    RUNNING_PATCHED = "running_patched"
+    ANALYZING_PATCHED = "analyzing_patched"
+    EVALUATING_VERDICT = "evaluating_verdict"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+
+
+class TestMetricsSchema(BaseModel):
+    total: int | None = None
+    passed: int | None = None
+    failed: int | None = None
+    errors: int | None = None
+    failed_test_ids: list[str] = []
+    failure_type: str | None = None
+    summary: str = ""
+
+
+class ProofEvidence(BaseModel):
+    repository_id: int
+    commit_sha: str
+    issue_number: int
+    patch_hash: str
+    sandbox_image: str
+    test_command: list[str]
+    baseline_exit_code: int | None = None
+    baseline_stdout: str = ""
+    baseline_stderr: str = ""
+    baseline_metrics: TestMetricsSchema | None = None
+    baseline_failure_type: str | None = None
+    patched_exit_code: int | None = None
+    patched_stdout: str = ""
+    patched_stderr: str = ""
+    patched_metrics: TestMetricsSchema | None = None
+    patched_failure_type: str | None = None
+    resolved_test_ids: list[str] = []
+    new_failed_test_ids: list[str] = []
+    unresolved_test_ids: list[str] = []
+    changed_files: list[str] = []
+    duration_seconds: float = 0.0
+    uncertainty_reasons: list[str] = []
+
+
+class ProofOfFixRequest(BaseModel):
+    repository_id: int
+    commit_sha: str
+    issue_number: int
+    test_command: list[str]
+    patches: list[PatchProposal] | ProposedFix
+    hypothesis: str | None = None
+    user_id: int | None = None
+    timeout_seconds: int = 30
+    environment: dict[str, str] = {}
+    files: dict[str, str] | None = None
+
+    @field_validator("commit_sha")
+    @classmethod
+    def validate_commit_sha(cls, value: str) -> str:
+        clean = value.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", clean):
+            raise ValueError("commit_sha must be a valid 40-character hex string.")
+        return clean
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def validate_timeout(cls, value: int) -> int:
+        if type(value) is not int or value < 1 or value > 60:
+            raise ValueError("timeout_seconds must be an integer between 1 and 60 seconds.")
+        return value
+
+
+class ProofOfFixResult(BaseModel):
+    run_id: str
+    verdict: ProofVerdict
+    confidence: str
+    summary: str
+    stage: VerificationStage
+    evidence: ProofEvidence
+    error_message: str | None = None
+    verification_run_id: int | None = None
+    proof_report_id: int | None = None
+    is_persisted: bool = False
+    persistence_error: str | None = None
+    created_at: str
