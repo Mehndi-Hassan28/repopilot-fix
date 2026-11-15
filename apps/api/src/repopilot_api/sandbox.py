@@ -642,32 +642,46 @@ class DockerSandboxRunner(SandboxRunner):
         return removed_containers
 
     @staticmethod
-    async def _force_remove_container(container_name: str) -> bool:
+    async def _force_remove_container(container_name: str, max_attempts: int = 5) -> bool:
         """Forcibly remove a Docker container, returning True on success."""
+        for attempt in range(max_attempts):
+            try:
+                cleanup_proc = await asyncio.create_subprocess_exec(
+                    "docker",
+                    "rm",
+                    "-f",
+                    container_name,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await cleanup_proc.wait()
+                if cleanup_proc.returncode == 0:
+                    return True
+            except Exception as exc:
+                logger.warning(
+                    "Failed to execute force-removal for container %s (attempt %s): %s",
+                    container_name,
+                    attempt + 1,
+                    exc,
+                )
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(0.5)
+
+        # Final verification: check if container is truly gone
         try:
-            cleanup_proc = await asyncio.create_subprocess_exec(
+            chk = await asyncio.create_subprocess_exec(
                 "docker",
-                "rm",
+                "ps",
+                "-a",
+                "-q",
                 "-f",
-                container_name,
-                stdout=asyncio.subprocess.DEVNULL,
+                f"name=^/{container_name}$",
+                stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            await cleanup_proc.wait()
-            if cleanup_proc.returncode != 0:
-                logger.warning(
-                    "Docker container %s force-removal exited with code %s",
-                    container_name,
-                    cleanup_proc.returncode,
-                )
-                return False
-            return True
-        except Exception as exc:
-            logger.warning(
-                "Failed to execute force-removal for container %s: %s",
-                container_name,
-                exc,
-            )
+            out, _ = await chk.communicate()
+            return not bool(out.strip())
+        except Exception:
             return False
 
     async def run(
@@ -760,11 +774,8 @@ class DockerSandboxRunner(SandboxRunner):
                 except (asyncio.CancelledError, Exception):
                     pass
 
-                # Forcibly remove container on timeout
-                await self._force_remove_container(container_name)
-
-                # Terminate and reap host process if still alive
-                if process.returncode is None:
+                # Terminate and reap host process if still alive first
+                if process is not None and process.returncode is None:
                     try:
                         process.kill()
                     except Exception:
@@ -773,6 +784,9 @@ class DockerSandboxRunner(SandboxRunner):
                         await process.wait()
                     except Exception:
                         pass
+
+                # Forcibly remove container on timeout
+                await self._force_remove_container(container_name)
 
                 return SandboxExecutionResult(
                     run_id=run_id,
@@ -803,12 +817,6 @@ class DockerSandboxRunner(SandboxRunner):
             )
 
         finally:
-            # Assured cleanup: remove container with cancellation shield
-            try:
-                await asyncio.shield(self._force_remove_container(container_name))
-            except Exception:
-                pass
-
             # Reap host subprocess if still alive
             if process is not None and process.returncode is None:
                 try:
@@ -816,6 +824,12 @@ class DockerSandboxRunner(SandboxRunner):
                     await asyncio.shield(process.wait())
                 except Exception:
                     pass
+
+            # Assured cleanup: remove container with cancellation shield
+            try:
+                await asyncio.shield(self._force_remove_container(container_name))
+            except Exception:
+                pass
 
             await self.limiter.release(run_id)
 

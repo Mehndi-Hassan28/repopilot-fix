@@ -246,7 +246,7 @@ async def test_docker_runtime_execution_timeout(tmp_path, docker_test_image):
         runner = DockerSandboxRunner(image=docker_test_image, scratch_root=scratch)
         req = SandboxExecutionRequest(
             command=["python", "-m", "unittest", "test_timeout.py"],
-            timeout_seconds=2,
+            timeout_seconds=5,
         )
         result = await runner.run(ws, req)
 
