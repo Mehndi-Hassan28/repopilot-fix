@@ -8,11 +8,10 @@ Enforces:
 5. Strict fail-closed policy enforcement on any missing or inconsistent metadata.
 """
 
-from dataclasses import dataclass, field
 import hashlib
 import json
 import logging
-from typing import ClassVar
+from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -84,7 +83,7 @@ def compute_snapshot_hash(files: dict[str, str]) -> str:
         clean_path = path.replace("\\", "/").strip()
         content = files[path]
         file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        hasher.update(f"{clean_path}:{file_hash}\n".encode("utf-8"))
+        hasher.update(f"{clean_path}:{file_hash}\n".encode())
     return hasher.hexdigest()
 
 
@@ -231,7 +230,9 @@ class TrustedFixtureRegistry:
         # 2. Search for candidates matching repo and commit
         matched_candidate: TrustedFixture | None = None
         for candidate in self._fixtures.values():
-            if candidate.matches_repo(repository_owner, repository_name) and candidate.matches_commit(commit_sha):
+            if candidate.matches_repo(
+                repository_owner, repository_name
+            ) and candidate.matches_commit(commit_sha):
                 if actual_hash == candidate.content_hash:
                     return candidate
                 # Only consider it a tampered candidate if file paths match the fixture
@@ -242,7 +243,8 @@ class TrustedFixtureRegistry:
         if matched_candidate is not None:
             raise ModifiedFixtureError(
                 f"Trusted fixture '{matched_candidate.fixture_id}' matched repository and commit, "
-                f"but snapshot content hash mismatch (expected {matched_candidate.content_hash}, got {actual_hash}). "
+                f"but snapshot content hash mismatch "
+                f"(expected {matched_candidate.content_hash}, got {actual_hash}). "
                 "Fixture snapshot has been altered."
             )
 
@@ -250,13 +252,14 @@ class TrustedFixtureRegistry:
         for other in self._fixtures.values():
             if actual_hash == other.content_hash:
                 raise UntrustedFixtureError(
-                    f"Snapshot content matches fixture '{other.fixture_id}', but commit SHA '{commit_sha}' "
-                    f"is not approved for this fixture."
+                    f"Snapshot content matches fixture '{other.fixture_id}', "
+                    f"but commit SHA '{commit_sha}' is not approved for this fixture."
                 )
 
         raise UntrustedFixtureError(
-            f"No approved trusted fixture found matching repository '{repository_owner}/{repository_name}' "
-            f"at commit '{commit_sha}'. Arbitrary repositories cannot be executed in sandbox."
+            f"No approved trusted fixture found matching repository "
+            f"'{repository_owner}/{repository_name}' at commit '{commit_sha}'. "
+            "Arbitrary repositories cannot be executed in sandbox."
         )
 
     def _init_defaults(self):
@@ -284,7 +287,9 @@ class TrustedFixtureRegistry:
             TrustedFixture.create(
                 fixture_id="fixture_calc_pkg",
                 name="Calculator Addition Package Fixture",
-                description="Package-structured 2-file calculator with subtraction bug in src/calc.py",
+                description=(
+                    "Package-structured 2-file calculator with subtraction bug in src/calc.py"
+                ),
                 repository_owner="acme",
                 repository_name="app",
                 commit_sha=sample_sha,
@@ -338,7 +343,9 @@ class TrustedFixtureRegistry:
 
         # 3. Root-style Calc Passing Fixture (from sandbox_fixtures.py)
         calc_root_passing_files = {
-            "calc.py": ('def add(a: int, b: int) -> int:\n    """Add two numbers."""\n    return a + b\n'),
+            "calc.py": (
+                'def add(a: int, b: int) -> int:\n    """Add two numbers."""\n    return a + b\n'
+            ),
             "test_calc.py": (
                 "import unittest\n"
                 "from calc import add\n\n\n"
@@ -415,8 +422,10 @@ class TrustedFixtureRegistry:
                         "class TestNonRootUser(unittest.TestCase):\n"
                         "    def test_user_is_not_root(self):\n"
                         "        uid = os.getuid()\n"
-                        "        self.assertNotEqual(uid, 0, 'Security violation: running as root!')\n"
-                        "        self.assertGreaterEqual(uid, 1000, f'Expected non-root uid, got {uid}')\n\n\n"
+                        "        self.assertNotEqual("
+                        "uid, 0, 'Security violation: running as root!')\n"
+                        "        self.assertGreaterEqual("
+                        "uid, 1000, f'Expected non-root uid, got {uid}')\n\n\n"
                         "if __name__ == '__main__':\n"
                         "    unittest.main()\n"
                     )
@@ -536,7 +545,8 @@ class TrustedFixtureRegistry:
                         "class TestOutputFlood(unittest.TestCase):\n"
                         "    def test_flood(self):\n"
                         "        for _ in range(2000):\n"
-                        "            sys.stdout.write('Flood output line testing bounded stream capture.\\n')\n"
+                        "            sys.stdout.write("
+                        "'Flood output line testing bounded stream capture.\\n')\n"
                         "        sys.stdout.flush()\n\n\n"
                         "if __name__ == '__main__':\n"
                         "    unittest.main()\n"
@@ -609,8 +619,8 @@ class ExecutionPolicyGuard:
             raise PolicyMetadataError("Repository metadata is missing.")
         if not registry.is_repository_trusted(repository.owner, repository.name):
             raise UntrustedRepositoryError(
-                f"Repository '{repository.owner}/{repository.name}' is not in the trusted repository allowlist. "
-                "Execution of arbitrary untrusted repositories in Docker sandbox is strictly rejected."
+                f"Repository '{repository.owner}/{repository.name}' is not in the trusted "
+                "repository allowlist. Arbitrary repositories cannot be executed in sandbox."
             )
 
     @classmethod
@@ -626,13 +636,15 @@ class ExecutionPolicyGuard:
             compute_spec_hash,
         )
 
-        if run.status not in (
+        allowed_spec_states = (
             VerificationJobStatus.APPROVED.value,
             VerificationJobStatus.QUEUED.value,
-        ):
+            VerificationJobStatus.RUNNING.value,
+        )
+        if run.status not in allowed_spec_states:
             raise VerificationStateError(
                 f"Cannot execute verification in state '{run.status}'. "
-                f"Must be '{VerificationJobStatus.APPROVED.value}' or '{VerificationJobStatus.QUEUED.value}'."
+                f"Must be one of: {allowed_spec_states}."
             )
         if not run.approved_spec_hash:
             raise VerificationSecurityError("No execution without human approval.")
@@ -747,7 +759,8 @@ class ExecutionPolicyGuard:
             )
             if not job:
                 raise PolicyMetadataError(
-                    f"No completed indexing job found for repo {run.repository_id} at {run.commit_sha}."
+                    f"No completed indexing job found for repo {run.repository_id} "
+                    f"at {run.commit_sha}."
                 )
             indexed = db.scalars(select(IndexedFile).where(IndexedFile.job_id == job.id)).all()
             if not indexed:

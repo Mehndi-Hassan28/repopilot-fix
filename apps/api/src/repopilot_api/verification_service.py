@@ -9,7 +9,7 @@ import time
 from collections import defaultdict
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from repopilot_api.models import (
@@ -495,6 +495,67 @@ class VerificationJobManager:
         return run
 
     @classmethod
+    def claim_next_job(
+        cls,
+        db: Session,
+        worker_id: str | None = None,
+    ) -> VerificationRun | None:
+        """Atomically claim one queued verification job using database transactions.
+
+        Guarantees mutual exclusion between concurrent workers using row-level locking
+        (FOR UPDATE SKIP LOCKED on PostgreSQL) and atomic conditional status update.
+        Transitions status: QUEUED -> RUNNING.
+        Records an immutable STARTED verification audit event.
+        Returns the claimed VerificationRun or None if no queued job is available.
+        """
+        bind = db.get_bind()
+        dialect_name = bind.dialect.name if bind is not None else ""
+
+        query = (
+            select(VerificationRun.id)
+            .where(VerificationRun.status == VerificationJobStatus.QUEUED.value)
+            .order_by(VerificationRun.created_at.asc())
+        )
+        if dialect_name == "postgresql":
+            query = query.with_for_update(skip_locked=True)
+
+        candidate_id = db.scalar(query.limit(1))
+        if candidate_id is None:
+            return None
+
+        # Atomic conditional update: strictly fails if another worker updated the status first
+        stmt = (
+            update(VerificationRun)
+            .where(
+                VerificationRun.id == candidate_id,
+                VerificationRun.status == VerificationJobStatus.QUEUED.value,
+            )
+            .values(status=VerificationJobStatus.RUNNING.value)
+        )
+        result = db.execute(stmt)
+        if result.rowcount == 0:
+            db.rollback()
+            return None
+
+        run = db.get(VerificationRun, candidate_id)
+        if run is None:
+            db.rollback()
+            return None
+
+        log_audit_event(
+            db,
+            run_id=run.id,
+            event_type=VerificationAuditEventType.STARTED.value,
+            actor_user_id=run.approved_by_user_id,
+            from_status=VerificationJobStatus.QUEUED.value,
+            to_status=VerificationJobStatus.RUNNING.value,
+            details={"worker_id": worker_id or "worker"},
+        )
+        db.commit()
+        db.refresh(run)
+        return run
+
+    @classmethod
     async def execute_job(
         cls,
         db: Session,
@@ -509,15 +570,16 @@ class VerificationJobManager:
         if run is None:
             raise VerificationStateError("Verification run not found.")
 
-        # Guard: Run must be APPROVED or QUEUED
-        if run.status not in (
+        # Guard: Run must be APPROVED, QUEUED, or RUNNING (if claimed by worker)
+        allowed_exec_states = (
             VerificationJobStatus.APPROVED.value,
             VerificationJobStatus.QUEUED.value,
-        ):
+            VerificationJobStatus.RUNNING.value,
+        )
+        if run.status not in allowed_exec_states:
             raise VerificationStateError(
                 f"Cannot execute verification in state '{run.status}'. "
-                f"Must be '{VerificationJobStatus.APPROVED.value}' or "
-                f"'{VerificationJobStatus.QUEUED.value}'."
+                f"Must be one of: {allowed_exec_states}."
             )
 
         # Guard: Human approval check
@@ -605,18 +667,19 @@ class VerificationJobManager:
             registry=active_registry,
         )
 
-        # Transition to RUNNING
+        # Transition to RUNNING if not already transitioned (e.g., claimed by worker)
         prev_status = run.status
-        run.status = VerificationJobStatus.RUNNING.value
-        log_audit_event(
-            db,
-            run_id=run.id,
-            event_type=VerificationAuditEventType.STARTED.value,
-            actor_user_id=run.approved_by_user_id,
-            from_status=prev_status,
-            to_status=run.status,
-        )
-        db.commit()
+        if prev_status != VerificationJobStatus.RUNNING.value:
+            run.status = VerificationJobStatus.RUNNING.value
+            log_audit_event(
+                db,
+                run_id=run.id,
+                event_type=VerificationAuditEventType.STARTED.value,
+                actor_user_id=run.approved_by_user_id,
+                from_status=prev_status,
+                to_status=run.status,
+            )
+            db.commit()
 
         # Register active cancellation token
         cancel_event = await register_cancellation_event(run_id)

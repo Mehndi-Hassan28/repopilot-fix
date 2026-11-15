@@ -13,34 +13,26 @@ Verifies:
 10. Valid trusted fixture passes all policy checks and executes cleanly.
 """
 
-from datetime import UTC, datetime
 import json
+
 import pytest
 
 from repopilot_api.fixture_registry import (
-    ExecutionPolicyGuard,
     FixtureRegistryError,
     ModifiedFixtureError,
     PolicyMetadataError,
-    TrustedFixture,
-    TrustedFixtureRegistry,
     UnauthorizedUserError,
     UntrustedFixtureError,
     UntrustedRepositoryError,
-    compute_snapshot_hash,
-    get_default_fixture_registry,
 )
 from repopilot_api.models import (
-    AuthSession,
     IndexedFile,
     IndexingJob,
     Repository,
     RepositoryAccess,
     User,
-    VerificationRun,
 )
 from repopilot_api.sandbox import (
-    DEFAULT_SANDBOX_IMAGE,
     MockSandboxRunner,
 )
 from repopilot_api.schemas import (
@@ -48,7 +40,6 @@ from repopilot_api.schemas import (
     VerificationCreateRequest,
     VerificationJobStatus,
 )
-from repopilot_api.security import AuthContext
 from repopilot_api.verification_service import (
     VerificationJobManager,
     VerificationSecurityError,
@@ -56,7 +47,6 @@ from repopilot_api.verification_service import (
     VerificationStateError,
     compute_spec_hash,
 )
-
 
 SAMPLE_COMMIT_SHA = "a" * 40
 
@@ -321,7 +311,7 @@ async def test_unauthorized_user_rejected(test_session):
             )
         assert "has no authorization record" in str(exc_info.value)
 
-        # 2. User with access only to a completely different repository (cross-tenant access attempt)
+        # 2. User with access only to a different repo (cross-tenant access attempt)
         other_repo = make_repo(db, github_id=998, owner="other-org", name="other-repo")
         cross_tenant_user = make_user(db)
         add_access(db, other_repo, cross_tenant_user, role="owner")
@@ -481,7 +471,7 @@ async def test_missing_metadata_fails_closed(test_session):
 @pytest.mark.anyio
 async def test_trusted_fixture_passes_policy_and_executes(test_session):
     """Approved verification matching trusted fixture executes cleanly."""
-    from repopilot_api.schemas import SandboxExecutionState, ProofVerdict
+    from repopilot_api.schemas import ProofVerdict, SandboxExecutionState
 
     class StepRunner(MockSandboxRunner):
         def __init__(self):
