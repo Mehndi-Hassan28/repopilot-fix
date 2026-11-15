@@ -289,7 +289,10 @@ async def test_mock_sandbox_runner_timed_out(tmp_path):
     assert "timed out" in result.error_message
 
 
-def test_docker_runner_hardened_argument_construction():
+def test_docker_runner_hardened_argument_construction(monkeypatch):
+    monkeypatch.setattr(os, "getuid", lambda: 1000)
+    monkeypatch.setattr(os, "getgid", lambda: 1000)
+
     runner = DockerSandboxRunner(
         image=DEFAULT_SANDBOX_IMAGE,
         memory_limit="512m",
@@ -490,6 +493,62 @@ def test_get_default_sandbox_user():
     assert isinstance(user, str)
     assert user not in ("0", "0:0", "root")
     assert ":" in user
+
+
+def test_get_default_sandbox_user_environments(monkeypatch):
+    # 1. Standard desktop non-root host user
+    monkeypatch.setattr(os, "getuid", lambda: 1000)
+    monkeypatch.setattr(os, "getgid", lambda: 1000)
+    assert get_default_sandbox_user() == "1000:1000"
+
+    # 2. GitHub Actions runner non-root host user
+    monkeypatch.setattr(os, "getuid", lambda: 1001)
+    monkeypatch.setattr(os, "getgid", lambda: 1001)
+    assert get_default_sandbox_user() == "1001:1001"
+
+    # 3. Custom non-root host UID/GID
+    monkeypatch.setattr(os, "getuid", lambda: 1005)
+    monkeypatch.setattr(os, "getgid", lambda: 1008)
+    assert get_default_sandbox_user() == "1005:1008"
+
+    # 4. Host root execution must safely fallback to non-root 1000:1000
+    monkeypatch.setattr(os, "getuid", lambda: 0)
+    monkeypatch.setattr(os, "getgid", lambda: 0)
+    assert get_default_sandbox_user() == "1000:1000"
+
+    # 5. Non-POSIX environments without getuid/getgid
+    monkeypatch.delattr(os, "getuid", raising=False)
+    monkeypatch.delattr(os, "getgid", raising=False)
+    assert get_default_sandbox_user() == "1000:1000"
+
+
+def test_docker_runner_user_parameter_and_docker_args(monkeypatch):
+    # Explicit custom non-root user override
+    custom_runner = DockerSandboxRunner(
+        image=DEFAULT_SANDBOX_IMAGE,
+        user="1005:1005",
+    )
+    assert custom_runner.user == "1005:1005"
+    args = custom_runner.build_docker_args(
+        container_name="test_custom_user",
+        workspace_path="/tmp/test",
+        env={},
+        command=["echo", "1"],
+    )
+    assert "--user" in args and args[args.index("--user") + 1] == "1005:1005"
+
+    # Simulated GitHub Actions runner host environment
+    monkeypatch.setattr(os, "getuid", lambda: 1001)
+    monkeypatch.setattr(os, "getgid", lambda: 1001)
+    gha_runner = DockerSandboxRunner(image=DEFAULT_SANDBOX_IMAGE)
+    assert gha_runner.user == "1001:1001"
+    gha_args = gha_runner.build_docker_args(
+        container_name="test_gha_user",
+        workspace_path="/tmp/test",
+        env={},
+        command=["echo", "1"],
+    )
+    assert "--user" in gha_args and gha_args[gha_args.index("--user") + 1] == "1001:1001"
 
 
 def test_docker_runner_rejects_root_execution():
