@@ -7,9 +7,9 @@ import logging
 import os
 import time
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from repopilot_api.models import (
@@ -50,13 +50,49 @@ APPROVED_SANDBOX_IMAGES = {
     "repopilot-sandbox:test",
 }
 
-# Concurrency limits
+# Concurrency and lease limits
 MAX_REPO_CONCURRENT_JOBS = int(os.getenv("MAX_REPO_CONCURRENT_JOBS", "1"))
-MAX_GLOBAL_CONCURRENT_JOBS = int(os.getenv("MAX_GLOBAL_CONCURRENT_JOBS", "2"))
+# FIX 1 (SEC-01): Default global concurrency set to 1 for 4 GB RAM laptop safety
+MAX_GLOBAL_CONCURRENT_JOBS = int(os.getenv("MAX_GLOBAL_CONCURRENT_JOBS", "1"))
+DEFAULT_LEASE_DURATION_SECONDS = int(os.getenv("WORKER_LEASE_SECONDS", "30"))
+LEGACY_JOB_GRACE_SECONDS = int(os.getenv("LEGACY_JOB_GRACE_SECONDS", "300"))
+# 64-bit stable identifier for PostgreSQL transaction-scoped advisory lock ('RPFIXCLM')
+CLAIM_SLOT_ADVISORY_LOCK_ID = 742918471928471928
+
+_LEASE_COLUMNS_SUPPORT_CACHE: dict[str, bool] = {}
+
+
+def has_lease_columns(db: Session) -> bool:
+    """Check if the connected database has durable lease columns applied.
+
+    FIX 5 (SEC-05): Fails closed (returns False) when database is unattached
+    or columns are missing from verification_runs.
+    """
+    bind = db.get_bind()
+    if bind is None:
+        return False
+    cache_key = str(bind.url)
+    if cache_key in _LEASE_COLUMNS_SUPPORT_CACHE:
+        return _LEASE_COLUMNS_SUPPORT_CACHE[cache_key]
+
+    try:
+        from sqlalchemy import inspect
+
+        inspector = inspect(bind)
+        cols = {c["name"] for c in inspector.get_columns("verification_runs")}
+        has_cols = "lease_expires_at" in cols and "fencing_token" in cols
+        _LEASE_COLUMNS_SUPPORT_CACHE[cache_key] = has_cols
+        return has_cols
+    except Exception:
+        return False
 
 
 class VerificationServiceError(Exception):
     """Base exception for verification service operations."""
+
+
+class VerificationSchemaError(VerificationServiceError):
+    """Raised when database schema is missing required durable worker lease columns (SEC-05)."""
 
 
 class VerificationSecurityError(VerificationServiceError):
@@ -445,6 +481,7 @@ class VerificationJobManager:
         run.cancelled_at = datetime.now(UTC)
         run.cancelled_by_user_id = user_id
         run.cancellation_reason = reason[:500] if reason else "Cancelled by user."
+        run.fencing_token = (run.fencing_token or 0) + 1
 
         # If currently running, signal the cancellation event
         if prev_status == VerificationJobStatus.RUNNING.value:
@@ -499,21 +536,90 @@ class VerificationJobManager:
         cls,
         db: Session,
         worker_id: str | None = None,
+        lease_duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS,
+        max_global_concurrent: int | None = None,
+        max_repo_concurrent: int | None = None,
     ) -> VerificationRun | None:
         """Atomically claim one queued verification job using database transactions.
 
-        Guarantees mutual exclusion between concurrent workers using row-level locking
-        (FOR UPDATE SKIP LOCKED on PostgreSQL) and atomic conditional status update.
-        Transitions status: QUEUED -> RUNNING.
-        Records an immutable STARTED verification audit event.
-        Returns the claimed VerificationRun or None if no queued job is available.
+        Enforces:
+        1. Fail-closed schema check (FIX 5 / SEC-05): raises VerificationSchemaError if migration
+           0007 columns are missing, strictly avoiding uncoordinated execution.
+        2. Transaction-scoped PostgreSQL advisory lock (FIX 1 / SEC-01): serializes global slot
+           check and claim across all concurrent worker processes.
+        3. Bounded global execution slots: counts active running jobs with valid leases.
+        4. Per-repository concurrency slot: prevents concurrent runs on same repo.
+        5. Legacy protection (FIX 4 / SEC-04): unleased jobs older than grace window cannot starve
+           slots.
+        6. Mutual exclusion between concurrent workers using row-level locking
+           (FOR UPDATE SKIP LOCKED on PostgreSQL) and atomic conditional status update.
+        7. Durable lease metadata: assigns worker_id, increments fencing_token,
+           and sets lease_expires_at.
+        8. Records an immutable STARTED verification audit event.
+        Returns the claimed VerificationRun or None if no queued job is available or slots are full.
         """
+        if not has_lease_columns(db):
+            raise VerificationSchemaError(
+                "Database schema is missing required durable worker lease columns "
+                "(from migration 0007). Run 'alembic upgrade head' before starting "
+                "the verification worker."
+            )
+
+        max_global = (
+            max_global_concurrent
+            if max_global_concurrent is not None
+            else MAX_GLOBAL_CONCURRENT_JOBS
+        )
+        max_repo = (
+            max_repo_concurrent
+            if max_repo_concurrent is not None
+            else MAX_REPO_CONCURRENT_JOBS
+        )
+        now = datetime.now(UTC)
+
         bind = db.get_bind()
         dialect_name = bind.dialect.name if bind is not None else ""
 
+        # FIX 1 (SEC-01): Acquire advisory lock on PostgreSQL to serialize slot check + claim
+        if dialect_name == "postgresql":
+            db.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_id)"),
+                {"lock_id": CLAIM_SLOT_ADVISORY_LOCK_ID},
+            )
+
+        # 1. Check Global Concurrency Slots
+        # FIX 4 (SEC-04): Active unexpired leases count, plus legacy unleased within grace period
+        active_running_filter = (
+            VerificationRun.status == VerificationJobStatus.RUNNING.value,
+            or_(
+                VerificationRun.lease_expires_at > now,
+                and_(
+                    VerificationRun.lease_expires_at.is_(None),
+                    VerificationRun.updated_at > now - timedelta(seconds=LEGACY_JOB_GRACE_SECONDS),
+                ),
+            ),
+        )
+        global_active = (
+            db.scalar(select(func.count(VerificationRun.id)).where(*active_running_filter))
+            or 0
+        )
+        if global_active >= max_global:
+            return None
+
+        # 2. Find repositories currently executing an active job
+        active_repo_ids_query = (
+            select(VerificationRun.repository_id)
+            .where(*active_running_filter)
+            .group_by(VerificationRun.repository_id)
+            .having(func.count(VerificationRun.id) >= max_repo)
+        )
+
         query = (
             select(VerificationRun.id)
-            .where(VerificationRun.status == VerificationJobStatus.QUEUED.value)
+            .where(
+                VerificationRun.status == VerificationJobStatus.QUEUED.value,
+                VerificationRun.repository_id.not_in(active_repo_ids_query),
+            )
             .order_by(VerificationRun.created_at.asc())
         )
         if dialect_name == "postgresql":
@@ -523,14 +629,21 @@ class VerificationJobManager:
         if candidate_id is None:
             return None
 
-        # Atomic conditional update: strictly fails if another worker updated the status first
+        # 3. Atomic conditional update: strictly fails if another worker updated first
+        lease_expires = now + timedelta(seconds=lease_duration_seconds)
         stmt = (
             update(VerificationRun)
             .where(
                 VerificationRun.id == candidate_id,
                 VerificationRun.status == VerificationJobStatus.QUEUED.value,
             )
-            .values(status=VerificationJobStatus.RUNNING.value)
+            .values(
+                status=VerificationJobStatus.RUNNING.value,
+                worker_id=worker_id or "worker",
+                fencing_token=VerificationRun.fencing_token + 1,
+                last_heartbeat_at=now,
+                lease_expires_at=lease_expires,
+            )
         )
         result = db.execute(stmt)
         if result.rowcount == 0:
@@ -549,11 +662,156 @@ class VerificationJobManager:
             actor_user_id=run.approved_by_user_id,
             from_status=VerificationJobStatus.QUEUED.value,
             to_status=VerificationJobStatus.RUNNING.value,
-            details={"worker_id": worker_id or "worker"},
+            details={
+                "worker_id": worker_id or "worker",
+                "fencing_token": run.fencing_token,
+                "lease_expires_at": lease_expires.isoformat(),
+            },
         )
         db.commit()
         db.refresh(run)
         return run
+
+    @classmethod
+    def heartbeat(
+        cls,
+        db: Session,
+        run_id: int,
+        worker_id: str,
+        fencing_token: int,
+        lease_duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS,
+    ) -> bool:
+        """Refresh active job lease timestamp.
+
+        Fails and returns False if:
+        - The job was cancelled or finished (status != RUNNING)
+        - The fencing token does not match (another worker reclaimed or reconciled the job)
+        - The worker_id does not match
+        Uses short-lived database transactions.
+        """
+        if not has_lease_columns(db):
+            return True
+
+        now = datetime.now(UTC)
+        new_lease_expires = now + timedelta(seconds=lease_duration_seconds)
+        stmt = (
+            update(VerificationRun)
+            .where(
+                VerificationRun.id == run_id,
+                VerificationRun.status == VerificationJobStatus.RUNNING.value,
+                VerificationRun.worker_id == worker_id,
+                VerificationRun.fencing_token == fencing_token,
+            )
+            .values(
+                last_heartbeat_at=now,
+                lease_expires_at=new_lease_expires,
+            )
+        )
+        result = db.execute(stmt)
+        if result.rowcount == 0:
+            db.rollback()
+            return False
+        db.commit()
+        return True
+
+    @classmethod
+    def reconcile_stale_jobs(
+        cls,
+        db: Session,
+        actor_user_id: int | None = None,
+        reconcile_legacy: bool = False,
+    ) -> list[int]:
+        """Detect and reconcile stale RUNNING jobs whose worker lease has expired.
+
+        Recovers crashed worker jobs safely by:
+        1. Querying jobs in RUNNING state with lease_expires_at < now.
+        2. FIX 4 (SEC-04): Safely reconciles abandoned legacy unleased RUNNING jobs
+           (older than LEGACY_JOB_GRACE_SECONDS, or explicitly when reconcile_legacy=True).
+        3. Strictly avoiding blind retries of ambiguous executions:
+           transitions to FAILED (interrupted) with explanatory audit log.
+        4. Fencing: increments fencing_token so stale workers cannot resurrect the job.
+        5. Guaranteeing idempotency via conditional update.
+        Returns list of recovered job IDs.
+        """
+        if not has_lease_columns(db):
+            return []
+
+        now = datetime.now(UTC)
+
+        # Build condition for stale/abandoned runs
+        if reconcile_legacy:
+            stale_condition = or_(
+                VerificationRun.lease_expires_at < now,
+                VerificationRun.lease_expires_at.is_(None),
+            )
+        else:
+            stale_condition = or_(
+                VerificationRun.lease_expires_at < now,
+                and_(
+                    VerificationRun.lease_expires_at.is_(None),
+                    VerificationRun.updated_at < now - timedelta(seconds=LEGACY_JOB_GRACE_SECONDS),
+                ),
+            )
+
+        stale_runs = db.scalars(
+            select(VerificationRun).where(
+                VerificationRun.status == VerificationJobStatus.RUNNING.value,
+                stale_condition,
+            )
+        ).all()
+
+        recovered_ids: list[int] = []
+        for stale in stale_runs:
+            curr_token = stale.fencing_token or 0
+            is_legacy = stale.lease_expires_at is None
+            err_msg = (
+                "Execution interrupted: legacy unleased run reconciled after worker deployment."
+                if is_legacy
+                else (
+                    "Execution interrupted: worker lease expired without completion "
+                    "(worker crashed or lost heartbeat)."
+                )
+            )
+            stmt = (
+                update(VerificationRun)
+                .where(
+                    VerificationRun.id == stale.id,
+                    VerificationRun.status == VerificationJobStatus.RUNNING.value,
+                    VerificationRun.fencing_token == curr_token,
+                )
+                .values(
+                    status=VerificationJobStatus.FAILED.value,
+                    error_message=err_msg,
+                    fencing_token=curr_token + 1,
+                )
+            )
+            res = db.execute(stmt)
+            if res.rowcount > 0:
+                log_audit_event(
+                    db,
+                    run_id=stale.id,
+                    event_type=VerificationAuditEventType.RECOVERED.value,
+                    actor_user_id=actor_user_id or stale.approved_by_user_id,
+                    from_status=VerificationJobStatus.RUNNING.value,
+                    to_status=VerificationJobStatus.FAILED.value,
+                    details={
+                        "reason": "legacy_abandoned" if is_legacy else "lease_expired",
+                        "previous_worker_id": stale.worker_id,
+                        "fencing_token": curr_token + 1,
+                    },
+                )
+                db.commit()
+                recovered_ids.append(stale.id)
+                logger.info(
+                    "Reconciled stale job %d (legacy=%s) from worker '%s' to FAILED.",
+                    stale.id,
+                    is_legacy,
+                    stale.worker_id,
+                )
+            else:
+                db.rollback()
+
+        return recovered_ids
 
     @classmethod
     async def execute_job(

@@ -6,6 +6,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     PrimaryKeyConstraint,
     String,
@@ -173,6 +174,9 @@ class ChatMessage(Base):
 
 class VerificationRun(Base):
     __tablename__ = "verification_runs"
+    __table_args__ = (
+        Index("ix_verification_runs_status_lease_expires_at", "status", "lease_expires_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     repository_id: Mapped[int] = mapped_column(
@@ -213,6 +217,14 @@ class VerificationRun(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     cancellation_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    fencing_token: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

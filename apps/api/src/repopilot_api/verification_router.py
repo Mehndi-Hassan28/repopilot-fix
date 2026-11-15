@@ -106,6 +106,14 @@ def _run_to_read(run: VerificationRun, report: ProofReport | None = None) -> Ver
         cancelled_at=run.cancelled_at.isoformat() if run.cancelled_at else None,
         cancelled_by_user_id=run.cancelled_by_user_id,
         cancellation_reason=run.cancellation_reason,
+        worker_id=getattr(run, "worker_id", None),
+        fencing_token=getattr(run, "fencing_token", 0),
+        lease_expires_at=(
+            run.lease_expires_at.isoformat() if getattr(run, "lease_expires_at", None) else None
+        ),
+        last_heartbeat_at=(
+            run.last_heartbeat_at.isoformat() if getattr(run, "last_heartbeat_at", None) else None
+        ),
         report=report_read,
         created_at=run.created_at.isoformat(),
         updated_at=run.updated_at.isoformat(),

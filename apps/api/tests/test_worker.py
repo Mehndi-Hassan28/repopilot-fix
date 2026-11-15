@@ -680,12 +680,13 @@ async def test_worker_blocks_docker_when_disabled(test_session, monkeypatch):
 # ==============================================================================
 
 
-def test_worker_cli_entrypoint(monkeypatch):
+def test_worker_cli_entrypoint(test_session, monkeypatch):
     """Worker CLI entrypoint runs correctly with --once flag."""
     import sys
 
     from repopilot_api.worker import main
 
+    monkeypatch.setattr("repopilot_api.worker.SessionLocal", test_session)
     monkeypatch.setattr(
         sys, "argv", ["repopilot_worker", "--once", "--poll-interval", "0.01"]
     )

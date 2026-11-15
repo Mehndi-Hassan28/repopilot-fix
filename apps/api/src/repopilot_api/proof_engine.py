@@ -272,6 +272,11 @@ class ProofOfFixEngine:
                 vrun.sandbox_image = getattr(self.runner, "image", "default")
 
         # Workspaces tracking for guaranteed cleanup
+        effective_verification_id = (
+            verification_run.id
+            if verification_run is not None
+            else (request.verification_run_id or (vrun.id if vrun is not None else None))
+        )
         baseline_ws: str | None = None
         patched_ws: str | None = None
 
@@ -302,10 +307,13 @@ class ProofOfFixEngine:
 
             # 5. Run Baseline Sandbox
             stage = VerificationStage.RUNNING_BASELINE
+            effective_worker_id = request.worker_id or getattr(self.runner, "worker_id", None)
             exec_req = SandboxExecutionRequest(
                 command=request.test_command,
                 timeout_seconds=request.timeout_seconds,
                 environment=request.environment,
+                verification_run_id=effective_verification_id,
+                worker_id=effective_worker_id,
             )
             baseline_res = await self.runner.run(baseline_ws, exec_req)
 

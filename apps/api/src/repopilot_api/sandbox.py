@@ -482,6 +482,7 @@ class DockerSandboxRunner(SandboxRunner):
         user: str | None = None,
         limiter: SandboxConcurrencyLimiter | None = None,
         scratch_root: str | None = None,
+        worker_id: str | None = None,
     ):
         self.image = ImageValidator.validate(image, require_digest=require_digest)
         self.memory_limit = memory_limit
@@ -492,9 +493,15 @@ class DockerSandboxRunner(SandboxRunner):
             raise SandboxSecurityError("Root execution inside container is strictly forbidden.")
         self.limiter = limiter or GLOBAL_CONCURRENCY_LIMITER
         self.scratch_root = scratch_root
+        self.worker_id = worker_id
 
     def build_docker_args(
-        self, container_name: str, workspace_path: str, env: dict[str, str], command: list[str]
+        self,
+        container_name: str,
+        workspace_path: str,
+        env: dict[str, str],
+        command: list[str],
+        labels: dict[str, str] | None = None,
     ) -> list[str]:
         """Construct the hardened Docker execution arguments array."""
         args = [
@@ -528,12 +535,111 @@ class DockerSandboxRunner(SandboxRunner):
             "/workspace",
         ]
 
+        if labels:
+            for l_key, l_val in labels.items():
+                args.extend(["--label", f"{l_key}={l_val}"])
+
         for k, v in env.items():
             args.extend(["-e", f"{k}={v}"])
 
         args.append(self.image)
         args.extend(command)
         return args
+
+    @staticmethod
+    async def safe_cleanup_containers(
+        run_id: str | int | None = None,
+        worker_id: str | None = None,
+    ) -> list[str]:
+        """Safely inspect and cleanup ONLY proven RepoPilot Fix verification containers.
+
+        Strictly enforces:
+        1. Never runs broad Docker cleanup or container prune.
+        2. Never touches unrelated containers (MongoDB, MySQL, user databases, etc.).
+        3. Proves ownership via mandatory labels and container name prefix:
+           - repopilot.managed=true
+           - repopilot.creator=repopilot_fix
+           - name starts with 'repopilot_sbx_'
+           - matches run_id and worker_id if provided.
+        4. If ownership cannot be verified with certainty, skips the container.
+        """
+        removed_containers: list[str] = []
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "ps",
+                "-a",
+                "--filter",
+                "label=repopilot.managed=true",
+                "--filter",
+                "label=repopilot.creator=repopilot_fix",
+                "--format",
+                "{{.ID}}\t{{.Names}}\t{{.Labels}}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode != 0 or not stdout:
+                return removed_containers
+
+            for line in stdout.decode("utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 3:
+                    continue
+                c_id, c_name, c_labels_str = parts[0], parts[1], parts[2]
+
+                if not c_name.startswith("repopilot_sbx_"):
+                    logger.warning(
+                        "Skipping container %s (%s): name does not start with 'repopilot_sbx_'.",
+                        c_id,
+                        c_name,
+                    )
+                    continue
+
+                labels_dict = {}
+                for item in c_labels_str.split(","):
+                    if "=" in item:
+                        k, v = item.split("=", 1)
+                        labels_dict[k.strip()] = v.strip()
+
+                if labels_dict.get("repopilot.creator") != "repopilot_fix":
+                    logger.warning(
+                        "Skipping container %s: repopilot.creator label missing or invalid.",
+                        c_id,
+                    )
+                    continue
+
+                if run_id is not None:
+                    if labels_dict.get("repopilot.verification_run_id") != str(run_id):
+                        continue
+
+                if worker_id is not None:
+                    if labels_dict.get("repopilot.worker_id") != str(worker_id):
+                        continue
+
+                # Verified ownership: safe to remove
+                rm_proc = await asyncio.create_subprocess_exec(
+                    "docker",
+                    "rm",
+                    "-f",
+                    c_id,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await rm_proc.wait()
+                if rm_proc.returncode == 0:
+                    removed_containers.append(c_id)
+                    logger.info("Safely removed verified RepoPilot container %s (%s)", c_id, c_name)
+                else:
+                    logger.warning("Failed to remove verified container %s", c_id)
+
+        except (FileNotFoundError, Exception) as exc:
+            logger.warning("Docker safe cleanup check skipped: %s", exc)
+
+        return removed_containers
 
     @staticmethod
     async def _force_remove_container(container_name: str) -> bool:
@@ -578,11 +684,24 @@ class DockerSandboxRunner(SandboxRunner):
             workspace_path, scratch_root=self.scratch_root
         )
 
+        v_run_id = getattr(request, "verification_run_id", None)
+        v_run_label = str(v_run_id) if v_run_id is not None else "standalone"
+        w_id = getattr(request, "worker_id", None) or self.worker_id or "worker"
+
+        labels = {
+            "repopilot.managed": "true",
+            "repopilot.creator": "repopilot_fix",
+            "repopilot.verification_run_id": v_run_label,
+            "repopilot.worker_id": str(w_id),
+            "repopilot.created_at": created_at,
+        }
+
         docker_args = self.build_docker_args(
             container_name=container_name,
             workspace_path=validated_workspace,
             env=sanitized_env,
             command=validated_command,
+            labels=labels,
         )
 
         await self.limiter.acquire(run_id)
@@ -701,7 +820,7 @@ class DockerSandboxRunner(SandboxRunner):
             await self.limiter.release(run_id)
 
 
-def get_sandbox_runner() -> SandboxRunner:
+def get_sandbox_runner(worker_id: str | None = None) -> SandboxRunner:
     """Factory creating the appropriate runner according to server environment configuration."""
     provider = os.getenv("SANDBOX_PROVIDER", "mock").lower()
     scratch_root = os.getenv("SANDBOX_SCRATCH_ROOT", DEFAULT_SCRATCH_ROOT)
@@ -716,6 +835,7 @@ def get_sandbox_runner() -> SandboxRunner:
             memory_limit=memory,
             cpu_limit=cpu,
             scratch_root=scratch_root,
+            worker_id=worker_id,
         )
     raise SandboxConfigurationError(
         f"Unsupported SANDBOX_PROVIDER '{provider}'. Use 'mock' or 'docker'."

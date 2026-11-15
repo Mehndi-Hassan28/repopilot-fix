@@ -212,6 +212,8 @@ class SandboxExecutionRequest(BaseModel):
     command: list[str]
     timeout_seconds: int = 30
     environment: dict[str, str] = {}
+    verification_run_id: int | None = None
+    worker_id: str | None = None
 
     @field_validator("command")
     @classmethod
@@ -333,6 +335,8 @@ class ProofOfFixRequest(BaseModel):
     timeout_seconds: int = 30
     environment: dict[str, str] = {}
     files: dict[str, str] | None = None
+    verification_run_id: int | None = None
+    worker_id: str | None = None
 
     @field_validator("commit_sha")
     @classmethod
@@ -499,6 +503,10 @@ class VerificationRunRead(BaseModel):
     cancelled_at: str | None
     cancelled_by_user_id: int | None
     cancellation_reason: str | None
+    worker_id: str | None = None
+    fencing_token: int = 0
+    lease_expires_at: str | None = None
+    last_heartbeat_at: str | None = None
     report: ProofReportRead | None = None
     created_at: str
     updated_at: str
