@@ -6,14 +6,17 @@ from fastapi import HTTPException
 
 from repopilot_api import main
 from repopilot_api.chat import (
+    DEFAULT_CHAT_TIMEOUT_SECONDS,
     MAX_COMPLETION_TOKENS,
     MAX_HISTORY_CHARS,
     MAX_HISTORY_MESSAGES,
     CompatibleCloudProvider,
+    Evidence,
     Provider,
     ProviderError,
     _search_tokens,
     ask,
+    get_chat_timeout_seconds,
     get_provider,
     retrieve,
 )
@@ -28,6 +31,12 @@ from repopilot_api.models import (
 )
 from repopilot_api.schemas import ChatMessageRead, ChatQuestion, ChatSessionCreate
 from repopilot_api.security import AuthContext
+
+
+@pytest.fixture(autouse=True)
+def fast_retry_sleep(monkeypatch):
+    """Speed up tests by mocking backoff sleep."""
+    monkeypatch.setattr("repopilot_api.chat._sleep_backoff", lambda d: None)
 
 
 def add_repo(session, github_id=1, full_name="team/project"):
@@ -836,3 +845,614 @@ def test_cloud_provider_general_and_coding_modes(monkeypatch):
     coding_answer = provider.answer_coding("How does quicksort work?")
     assert "General AI" in coding_answer
     assert captured[-1]["json"]["messages"][0]["role"] == "system"
+
+
+# ==============================================================================
+# Gemini / OpenAI-Compatible Response Parsing & Timeout Regression Tests
+# ==============================================================================
+
+
+def test_cloud_provider_configurable_timeout_default_and_override(monkeypatch):
+    """Test that cloud provider timeout is configurable via CHAT_TIMEOUT_SECONDS."""
+    # 1. Default timeout is 60 seconds
+    monkeypatch.delenv("CHAT_TIMEOUT_SECONDS", raising=False)
+    assert get_chat_timeout_seconds() == 60.0
+    assert DEFAULT_CHAT_TIMEOUT_SECONDS == 60.0
+    provider = CompatibleCloudProvider("https://llm.example/v1", "key", "model")
+    assert provider.timeout == 60.0
+
+    # 2. Configurable override
+    monkeypatch.setenv("CHAT_TIMEOUT_SECONDS", "45.5")
+    assert get_chat_timeout_seconds() == 45.5
+    provider2 = CompatibleCloudProvider("https://llm.example/v1", "key", "model")
+    assert provider2.timeout == 45.5
+
+    # 3. Invalid/negative fallback to default
+    monkeypatch.setenv("CHAT_TIMEOUT_SECONDS", "-10")
+    assert get_chat_timeout_seconds() == 60.0
+    monkeypatch.setenv("CHAT_TIMEOUT_SECONDS", "not-a-number")
+    assert get_chat_timeout_seconds() == 60.0
+
+    # 4. Upper and lower bound clamping
+    monkeypatch.setenv("CHAT_TIMEOUT_SECONDS", "1000")  # exceeds max 300s
+    assert get_chat_timeout_seconds() == 300.0
+    monkeypatch.setenv("CHAT_TIMEOUT_SECONDS", "1.0")  # below min 5s
+    assert get_chat_timeout_seconds() == 5.0
+
+
+def test_cloud_provider_missing_content_key_handled(monkeypatch):
+    """Gemini response without 'content' key in message must not crash with KeyError."""
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant"},  # 'content' key omitted
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", lambda *a, **kw: FakeResponse())
+    provider = CompatibleCloudProvider("https://llm.example/v1", "key", "model")
+    with pytest.raises(ProviderError, match="null or missing content"):
+        provider.answer_general("hello")
+
+
+def test_cloud_provider_null_content_handled(monkeypatch):
+    """Gemini response with content=null must not crash and raise a clear ProviderError."""
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": None},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", lambda *a, **kw: FakeResponse())
+    provider = CompatibleCloudProvider("https://llm.example/v1", "key", "model")
+    with pytest.raises(ProviderError, match="null or missing content"):
+        provider.answer_coding("explain quicksort")
+
+
+def test_cloud_provider_empty_string_content_not_fabricated(monkeypatch):
+    """Empty or whitespace-only response must not be accepted or fabricated."""
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "   "},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", lambda *a, **kw: FakeResponse())
+    provider = CompatibleCloudProvider("https://llm.example/v1", "key", "model")
+    with pytest.raises(ProviderError, match="Model returned an empty response"):
+        provider.answer_general("hello")
+
+
+def test_cloud_provider_reasoning_tokens_length_exhaustion_detected(monkeypatch):
+    """When finish_reason is length and content is null/empty, token exhaustion is explained."""
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": None},
+                        "finish_reason": "length",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", lambda *a, **kw: FakeResponse())
+    provider = CompatibleCloudProvider("https://llm.example/v1", "key", "model")
+    with pytest.raises(
+        ProviderError, match="maximum token limit without producing a visible answer"
+    ):
+        provider.answer_general("complex question")
+
+
+def test_cloud_provider_safety_filter_blocking_handled(monkeypatch):
+    """Safety filter blocks are identified with a helpful error."""
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": None},
+                        "finish_reason": "safety",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", lambda *a, **kw: FakeResponse())
+    provider = CompatibleCloudProvider("https://llm.example/v1", "key", "model")
+    with pytest.raises(ProviderError, match="safety filters"):
+        provider.answer_coding("harmful code")
+
+
+def test_cloud_provider_empty_choices_handled(monkeypatch):
+    """Response with empty choices list raises ProviderError."""
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": []}
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", lambda *a, **kw: FakeResponse())
+    provider = CompatibleCloudProvider("https://llm.example/v1", "key", "model")
+    with pytest.raises(ProviderError, match="empty choices list"):
+        provider.answer_general("hello")
+
+
+def test_cloud_provider_malformed_json_response_handled(monkeypatch):
+    """Non-dict JSON response structure is safely handled."""
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return ["not", "a", "dict"]
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", lambda *a, **kw: FakeResponse())
+    provider = CompatibleCloudProvider("https://llm.example/v1", "key", "model")
+    with pytest.raises(ProviderError, match="invalid JSON response structure"):
+        provider.answer_general("hello")
+
+
+def test_cloud_provider_all_four_modes_use_configured_timeout_and_parsing(monkeypatch):
+    """Ensure all four chat modes (general, coding, repo with evidence, issue analysis)
+    use the configured timeout and parse normal completions cleanly."""
+    captured = []
+
+    class FakeResponse:
+        def __init__(self, content):
+            self._content = content
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": self._content},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+
+    def fake_post(url, **kwargs):
+        captured.append({"url": url, **kwargs})
+        # If it's issue analysis, return valid JSON
+        if "analyze" in kwargs["json"]["messages"][0]["content"].lower():
+            content = json.dumps({
+                "summary": "Issue summary",
+                "root_cause_hypothesis": "Hypothesis: bug cause",
+                "relevant_files": [{"path": "file.py", "start_line": 1, "end_line": 5}],
+                "proposed_fix": {
+                    "explanation": "Fix explanation",
+                    "patches": [{"file_path": "file.py", "explanation": "test", "diff": "diff"}],
+                },
+                "confidence": "high",
+                "confidence_reasoning": "Reasoning",
+                "limitations": ["None"],
+            })
+        else:
+            content = "Answer with citation [1]."
+        return FakeResponse(content)
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", fake_post)
+    provider = CompatibleCloudProvider(
+        "https://llm.example/v1", "test-key", "test-model", timeout=42.0
+    )
+
+    # 1. General mode
+    ans_gen = provider.answer_general("hello")
+    assert "citation [1]" in ans_gen
+    assert captured[-1]["timeout"] == 42.0
+
+    # 2. Coding mode
+    ans_code = provider.answer_coding("def foo(): pass")
+    assert "citation [1]" in ans_code
+    assert captured[-1]["timeout"] == 42.0
+
+    # 3. Repository mode with evidence
+    evidence = [Evidence(path="file.py", start_line=1, end_line=5, content="code", score=1.0)]
+    ans_repo = provider.answer_with_context("query", evidence, [])
+    assert "citation [1]" in ans_repo
+    assert captured[-1]["timeout"] == 42.0
+
+    # 4. Issue analysis mode
+    issue = {"number": 1, "title": "Bug", "body": "Fix it"}
+    ans_issue = provider.analyze_issue(issue, evidence)
+    assert "Issue summary" in ans_issue
+    assert captured[-1]["timeout"] == 42.0
+
+
+def test_cloud_provider_reasoning_effort_passed_when_configured(monkeypatch):
+    """When CHAT_REASONING_EFFORT is configured, reasoning_effort is passed to the provider."""
+    captured = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Hello!"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(
+        "repopilot_api.chat.httpx.post",
+        lambda *args, **kwargs: (captured.append(kwargs), FakeResponse())[1],
+    )
+    provider = CompatibleCloudProvider(
+        "https://llm.example/v1",
+        "key",
+        "gemini-3.8-flash",
+        reasoning_effort="low",
+    )
+    res = provider.answer_general("Hi")
+    assert res == "Hello!"
+    assert captured[0]["json"]["reasoning_effort"] == "low"
+
+    # Also test via environment variable
+    monkeypatch.setenv("CHAT_REASONING_EFFORT", "minimal")
+    provider2 = CompatibleCloudProvider(
+        "https://llm.example/v1",
+        "key",
+        "gemini-3.8-flash",
+    )
+    assert provider2.reasoning_effort == "minimal"
+    captured.clear()
+    provider2.answer_general("Hi again")
+    assert captured[0]["json"]["reasoning_effort"] == "minimal"
+
+
+def test_cloud_provider_content_list_of_parts_parsed(monkeypatch):
+    """Provider returning content as a list of text parts is safely reconstructed."""
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {"type": "text", "text": "Part 1. "},
+                                {"type": "text", "text": "Part 2."},
+                            ],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", lambda *a, **kw: FakeResponse())
+    provider = CompatibleCloudProvider("https://llm.example/v1", "key", "model")
+    res = provider.answer_general("Hello")
+    assert res == "Part 1. Part 2."
+
+
+def test_cloud_provider_delta_fallback_parsed(monkeypatch):
+    """Provider returning delta instead of message is safely handled."""
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "Delta text response."},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", lambda *a, **kw: FakeResponse())
+    provider = CompatibleCloudProvider("https://llm.example/v1", "key", "model")
+    res = provider.answer_general("Hello")
+    assert res == "Delta text response."
+
+
+def test_cloud_provider_structured_diagnostics_logging(monkeypatch, caplog):
+    """Ensure safe structured logging captures duration, timeout type, and finish reason."""
+    import logging
+
+    # 1. Successful completion log
+    class FakeSuccess:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Good answer."},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", lambda *a, **kw: FakeSuccess())
+    provider = CompatibleCloudProvider("https://llm.example/v1", "secret-key-12345", "test-model")
+
+    with caplog.at_level(logging.INFO):
+        provider.answer_general("What is Python?")
+        assert any(
+            "Cloud provider completion succeeded" in record.message
+            and "model=test-model" in record.message
+            and "finish_reason=stop" in record.message
+            for record in caplog.records
+        )
+        # Ensure secret key is NEVER logged
+        for record in caplog.records:
+            assert "secret-key-12345" not in record.message
+            assert "Authorization" not in record.message
+
+    caplog.clear()
+
+    # 2. Timeout diagnostic log
+    def mock_timeout(*a, **kw):
+        raise httpx.ReadTimeout("Connection timed out waiting for data")
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", mock_timeout)
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ProviderError):
+            provider.answer_general("Will time out")
+        assert any(
+            "Cloud provider request timed out" in record.message
+            and "timeout_type=ReadTimeout" in record.message
+            and "model=test-model" in record.message
+            for record in caplog.records
+        )
+        for record in caplog.records:
+            assert "secret-key-12345" not in record.message
+
+
+def test_cloud_provider_retry_success_on_http_503(monkeypatch):
+    """First attempt returns transient 503, second attempt succeeds."""
+    calls = []
+
+    def mock_post(*args, **kwargs):
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            req = httpx.Request("POST", "https://llm.example/v1/chat/completions")
+            resp = httpx.Response(
+                503,
+                json={"error": {"message": "The model is overloaded. Please try again later."}},
+                request=req,
+            )
+            raise httpx.HTTPStatusError("Service Unavailable", request=req, response=resp)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Recovered answer."},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+            request=httpx.Request("POST", "https://llm.example/v1/chat/completions"),
+        )
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", mock_post)
+    provider = CompatibleCloudProvider("https://llm.example/v1", "test-key", "gemini-3.8-flash")
+    answer = provider.answer_general("Question")
+    assert answer == "Recovered answer."
+    assert len(calls) == 2
+
+
+def test_cloud_provider_retry_success_on_http_429_with_retry_after(monkeypatch):
+    """Attempt 1 returns 429 with Retry-After header, attempt 2 succeeds."""
+    calls = []
+    sleeps = []
+    monkeypatch.setattr("repopilot_api.chat._sleep_backoff", lambda d: sleeps.append(d))
+
+    def mock_post(*args, **kwargs):
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            req = httpx.Request("POST", "https://llm.example/v1/chat/completions")
+            resp = httpx.Response(
+                429,
+                headers={"Retry-After": "2"},
+                json={"error": {"message": "Rate limit exceeded"}},
+                request=req,
+            )
+            raise httpx.HTTPStatusError("Too Many Requests", request=req, response=resp)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Rate limit recovered."},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+            request=httpx.Request("POST", "https://llm.example/v1/chat/completions"),
+        )
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", mock_post)
+    provider = CompatibleCloudProvider("https://llm.example/v1", "test-key", "gemini-3.8-flash")
+    answer = provider.answer_general("Question")
+    assert answer == "Rate limit recovered."
+    assert len(calls) == 2
+    assert len(sleeps) == 1
+    assert sleeps[0] == 2.0
+
+
+def test_cloud_provider_retry_exhaustion_on_http_503(monkeypatch):
+    """All retry attempts fail on 503, returning clear temporary-unavailability message."""
+    calls = []
+
+    def mock_post(*args, **kwargs):
+        calls.append(len(calls) + 1)
+        req = httpx.Request("POST", "https://llm.example/v1/chat/completions")
+        resp = httpx.Response(
+            503,
+            json={"error": {"message": "The model is overloaded. Please try again later."}},
+            request=req,
+        )
+        raise httpx.HTTPStatusError("Service Unavailable", request=req, response=resp)
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", mock_post)
+    provider = CompatibleCloudProvider(
+        "https://llm.example/v1", "test-key", "gemini-3.8-flash", max_retries=2
+    )
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.answer_general("Question")
+
+    err = str(exc_info.value)
+    assert "The AI service is temporarily overloaded or unavailable (HTTP 503)" in err
+    assert "Please try again in a few moments" in err
+    assert "configured answer provider failed" in err
+    assert len(calls) == 3  # Initial + 2 retries
+
+
+def test_cloud_provider_retry_exhaustion_on_http_502_and_504(monkeypatch):
+    """502 and 504 errors return clear gateway messages upon exhaustion."""
+    def make_mock(status_code):
+        def _mock(*args, **kwargs):
+            req = httpx.Request("POST", "https://llm.example/v1/chat/completions")
+            resp = httpx.Response(status_code, request=req)
+            raise httpx.HTTPStatusError(f"HTTP {status_code}", request=req, response=resp)
+        return _mock
+
+    # Test 502
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", make_mock(502))
+    provider = CompatibleCloudProvider(
+        "https://llm.example/v1", "test-key", "gemini-3.8-flash", max_retries=1
+    )
+    with pytest.raises(ProviderError) as exc502:
+        provider.answer_general("Question")
+    assert "The AI service gateway is temporarily unavailable (HTTP 502)" in str(exc502.value)
+
+    # Test 504
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", make_mock(504))
+    with pytest.raises(ProviderError) as exc504:
+        provider.answer_general("Question")
+    assert "The AI service gateway timed out (HTTP 504)" in str(exc504.value)
+
+
+def test_cloud_provider_non_retryable_errors_fail_immediately(monkeypatch):
+    """Non-transient errors (400, 401, 403, 404, 422) fail in 1 attempt without retries."""
+    for code in (400, 401, 403, 404, 422):
+        calls = []
+
+        def mock_err(*args, **kwargs):
+            calls.append(code)
+            req = httpx.Request("POST", "https://llm.example/v1/chat/completions")
+            resp = httpx.Response(
+                code,
+                json={"error": {"message": f"Client error {code}"}},
+                request=req,
+            )
+            raise httpx.HTTPStatusError(f"Error {code}", request=req, response=resp)
+
+        monkeypatch.setattr("repopilot_api.chat.httpx.post", mock_err)
+        provider = CompatibleCloudProvider(
+            "https://llm.example/v1", "test-key", "test-model", max_retries=3
+        )
+
+        with pytest.raises(ProviderError):
+            provider.answer_general("Question")
+
+        # Must have made exactly ONE call (no retries)
+        assert len(calls) == 1, f"Status {code} was retried unexpectedly!"
+
+
+def test_cloud_provider_timeout_budget_exhaustion_aborts_retries(monkeypatch):
+    """When backoff would exceed the remaining timeout budget, retry is aborted immediately."""
+    calls = []
+
+    def mock_503(*args, **kwargs):
+        calls.append(1)
+        req = httpx.Request("POST", "https://llm.example/v1/chat/completions")
+        resp = httpx.Response(503, request=req)
+        raise httpx.HTTPStatusError("Service Unavailable", request=req, response=resp)
+
+    monkeypatch.setattr("repopilot_api.chat.httpx.post", mock_503)
+    # Low timeout (1.0s) with base backoff of 5.0s -> backoff exceeds timeout
+    provider = CompatibleCloudProvider(
+        "https://llm.example/v1",
+        "test-key",
+        "test-model",
+        timeout=1.0,
+        base_backoff=5.0,
+        max_retries=3,
+    )
+    with pytest.raises(ProviderError) as exc_info:
+        provider.answer_general("Question")
+
+    assert len(calls) == 1  # Cannot retry because backoff exceeds budget
+    assert "The AI service is temporarily overloaded or unavailable" in str(exc_info.value)
+
+
+def test_parse_retry_after_header_formats():
+    """Verify parse_retry_after handles integer, float, HTTP-date, and malformed strings."""
+    from repopilot_api.chat import parse_retry_after
+
+    assert parse_retry_after("5") == 5.0
+    assert parse_retry_after("2.5") == 2.5
+    assert parse_retry_after("0") is None
+    assert parse_retry_after("-1") is None
+    assert parse_retry_after(None) is None
+    assert parse_retry_after("invalid") is None
+    assert parse_retry_after("") is None
+
+    # Future HTTP-date (RFC 7231)
+    from datetime import UTC, datetime, timedelta
+    from email.utils import format_datetime
+    future = datetime.now(UTC) + timedelta(seconds=15)
+    header = format_datetime(future, usegmt=True)
+    parsed = parse_retry_after(header)
+    assert parsed is not None
+    assert 10.0 <= parsed <= 20.0

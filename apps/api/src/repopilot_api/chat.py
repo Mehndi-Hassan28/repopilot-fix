@@ -1,17 +1,27 @@
 """Repository-scoped retrieval and grounded chat providers."""
 
 import json
+import logging
 import math
 import os
+import random
 import re
+import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 
 import httpx
+from dotenv import load_dotenv
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from repopilot_api.models import ChatMessage, ChatSession, IndexedFile, IndexingJob
 from repopilot_api.schemas import ChatModeEnum, IssueAnalysisResult
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 ChatMode = ChatModeEnum
 
@@ -21,8 +31,91 @@ MAX_RESULTS = 5
 MAX_HISTORY_MESSAGES = 8
 MAX_HISTORY_CHARS = 4000
 MAX_AGENT_STEPS = 2
-MAX_COMPLETION_TOKENS = 500
-PROVIDER_TIMEOUT_SECONDS = 20.0
+DEFAULT_CHAT_TIMEOUT_SECONDS = 60.0
+MIN_CHAT_TIMEOUT_SECONDS = 5.0
+MAX_CHAT_TIMEOUT_SECONDS = 300.0
+PROVIDER_TIMEOUT_SECONDS = DEFAULT_CHAT_TIMEOUT_SECONDS
+
+DEFAULT_MAX_COMPLETION_TOKENS = 1500
+MAX_COMPLETION_TOKENS = DEFAULT_MAX_COMPLETION_TOKENS
+
+
+def get_chat_timeout_seconds() -> float:
+    """Read and validate the cloud provider timeout in seconds from environment.
+
+    - Defaults to 60.0 seconds if unset or empty.
+    - Clamped between MIN_CHAT_TIMEOUT_SECONDS (5.0s) and MAX_CHAT_TIMEOUT_SECONDS (300.0s).
+    - Gracefully falls back to default on invalid or non-numeric input.
+    """
+    raw = os.getenv("CHAT_TIMEOUT_SECONDS")
+    if not raw:
+        return DEFAULT_CHAT_TIMEOUT_SECONDS
+    try:
+        val = float(raw.strip())
+        if math.isnan(val) or math.isinf(val) or val <= 0:
+            return DEFAULT_CHAT_TIMEOUT_SECONDS
+        return max(MIN_CHAT_TIMEOUT_SECONDS, min(val, MAX_CHAT_TIMEOUT_SECONDS))
+    except (ValueError, TypeError):
+        return DEFAULT_CHAT_TIMEOUT_SECONDS
+
+
+def get_max_completion_tokens() -> int:
+    """Read completion token limit from environment, defaulting to 1500."""
+    raw = os.getenv("CHAT_MAX_TOKENS")
+    if not raw:
+        return DEFAULT_MAX_COMPLETION_TOKENS
+    try:
+        val = int(raw.strip())
+        return max(100, min(val, 8192))
+    except (ValueError, TypeError):
+        return DEFAULT_MAX_COMPLETION_TOKENS
+
+
+def get_chat_reasoning_effort() -> str | None:
+    """Read reasoning effort setting from environment if configured.
+
+    Google's OpenAI-compatible endpoint supports: 'minimal', 'low', 'medium', 'high', 'none'.
+    Returns None if unset or invalid.
+    """
+    raw = os.getenv("CHAT_REASONING_EFFORT")
+    if not raw:
+        return None
+    val = raw.strip().lower()
+    if val in {"minimal", "low", "medium", "high", "none"}:
+        return val
+    return None
+
+
+TRANSIENT_STATUS_CODES = {429, 502, 503, 504}
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_BASE_BACKOFF_SECONDS = 0.5
+DEFAULT_MAX_BACKOFF_SECONDS = 8.0
+
+
+def parse_retry_after(header_val: str | None) -> float | None:
+    """Parse standard HTTP Retry-After header (seconds integer/float or HTTP-date)."""
+    if not header_val:
+        return None
+    cleaned = header_val.strip()
+    try:
+        val = float(cleaned)
+        if val > 0:
+            return val
+    except ValueError:
+        pass
+    try:
+        dt = parsedate_to_datetime(cleaned)
+        diff = (dt - datetime.now(UTC)).total_seconds()
+        if diff > 0:
+            return diff
+    except Exception:
+        pass
+    return None
+
+
+def _sleep_backoff(delay: float) -> None:
+    """Sleep for backoff duration. Can be intercepted in tests."""
+    time.sleep(delay)
 OPERATION_GROUPS = {
     "delete": {
         "delete",
@@ -561,12 +654,145 @@ class MockProvider(Provider):
         )
 
 
-def _handle_cloud_error(exc: Exception, model: str) -> ProviderError:
+def _parse_completion_response(body: object, model: str, duration: float = 0.0) -> str:
+    """Safely extract assistant message text from an OpenAI-compatible completion response."""
+    if not isinstance(body, dict):
+        raise ValueError("Provider returned an invalid JSON response structure (expected object).")
+
+    if "error" in body and body["error"]:
+        err = body["error"]
+        err_msg = err.get("message") if isinstance(err, dict) else str(err)
+        raise ValueError(f"Provider returned an error: {err_msg}")
+
+    choices = body.get("choices")
+    if choices is None or not isinstance(choices, list) or len(choices) == 0:
+        raise ValueError("Provider returned an empty choices list.")
+
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        raise ValueError("Provider returned an invalid choice structure in completion response.")
+
+    finish_reason = choice.get("finish_reason")
+
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        delta = choice.get("delta")
+        if isinstance(delta, dict) and "content" in delta:
+            message = delta
+        else:
+            text = choice.get("text")
+            if isinstance(text, str) and text.strip():
+                logger.info(
+                    "Cloud provider completion succeeded (choice text fallback): "
+                    "model=%s, duration=%.2fs, finish_reason=%s, length=%d",
+                    model,
+                    duration,
+                    finish_reason or "unknown",
+                    len(text),
+                )
+                return text.strip()
+            raise ValueError("Provider returned an invalid message structure in completion choice.")
+
+    raw_content = message.get("content")
+
+    if isinstance(raw_content, list):
+        parts: list[str] = []
+        for part in raw_content:
+            if isinstance(part, dict) and "text" in part:
+                parts.append(str(part["text"]))
+            elif isinstance(part, str):
+                parts.append(part)
+        raw_content = "".join(parts)
+
+    if raw_content is None:
+        if finish_reason == "length":
+            logger.warning(
+                "Cloud provider token limit reached without content: "
+                "model=%s, duration=%.2fs, finish_reason=%s",
+                model,
+                duration,
+                finish_reason,
+            )
+            raise ValueError(
+                "Model reached maximum token limit without producing a visible answer. "
+                "Consider increasing CHAT_MAX_TOKENS or configuring CHAT_REASONING_EFFORT=low."
+            )
+        if finish_reason in ("safety", "content_filter"):
+            logger.warning(
+                "Cloud provider response blocked by safety filters: "
+                "model=%s, duration=%.2fs, finish_reason=%s",
+                model,
+                duration,
+                finish_reason,
+            )
+            raise ValueError("Response was blocked by provider safety filters.")
+        logger.warning(
+            "Cloud provider returned null/missing content: "
+            "model=%s, duration=%.2fs, finish_reason=%s",
+            model,
+            duration,
+            finish_reason,
+        )
+        raise ValueError("Provider returned a message with null or missing content.")
+
+    if not isinstance(raw_content, str):
+        raise ValueError("Provider returned non-string message content.")
+
+    trimmed = raw_content.strip()
+    if not trimmed:
+        if finish_reason == "length":
+            logger.warning(
+                "Cloud provider token limit reached without content: "
+                "model=%s, duration=%.2fs, finish_reason=%s",
+                model,
+                duration,
+                finish_reason,
+            )
+            raise ValueError(
+                "Model reached maximum token limit without producing a visible answer. "
+                "Consider increasing CHAT_MAX_TOKENS or configuring CHAT_REASONING_EFFORT=low."
+            )
+        if finish_reason in ("safety", "content_filter"):
+            logger.warning(
+                "Cloud provider response blocked by safety filters: "
+                "model=%s, duration=%.2fs, finish_reason=%s",
+                model,
+                duration,
+                finish_reason,
+            )
+            raise ValueError("Response was blocked by provider safety filters.")
+        logger.warning(
+            "Cloud provider returned empty response: "
+            "model=%s, duration=%.2fs, finish_reason=%s",
+            model,
+            duration,
+            finish_reason,
+        )
+        raise ValueError("Model returned an empty response.")
+
+    logger.info(
+        "Cloud provider completion succeeded: "
+        "model=%s, duration=%.2fs, finish_reason=%s, length=%d",
+        model,
+        duration,
+        finish_reason or "unknown",
+        len(raw_content),
+    )
+    return raw_content
+
+
+def _handle_cloud_error(exc: Exception, model: str, duration: float = 0.0) -> ProviderError:
     """Map provider HTTP and connection exceptions to safe, informative ProviderErrors."""
     if isinstance(exc, ProviderError):
         return exc
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
+        logger.warning(
+            "Cloud provider returned HTTP error: model=%s, status=%d, duration=%.2fs",
+            model,
+            status,
+            duration,
+        )
         error_detail = ""
         try:
             body = exc.response.json()
@@ -595,7 +821,7 @@ def _handle_cloud_error(exc: Exception, model: str) -> ProviderError:
         if status == 429:
             msg = (
                 "The configured answer provider failed: Rate limit or quota exceeded (HTTP 429). "
-                "Please try again shortly or check provider billing."
+                "The AI service is temporarily busy. Please try again shortly or check billing."
             )
             if error_detail:
                 msg += f" ({error_detail})"
@@ -605,30 +831,265 @@ def _handle_cloud_error(exc: Exception, model: str) -> ProviderError:
                 f"The configured answer provider failed: Authentication error (HTTP {status}). "
                 "Check CHAT_API_KEY configuration."
             )
+        if status == 503:
+            msg = (
+                "The configured answer provider failed: The AI service is temporarily overloaded "
+                "or unavailable (HTTP 503). Please try again in a few moments."
+            )
+            if error_detail:
+                msg += f" ({error_detail})"
+            return ProviderError(msg)
+        if status == 502:
+            msg = (
+                "The configured answer provider failed: The AI service gateway is temporarily "
+                "unavailable (HTTP 502). Please try again in a few moments."
+            )
+            if error_detail:
+                msg += f" ({error_detail})"
+            return ProviderError(msg)
+        if status == 504:
+            msg = (
+                "The configured answer provider failed: The AI service gateway timed out "
+                "(HTTP 504). Please try again in a few moments."
+            )
+            if error_detail:
+                msg += f" ({error_detail})"
+            return ProviderError(msg)
         msg = f"The configured answer provider failed: Provider returned HTTP {status}."
         if error_detail:
             msg += f" {error_detail}"
         return ProviderError(msg)
     if isinstance(exc, httpx.TimeoutException):
+        timeout_type = type(exc).__name__
+        logger.warning(
+            "Cloud provider request timed out: model=%s, duration=%.2fs, timeout_type=%s",
+            model,
+            duration,
+            timeout_type,
+        )
         return ProviderError(
             "The configured answer provider failed: Request timed out. Please try again."
         )
     if isinstance(exc, httpx.ConnectError):
+        logger.warning(
+            "Cloud provider connection failed: model=%s, duration=%.2fs, exc=%s",
+            model,
+            duration,
+            type(exc).__name__,
+        )
         return ProviderError(
             "The configured answer provider failed: Could not connect to provider endpoint. "
             "Please check CHAT_BASE_URL."
         )
     if isinstance(exc, (ValueError, KeyError, IndexError, TypeError)):
-        return ProviderError(
-            "The configured answer provider failed: Provider returned an "
-            "unexpected or malformed response."
+        detail = str(exc).strip()
+        if detail:
+            detail = re.sub(r"(?:AIza|sk-|key=)[A-Za-z0-9_-]+", "***", detail)
+            detail = detail[:200]
+        logger.warning(
+            "Cloud provider response parsing failed: model=%s, duration=%.2fs, detail=%s",
+            model,
+            duration,
+            detail,
         )
+        prefix = "The configured answer provider failed: "
+        if detail:
+            if not detail.startswith(prefix):
+                return ProviderError(f"{prefix}{detail}")
+            return ProviderError(detail)
+        return ProviderError(
+            f"{prefix}Provider returned an unexpected or malformed response."
+        )
+    logger.error(
+        "Cloud provider unexpected error: model=%s, duration=%.2fs, exc=%s",
+        model,
+        duration,
+        type(exc).__name__,
+    )
     return ProviderError(f"The configured answer provider failed: {type(exc).__name__}.")
 
 
 class CompatibleCloudProvider(Provider):
-    def __init__(self, base_url: str, api_key: str, model: str):
-        self.base_url, self.api_key, self.model = base_url.rstrip("/"), api_key, model
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: float | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        base_backoff: float = DEFAULT_BASE_BACKOFF_SECONDS,
+        max_backoff: float = DEFAULT_MAX_BACKOFF_SECONDS,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout if timeout is not None else get_chat_timeout_seconds()
+        self.max_tokens = max_tokens if max_tokens is not None else get_max_completion_tokens()
+        self.reasoning_effort = (
+            reasoning_effort if reasoning_effort is not None else get_chat_reasoning_effort()
+        )
+        self.max_retries = max(0, max_retries)
+        self.base_backoff = max(0.01, base_backoff)
+        self.max_backoff = max(self.base_backoff, max_backoff)
+
+    def _post_chat_completion(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int | None = None,
+    ) -> str:
+        effective_max_tokens = max_tokens or self.max_tokens
+        payload: dict[str, object] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": effective_max_tokens,
+        }
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
+
+        start_time = time.monotonic()
+        last_exc: Exception | None = None
+
+        for attempt in range(self.max_retries + 1):
+            elapsed = time.monotonic() - start_time
+            remaining_time = self.timeout - elapsed
+
+            # If remaining timeout budget is exhausted, stop retrying
+            if attempt > 0 and remaining_time <= 1.0:
+                logger.warning(
+                    "Cloud provider timeout budget exhausted before retry attempt %d/%d: "
+                    "model=%s, elapsed=%.2fs, timeout=%.2fs",
+                    attempt + 1,
+                    self.max_retries + 1,
+                    self.model,
+                    elapsed,
+                    self.timeout,
+                )
+                break
+
+            request_timeout = (
+                self.timeout if attempt == 0 else max(2.0, min(self.timeout, remaining_time))
+            )
+
+            try:
+                response = httpx.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=payload,
+                    timeout=request_timeout,
+                )
+                duration = round(time.monotonic() - start_time, 2)
+                response.raise_for_status()
+                return _parse_completion_response(response.json(), self.model, duration=duration)
+
+            except httpx.HTTPStatusError as exc:
+                last_exc = exc
+                status = exc.response.status_code
+                duration = round(time.monotonic() - start_time, 2)
+
+                # Non-retryable status (400, 401, 403, 404, etc.) or retries exhausted
+                if status not in TRANSIENT_STATUS_CODES or attempt >= self.max_retries:
+                    if status not in TRANSIENT_STATUS_CODES:
+                        logger.warning(
+                            "Cloud provider non-retryable HTTP error: "
+                            "model=%s, status=%d, duration=%.2fs",
+                            self.model,
+                            status,
+                            duration,
+                        )
+                    else:
+                        logger.warning(
+                            "Cloud provider retries exhausted for transient HTTP %d: "
+                            "model=%s, attempts=%d, duration=%.2fs",
+                            status,
+                            self.model,
+                            attempt + 1,
+                            duration,
+                        )
+                    raise _handle_cloud_error(exc, self.model, duration=duration) from exc
+
+                # Compute backoff using Retry-After header or exponential backoff with jitter
+                retry_after = parse_retry_after(exc.response.headers.get("Retry-After"))
+                if retry_after is not None:
+                    delay = min(self.max_backoff, max(0.1, retry_after))
+                else:
+                    backoff = min(self.max_backoff, self.base_backoff * (2 ** attempt))
+                    jitter = random.uniform(0.1, 0.4)
+                    delay = min(self.max_backoff, backoff + jitter)
+
+                elapsed_now = time.monotonic() - start_time
+                if elapsed_now + delay >= self.timeout:
+                    logger.warning(
+                        "Cloud provider backoff (%.2fs) would exceed timeout budget "
+                        "(%.2fs remaining): model=%s",
+                        delay,
+                        self.timeout - elapsed_now,
+                        self.model,
+                    )
+                    raise _handle_cloud_error(
+                        exc, self.model, duration=round(elapsed_now, 2)
+                    ) from exc
+
+                logger.warning(
+                    "Cloud provider transient HTTP %d error: attempt %d/%d, "
+                    "retrying in %.2fs. model=%s",
+                    status,
+                    attempt + 1,
+                    self.max_retries + 1,
+                    delay,
+                    self.model,
+                )
+                _sleep_backoff(delay)
+
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                last_exc = exc
+                duration = round(time.monotonic() - start_time, 2)
+
+                if attempt >= self.max_retries:
+                    logger.warning(
+                        "Cloud provider connection retries exhausted: "
+                        "model=%s, attempts=%d, duration=%.2fs",
+                        self.model,
+                        attempt + 1,
+                        duration,
+                    )
+                    raise _handle_cloud_error(exc, self.model, duration=duration) from exc
+
+                backoff = min(self.max_backoff, self.base_backoff * (2 ** attempt))
+                delay = min(self.max_backoff, backoff + random.uniform(0.1, 0.4))
+                elapsed_now = time.monotonic() - start_time
+
+                if elapsed_now + delay >= self.timeout:
+                    raise _handle_cloud_error(
+                        exc, self.model, duration=round(elapsed_now, 2)
+                    ) from exc
+
+                logger.warning(
+                    "Cloud provider connection error (%s): attempt %d/%d, "
+                    "retrying in %.2fs. model=%s",
+                    type(exc).__name__,
+                    attempt + 1,
+                    self.max_retries + 1,
+                    delay,
+                    self.model,
+                )
+                _sleep_backoff(delay)
+
+            except Exception as exc:
+                # Other exceptions (parsing error, read timeout, etc.) are not retried
+                duration = round(time.monotonic() - start_time, 2)
+                raise _handle_cloud_error(exc, self.model, duration=duration) from exc
+
+        duration = round(time.monotonic() - start_time, 2)
+        if last_exc:
+            raise _handle_cloud_error(last_exc, self.model, duration=duration) from last_exc
+        raise ProviderError(
+            "The configured answer provider failed: Request timed out before completion. "
+            "Please try again."
+        )
 
     def answer_general(self, question: str, history: list[dict[str, str]] | None = None) -> str:
         system = (
@@ -645,28 +1106,13 @@ class CompatibleCloudProvider(Provider):
         user_content = question
         if prior_turns:
             user_content = f"Conversation history:\n{prior_turns}\n\nCurrent question:\n{question}"
-        try:
-            response = httpx.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user_content},
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": MAX_COMPLETION_TOKENS,
-                },
-                timeout=PROVIDER_TIMEOUT_SECONDS,
-            )
-            response.raise_for_status()
-            answer = response.json()["choices"][0]["message"]["content"]
-            if not isinstance(answer, str):
-                raise ValueError("invalid response from cloud provider")
-            return answer[:6000]
-        except Exception as exc:
-            raise _handle_cloud_error(exc, self.model) from exc
+
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ]
+        answer = self._post_chat_completion(messages, temperature=0.2)
+        return answer[:6000]
 
     def answer_coding(self, question: str, history: list[dict[str, str]] | None = None) -> str:
         system = (
@@ -683,28 +1129,13 @@ class CompatibleCloudProvider(Provider):
         user_content = question
         if prior_turns:
             user_content = f"Conversation history:\n{prior_turns}\n\nCurrent request:\n{question}"
-        try:
-            response = httpx.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user_content},
-                    ],
-                    "temperature": 0.1,
-                    "max_tokens": MAX_COMPLETION_TOKENS,
-                },
-                timeout=PROVIDER_TIMEOUT_SECONDS,
-            )
-            response.raise_for_status()
-            answer = response.json()["choices"][0]["message"]["content"]
-            if not isinstance(answer, str):
-                raise ValueError("invalid response from cloud provider")
-            return answer[:6000]
-        except Exception as exc:
-            raise _handle_cloud_error(exc, self.model) from exc
+
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ]
+        answer = self._post_chat_completion(messages, temperature=0.1)
+        return answer[:6000]
 
     def answer(self, question: str, evidence: list[Evidence]) -> str:
         return self.answer_with_context(question, evidence, [])
@@ -735,28 +1166,13 @@ class CompatibleCloudProvider(Provider):
         )
         if prior_turns:
             user_content = f"Prior conversation (reference only):\n{prior_turns}\n\n{user_content}"
-        try:
-            response = httpx.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user_content},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": MAX_COMPLETION_TOKENS,
-                },
-                timeout=PROVIDER_TIMEOUT_SECONDS,
-            )
-            response.raise_for_status()
-            answer = response.json()["choices"][0]["message"]["content"]
-            if not isinstance(answer, str):
-                raise ValueError("invalid response")
-            return answer[:6000]
-        except Exception as exc:
-            raise _handle_cloud_error(exc, self.model) from exc
+
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ]
+        answer = self._post_chat_completion(messages, temperature=0)
+        return answer[:6000]
 
     def analyze_issue(self, issue: dict, evidence: list[Evidence]) -> str:
         blocks = [
@@ -791,28 +1207,11 @@ class CompatibleCloudProvider(Provider):
             f"Untrusted Issue Body:\n{issue.get('body', '')}\n\n"
             f"Untrusted Source Evidence:\n" + "\n\n".join(blocks)
         )
-        try:
-            response = httpx.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user_content},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": 1500,
-                },
-                timeout=PROVIDER_TIMEOUT_SECONDS,
-            )
-            response.raise_for_status()
-            answer = response.json()["choices"][0]["message"]["content"]
-            if not isinstance(answer, str):
-                raise ValueError("invalid response from cloud provider")
-            return answer
-        except Exception as exc:
-            raise _handle_cloud_error(exc, self.model) from exc
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ]
+        return self._post_chat_completion(messages, temperature=0, max_tokens=1500)
 
 
 def validate_patch_diff(diff: str, file_content: str) -> None:
@@ -962,7 +1361,14 @@ def get_provider() -> Provider:
         model = os.getenv("CHAT_MODEL", "")
         if not key or not url or not model:
             raise ProviderError("Cloud chat requires CHAT_API_KEY, CHAT_BASE_URL, and CHAT_MODEL.")
-        return CompatibleCloudProvider(url, key, model)
+        return CompatibleCloudProvider(
+            url,
+            key,
+            model,
+            timeout=get_chat_timeout_seconds(),
+            max_tokens=get_max_completion_tokens(),
+            reasoning_effort=get_chat_reasoning_effort(),
+        )
     raise ProviderError("CHAT_PROVIDER must be mock or openai_compatible.")
 
 
