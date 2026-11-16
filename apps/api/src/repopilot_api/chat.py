@@ -86,6 +86,55 @@ def get_chat_reasoning_effort() -> str | None:
     return None
 
 
+def get_analysis_model() -> str:
+    """Read the issue analysis model ID from environment, falling back to CHAT_MODEL."""
+    raw = os.getenv("ANALYSIS_MODEL")
+    if raw and raw.strip():
+        return raw.strip()
+    return os.getenv("CHAT_MODEL", "").strip()
+
+
+def get_analysis_timeout_seconds() -> float:
+    """Read and validate the issue analysis timeout in seconds from environment.
+
+    - If ANALYSIS_TIMEOUT_SECONDS is unset or empty, falls back to get_chat_timeout_seconds().
+    - Clamped between MIN_CHAT_TIMEOUT_SECONDS (5.0s) and MAX_CHAT_TIMEOUT_SECONDS (300.0s).
+    - Falls back to get_chat_timeout_seconds() on invalid or non-numeric input.
+    """
+    raw = os.getenv("ANALYSIS_TIMEOUT_SECONDS")
+    if not raw:
+        return get_chat_timeout_seconds()
+    try:
+        val = float(raw.strip())
+        if math.isnan(val) or math.isinf(val) or val <= 0:
+            return get_chat_timeout_seconds()
+        return max(MIN_CHAT_TIMEOUT_SECONDS, min(val, MAX_CHAT_TIMEOUT_SECONDS))
+    except (ValueError, TypeError):
+        return get_chat_timeout_seconds()
+
+
+def get_analysis_reasoning_effort() -> str | None:
+    """Read reasoning effort for issue analysis from environment if configured.
+
+    Falls back to get_chat_reasoning_effort() if unset or invalid.
+    """
+    raw = os.getenv("ANALYSIS_REASONING_EFFORT")
+    if not raw:
+        return get_chat_reasoning_effort()
+    val = raw.strip().lower()
+    if val in {"minimal", "low", "medium", "high", "none"}:
+        return val
+    return get_chat_reasoning_effort()
+
+
+def get_coding_model() -> str:
+    """Read the coding assistant model ID from environment, falling back to CHAT_MODEL."""
+    raw = os.getenv("CHAT_CODING_MODEL")
+    if raw and raw.strip():
+        return raw.strip()
+    return os.getenv("CHAT_MODEL", "").strip()
+
+
 TRANSIENT_STATUS_CODES = {429, 502, 503, 504}
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BASE_BACKOFF_SECONDS = 0.5
@@ -1351,23 +1400,65 @@ def parse_and_validate_analysis(
     return analysis
 
 
-def get_provider() -> Provider:
+def get_provider(
+    mode: ChatMode | str | None = None,
+    task: str | None = None,
+) -> Provider:
+    """Instantiate the configured chat/analysis provider.
+
+    Supports mode-aware model routing for:
+    - task='issue_analysis': uses ANALYSIS_MODEL, ANALYSIS_TIMEOUT_SECONDS,
+      and ANALYSIS_REASONING_EFFORT (falling back to CHAT_MODEL, chat timeout, reasoning effort).
+    - mode=ChatMode.CODING: uses CHAT_CODING_MODEL (falling back to CHAT_MODEL).
+    - mode=ChatMode.GENERAL, ChatMode.REPOSITORY, or default: uses CHAT_MODEL.
+    """
     provider = os.getenv("CHAT_PROVIDER", "mock").lower()
     if provider == "mock":
         return MockProvider()
     if provider == "openai_compatible":
         key = os.getenv("CHAT_API_KEY", "")
         url = os.getenv("CHAT_BASE_URL", "")
-        model = os.getenv("CHAT_MODEL", "")
-        if not key or not url or not model:
+        if not key or not url:
             raise ProviderError("Cloud chat requires CHAT_API_KEY, CHAT_BASE_URL, and CHAT_MODEL.")
+
+        # Resolve mode if string passed
+        resolved_chat_mode: ChatMode | None = None
+        if isinstance(mode, ChatMode):
+            resolved_chat_mode = mode
+        elif isinstance(mode, str):
+            try:
+                resolved_chat_mode = ChatMode(mode.lower())
+            except ValueError:
+                pass
+
+        # Determine target model, timeout, reasoning effort, and max tokens
+        if task == "issue_analysis":
+            model = get_analysis_model()
+            timeout = get_analysis_timeout_seconds()
+            reasoning_effort = get_analysis_reasoning_effort()
+            max_tokens = get_max_completion_tokens()
+        elif resolved_chat_mode == ChatMode.CODING:
+            model = get_coding_model()
+            timeout = get_chat_timeout_seconds()
+            reasoning_effort = get_chat_reasoning_effort()
+            max_tokens = get_max_completion_tokens()
+        else:
+            # GENERAL, REPOSITORY, or default unrouted
+            model = os.getenv("CHAT_MODEL", "").strip()
+            timeout = get_chat_timeout_seconds()
+            reasoning_effort = get_chat_reasoning_effort()
+            max_tokens = get_max_completion_tokens()
+
+        if not model:
+            raise ProviderError("Cloud chat requires CHAT_API_KEY, CHAT_BASE_URL, and CHAT_MODEL.")
+
         return CompatibleCloudProvider(
             url,
             key,
             model,
-            timeout=get_chat_timeout_seconds(),
-            max_tokens=get_max_completion_tokens(),
-            reasoning_effort=get_chat_reasoning_effort(),
+            timeout=timeout,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
         )
     raise ProviderError("CHAT_PROVIDER must be mock or openai_compatible.")
 
@@ -1465,7 +1556,7 @@ def ask(
     db: Session,
     session: ChatSession,
     question: str,
-    provider: Provider,
+    provider: Provider | None = None,
     mode: str | None = None,
 ) -> ChatMessage:
     if not question.strip() or len(question) > MAX_QUESTION_CHARS:
@@ -1479,12 +1570,13 @@ def ask(
     else:
         resolved_mode = classify_intent(question, history)
 
+    effective_provider = provider or get_provider(mode=resolved_mode)
     citations = []
 
     if resolved_mode == ChatMode.GENERAL:
-        answer = provider.answer_general(question, history)
+        answer = effective_provider.answer_general(question, history)
     elif resolved_mode == ChatMode.CODING:
-        answer = provider.answer_coding(question, history)
+        answer = effective_provider.answer_coding(question, history)
     elif resolved_mode == ChatMode.VERIFIED_FIX:
         issue_match = re.search(r"#?(\d+)", question)
         issue_num_str = f" #{issue_match.group(1)}" if issue_match else ""
@@ -1513,7 +1605,7 @@ def ask(
         steps_remaining -= 1
         bounded = _bounded_evidence(ranked) if steps_remaining >= 0 else []
         if bounded:
-            answer = provider.answer_with_context(question, bounded, history)
+            answer = effective_provider.answer_with_context(question, bounded, history)
         else:
             answer = "I couldn't find enough indexed source evidence to answer that question."
         if bounded and _citation_references_are_valid(answer, bounded):

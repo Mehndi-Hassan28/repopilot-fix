@@ -1456,3 +1456,207 @@ def test_parse_retry_after_header_formats():
     parsed = parse_retry_after(header)
     assert parsed is not None
     assert 10.0 <= parsed <= 20.0
+
+
+# ==============================================================================
+# Model Routing & Tier Configuration Tests (Milestone 1)
+# ==============================================================================
+
+
+def test_model_routing_default_fallback(monkeypatch):
+    """When only base CHAT_MODEL is configured, all tiers fall back to it."""
+    monkeypatch.setenv("CHAT_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CHAT_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("CHAT_API_KEY", "test-key")
+    monkeypatch.setenv("CHAT_MODEL", "gemini-3.5-flash-lite")
+    monkeypatch.setenv("CHAT_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("CHAT_REASONING_EFFORT", "minimal")
+    monkeypatch.delenv("ANALYSIS_MODEL", raising=False)
+    monkeypatch.delenv("ANALYSIS_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("ANALYSIS_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("CHAT_CODING_MODEL", raising=False)
+
+    from repopilot_api.chat import ChatMode
+
+    default_p = get_provider()
+    assert default_p.model == "gemini-3.5-flash-lite"
+    assert default_p.timeout == 45.0
+    assert default_p.reasoning_effort == "minimal"
+
+    general_p = get_provider(mode=ChatMode.GENERAL)
+    assert general_p.model == "gemini-3.5-flash-lite"
+    assert general_p.timeout == 45.0
+    assert general_p.reasoning_effort == "minimal"
+
+    repo_p = get_provider(mode=ChatMode.REPOSITORY)
+    assert repo_p.model == "gemini-3.5-flash-lite"
+
+    coding_p = get_provider(mode=ChatMode.CODING)
+    assert coding_p.model == "gemini-3.5-flash-lite"
+
+    analysis_p = get_provider(task="issue_analysis")
+    assert analysis_p.model == "gemini-3.5-flash-lite"
+    assert analysis_p.timeout == 45.0
+    assert analysis_p.reasoning_effort == "minimal"
+
+
+def test_model_routing_coding_model_override(monkeypatch):
+    """When CHAT_CODING_MODEL is configured, CODING mode routes to it."""
+    monkeypatch.setenv("CHAT_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CHAT_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("CHAT_API_KEY", "test-key")
+    monkeypatch.setenv("CHAT_MODEL", "gemini-3.5-flash-lite")
+    monkeypatch.setenv("CHAT_CODING_MODEL", "gemini-3.5-flash")
+
+    from repopilot_api.chat import ChatMode
+
+    coding_p = get_provider(mode=ChatMode.CODING)
+    assert coding_p.model == "gemini-3.5-flash"
+
+    # String mode also works
+    coding_p_str = get_provider(mode="coding")
+    assert coding_p_str.model == "gemini-3.5-flash"
+
+    # General chat still uses base model
+    general_p = get_provider(mode=ChatMode.GENERAL)
+    assert general_p.model == "gemini-3.5-flash-lite"
+
+
+def test_model_routing_issue_analysis_override(monkeypatch):
+    """When ANALYSIS_* variables are configured, issue_analysis routes to them."""
+    monkeypatch.setenv("CHAT_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CHAT_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("CHAT_API_KEY", "test-key")
+    monkeypatch.setenv("CHAT_MODEL", "gemini-3.5-flash-lite")
+    monkeypatch.setenv("CHAT_TIMEOUT_SECONDS", "60")
+    monkeypatch.setenv("CHAT_REASONING_EFFORT", "minimal")
+    monkeypatch.setenv("ANALYSIS_MODEL", "analysis-specialist-model")
+    monkeypatch.setenv("ANALYSIS_TIMEOUT_SECONDS", "120")
+    monkeypatch.setenv("ANALYSIS_REASONING_EFFORT", "medium")
+
+    from repopilot_api.chat import ChatMode
+
+    analysis_p = get_provider(task="issue_analysis")
+    assert analysis_p.model == "analysis-specialist-model"
+    assert analysis_p.timeout == 120.0
+    assert analysis_p.reasoning_effort == "medium"
+
+    # General chat remains unaffected
+    general_p = get_provider(mode=ChatMode.GENERAL)
+    assert general_p.model == "gemini-3.5-flash-lite"
+    assert general_p.timeout == 60.0
+    assert general_p.reasoning_effort == "minimal"
+
+
+def test_model_routing_invalid_values_fallback(monkeypatch):
+    """Invalid or out-of-range analysis configuration gracefully falls back."""
+    from repopilot_api.chat import (
+        get_analysis_model,
+        get_analysis_reasoning_effort,
+        get_analysis_timeout_seconds,
+        get_coding_model,
+    )
+
+    monkeypatch.setenv("CHAT_MODEL", "fallback-model")
+    monkeypatch.setenv("CHAT_TIMEOUT_SECONDS", "50")
+    monkeypatch.setenv("CHAT_REASONING_EFFORT", "low")
+
+    # Unset values
+    monkeypatch.delenv("ANALYSIS_MODEL", raising=False)
+    monkeypatch.delenv("ANALYSIS_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("ANALYSIS_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("CHAT_CODING_MODEL", raising=False)
+
+    assert get_analysis_model() == "fallback-model"
+    assert get_analysis_timeout_seconds() == 50.0
+    assert get_analysis_reasoning_effort() == "low"
+    assert get_coding_model() == "fallback-model"
+
+    # Invalid non-numeric timeout
+    monkeypatch.setenv("ANALYSIS_TIMEOUT_SECONDS", "not-a-number")
+    assert get_analysis_timeout_seconds() == 50.0
+
+    # Negative / NaN / inf timeout
+    monkeypatch.setenv("ANALYSIS_TIMEOUT_SECONDS", "-10")
+    assert get_analysis_timeout_seconds() == 50.0
+    monkeypatch.setenv("ANALYSIS_TIMEOUT_SECONDS", "nan")
+    assert get_analysis_timeout_seconds() == 50.0
+    monkeypatch.setenv("ANALYSIS_TIMEOUT_SECONDS", "inf")
+    assert get_analysis_timeout_seconds() == 50.0
+
+    # Clamping
+    monkeypatch.setenv("ANALYSIS_TIMEOUT_SECONDS", "1.0")
+    assert get_analysis_timeout_seconds() == 5.0
+    monkeypatch.setenv("ANALYSIS_TIMEOUT_SECONDS", "999.0")
+    assert get_analysis_timeout_seconds() == 300.0
+
+    # Invalid reasoning effort
+    monkeypatch.setenv("ANALYSIS_REASONING_EFFORT", "super_high")
+    assert get_analysis_reasoning_effort() == "low"
+    monkeypatch.setenv("ANALYSIS_REASONING_EFFORT", "medium")
+    assert get_analysis_reasoning_effort() == "medium"
+
+
+def test_ask_dynamic_mode_aware_provider_selection(monkeypatch, test_session):
+    """ask() without explicit provider dynamically selects mode-appropriate provider."""
+    captured = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Assistant answer."},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(
+        "repopilot_api.chat.httpx.post",
+        lambda *args, **kwargs: (captured.append(kwargs), FakeResponse())[1],
+    )
+    monkeypatch.setenv("CHAT_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CHAT_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("CHAT_API_KEY", "test-key")
+    monkeypatch.setenv("CHAT_MODEL", "general-model")
+    monkeypatch.setenv("CHAT_CODING_MODEL", "coding-model")
+
+    with test_session() as db:
+        repo = add_repo(db)
+        auth = add_auth(db, repo)
+        job = add_index(db, repo, "a" * 40, "def foo(): pass\n")
+        session = ChatSession(
+            repository_id=repo.id, owner_user_id=auth.user.id, commit_sha=job.commit_sha
+        )
+        db.add(session)
+        db.flush()
+
+        # 1. General greeting with provider=None -> selects general-model
+        captured.clear()
+        msg1 = ask(db, session, "Hi", provider=None)
+        assert msg1.mode == "general"
+        assert len(captured) == 1
+        assert captured[0]["json"]["model"] == "general-model"
+
+        # 2. Coding question with provider=None -> dynamically routes to coding-model
+        captured.clear()
+        coding_q = "fix this python code error:\n```python\ndef bad(): pass\n```"
+        msg2 = ask(db, session, coding_q, provider=None)
+        assert msg2.mode == "coding"
+        assert len(captured) == 1
+        assert captured[0]["json"]["model"] == "coding-model"
+
+        # 3. Explicit provider passed -> respects supplied provider (backward compatibility)
+        captured.clear()
+        custom_provider = CompatibleCloudProvider(
+            "https://llm.example/v1", "key", "explicit-mock-model"
+        )
+        msg3 = ask(db, session, "Hi", provider=custom_provider)
+        assert msg3.mode == "general"
+        assert len(captured) == 1
+        assert captured[0]["json"]["model"] == "explicit-mock-model"

@@ -458,7 +458,8 @@ def ask_chat(
     try:
         from repopilot_api.chat import get_provider
 
-        message = ask(db, session, payload.question, get_provider(), mode=payload.mode)
+        provider = get_provider(mode=payload.mode) if payload.mode else None
+        message = ask(db, session, payload.question, provider, mode=payload.mode)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except ProviderError as exc:
@@ -550,7 +551,7 @@ def analyze_issue(
         for f in db.scalars(select(IndexedFile).where(IndexedFile.job_id == job.id)).all()
     }
 
-    provider = get_provider()
+    provider = get_provider(task="issue_analysis")
     try:
         raw_analysis = provider.analyze_issue(issue, evidence)
     except ProviderError as exc:

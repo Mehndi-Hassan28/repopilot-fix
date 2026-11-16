@@ -705,3 +705,46 @@ def test_issue_analysis_rejects_malformed_patch_syntax(test_session, monkeypatch
             )
         assert exc.value.status_code == 502
         assert "Malformed patch" in exc.value.detail
+
+
+def test_analyze_issue_uses_analysis_task_provider(monkeypatch, test_session):
+    """analyze_issue requests task='issue_analysis' from provider factory."""
+    called_task = []
+
+    from repopilot_api.chat import MockProvider
+
+    def fake_get_provider(mode=None, task=None):
+        called_task.append(task)
+        return MockProvider()
+
+    monkeypatch.setattr("repopilot_api.chat.get_provider", fake_get_provider)
+    monkeypatch.setattr(
+        GitHubSource,
+        "fetch_issue",
+        lambda self, o, r, n: {
+            "number": n,
+            "title": "Fix authenticate bug",
+            "body": "Authenticate fails on invalid tokens.",
+            "state": "open",
+            "html_url": f"https://github.com/{o}/{r}/issues/{n}",
+            "author": "tester",
+            "labels": ["bug"],
+        },
+    )
+
+    with test_session() as db:
+        repo = add_repo(db, github_id=608, full_name="user/task-routing")
+        auth = add_auth(db, repo)
+        add_index(db, repo)
+
+        try:
+            main.analyze_issue(
+                repository_id=repo.id,
+                payload=IssueAnalyzeRequest(issue_number=1),
+                db=db,
+                auth=auth,
+            )
+        except Exception:
+            pass
+
+    assert called_task == ["issue_analysis"]
