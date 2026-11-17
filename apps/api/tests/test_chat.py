@@ -12,6 +12,7 @@ from repopilot_api.chat import (
     MAX_HISTORY_MESSAGES,
     CompatibleCloudProvider,
     Evidence,
+    MockProvider,
     Provider,
     ProviderError,
     _search_tokens,
@@ -676,6 +677,14 @@ def test_intent_classification_for_all_modes():
     assert classify_intent("How does authenticate work?") == ChatMode.REPOSITORY
     assert classify_intent("Where is zzzunique implemented?") == ChatMode.REPOSITORY
     assert classify_intent("authenticate") == ChatMode.REPOSITORY
+    assert (
+        classify_intent(
+            "Find the ask() function in my RepoPilot Fix repository. "
+            "Give its exact file path and line numbers. "
+            "Explain how it selects the AI provider, and cite the source code."
+        )
+        == ChatMode.REPOSITORY
+    )
 
     # Verified Fix Agent
     assert classify_intent("Investigate GitHub issue #42") == ChatMode.VERIFIED_FIX
@@ -771,6 +780,48 @@ def test_repository_intelligence_via_api(test_session):
         assert missing_data["mode"] == "repository"
         assert "couldn't find enough indexed source evidence" in missing_data["content"]
         assert missing_data["citations"] == []
+
+
+def test_regression_find_function_in_repository(test_session):
+    with test_session() as db:
+        repo = add_repo(db)
+        auth = add_auth(db, repo)
+        chat_source = (
+            "def get_provider() -> Provider:\n"
+            "    return MockProvider()\n\n\n"
+            "def ask(db: Session, session: ChatSession, question: str,\n"
+            "        provider: Provider) -> ChatMessage:\n"
+            "    evidence = retrieve(db, session.repository_id, session.commit_sha, question)\n"
+            "    return provider.answer(question, evidence)\n"
+        )
+        job = add_index(db, repo, "a" * 40, chat_source)
+        file = IndexedFile(
+            job_id=job.id,
+            path="apps/api/src/repopilot_api/chat.py",
+            language="python",
+            size_bytes=len(chat_source),
+            content=chat_source,
+        )
+        db.add(file)
+        db.flush()
+
+        session = ChatSession(
+            repository_id=repo.id, owner_user_id=auth.user.id, commit_sha=job.commit_sha
+        )
+        db.add(session)
+        db.flush()
+
+        prompt = (
+            "Find the ask() function in my RepoPilot Fix repository. "
+            "Give its exact file path and line numbers. "
+            "Explain how it selects the AI provider, and cite the source code."
+        )
+        data = main.ask_chat(session.id, ChatQuestion(question=prompt), db, auth)
+        assert data["mode"] == "repository"
+        assert len(data["citations"]) > 0
+        assert data["citations"][0]["path"] == "apps/api/src/repopilot_api/chat.py"
+        assert data["citations"][0]["start_line"] <= 5 <= data["citations"][0]["end_line"]
+        assert "relevant evidence in [1]" in data["content"]
 
 
 def test_verified_fix_agent_via_api(test_session):
@@ -882,6 +933,7 @@ def test_cloud_provider_configurable_timeout_default_and_override(monkeypatch):
 
 def test_cloud_provider_missing_content_key_handled(monkeypatch):
     """Gemini response without 'content' key in message must not crash with KeyError."""
+
     class FakeResponse:
         def raise_for_status(self):
             return None
@@ -905,6 +957,7 @@ def test_cloud_provider_missing_content_key_handled(monkeypatch):
 
 def test_cloud_provider_null_content_handled(monkeypatch):
     """Gemini response with content=null must not crash and raise a clear ProviderError."""
+
     class FakeResponse:
         def raise_for_status(self):
             return None
@@ -928,6 +981,7 @@ def test_cloud_provider_null_content_handled(monkeypatch):
 
 def test_cloud_provider_empty_string_content_not_fabricated(monkeypatch):
     """Empty or whitespace-only response must not be accepted or fabricated."""
+
     class FakeResponse:
         def raise_for_status(self):
             return None
@@ -951,6 +1005,7 @@ def test_cloud_provider_empty_string_content_not_fabricated(monkeypatch):
 
 def test_cloud_provider_reasoning_tokens_length_exhaustion_detected(monkeypatch):
     """When finish_reason is length and content is null/empty, token exhaustion is explained."""
+
     class FakeResponse:
         def raise_for_status(self):
             return None
@@ -976,6 +1031,7 @@ def test_cloud_provider_reasoning_tokens_length_exhaustion_detected(monkeypatch)
 
 def test_cloud_provider_safety_filter_blocking_handled(monkeypatch):
     """Safety filter blocks are identified with a helpful error."""
+
     class FakeResponse:
         def raise_for_status(self):
             return None
@@ -999,6 +1055,7 @@ def test_cloud_provider_safety_filter_blocking_handled(monkeypatch):
 
 def test_cloud_provider_empty_choices_handled(monkeypatch):
     """Response with empty choices list raises ProviderError."""
+
     class FakeResponse:
         def raise_for_status(self):
             return None
@@ -1014,6 +1071,7 @@ def test_cloud_provider_empty_choices_handled(monkeypatch):
 
 def test_cloud_provider_malformed_json_response_handled(monkeypatch):
     """Non-dict JSON response structure is safely handled."""
+
     class FakeResponse:
         def raise_for_status(self):
             return None
@@ -1054,18 +1112,22 @@ def test_cloud_provider_all_four_modes_use_configured_timeout_and_parsing(monkey
         captured.append({"url": url, **kwargs})
         # If it's issue analysis, return valid JSON
         if "analyze" in kwargs["json"]["messages"][0]["content"].lower():
-            content = json.dumps({
-                "summary": "Issue summary",
-                "root_cause_hypothesis": "Hypothesis: bug cause",
-                "relevant_files": [{"path": "file.py", "start_line": 1, "end_line": 5}],
-                "proposed_fix": {
-                    "explanation": "Fix explanation",
-                    "patches": [{"file_path": "file.py", "explanation": "test", "diff": "diff"}],
-                },
-                "confidence": "high",
-                "confidence_reasoning": "Reasoning",
-                "limitations": ["None"],
-            })
+            content = json.dumps(
+                {
+                    "summary": "Issue summary",
+                    "root_cause_hypothesis": "Hypothesis: bug cause",
+                    "relevant_files": [{"path": "file.py", "start_line": 1, "end_line": 5}],
+                    "proposed_fix": {
+                        "explanation": "Fix explanation",
+                        "patches": [
+                            {"file_path": "file.py", "explanation": "test", "diff": "diff"}
+                        ],
+                    },
+                    "confidence": "high",
+                    "confidence_reasoning": "Reasoning",
+                    "limitations": ["None"],
+                }
+            )
         else:
             content = "Answer with citation [1]."
         return FakeResponse(content)
@@ -1146,6 +1208,7 @@ def test_cloud_provider_reasoning_effort_passed_when_configured(monkeypatch):
 
 def test_cloud_provider_content_list_of_parts_parsed(monkeypatch):
     """Provider returning content as a list of text parts is safely reconstructed."""
+
     class FakeResponse:
         def raise_for_status(self):
             return None
@@ -1175,6 +1238,7 @@ def test_cloud_provider_content_list_of_parts_parsed(monkeypatch):
 
 def test_cloud_provider_delta_fallback_parsed(monkeypatch):
     """Provider returning delta instead of message is safely handled."""
+
     class FakeResponse:
         def raise_for_status(self):
             return None
@@ -1359,11 +1423,13 @@ def test_cloud_provider_retry_exhaustion_on_http_503(monkeypatch):
 
 def test_cloud_provider_retry_exhaustion_on_http_502_and_504(monkeypatch):
     """502 and 504 errors return clear gateway messages upon exhaustion."""
+
     def make_mock(status_code):
         def _mock(*args, **kwargs):
             req = httpx.Request("POST", "https://llm.example/v1/chat/completions")
             resp = httpx.Response(status_code, request=req)
             raise httpx.HTTPStatusError(f"HTTP {status_code}", request=req, response=resp)
+
         return _mock
 
     # Test 502
@@ -1451,6 +1517,7 @@ def test_parse_retry_after_header_formats():
     # Future HTTP-date (RFC 7231)
     from datetime import UTC, datetime, timedelta
     from email.utils import format_datetime
+
     future = datetime.now(UTC) + timedelta(seconds=15)
     header = format_datetime(future, usegmt=True)
     parsed = parse_retry_after(header)
@@ -1660,3 +1727,355 @@ def test_ask_dynamic_mode_aware_provider_selection(monkeypatch, test_session):
         assert msg3.mode == "general"
         assert len(captured) == 1
         assert captured[0]["json"]["model"] == "explicit-mock-model"
+
+
+def test_old_sessions_remain_pinned_to_old_commits(test_session):
+    """Old chat sessions remain pinned to historical commit SHAs even after new indexing."""
+    with test_session() as db:
+        repo = add_repo(db, github_id=8801, full_name="team/stale-chat-test")
+        auth = add_auth(db, repo)
+        old_code = (
+            "# Legacy chat implementation\n"
+            "def old_helper():\n"
+            "    pass\n\n"
+            "def ask(db, session, question, provider):\n"
+            "    return 'legacy ask'\n"
+        )
+        job_old = add_index(db, repo, "1" * 40, old_code)
+
+        session_old = ChatSession(
+            repository_id=repo.id,
+            owner_user_id=auth.user.id,
+            commit_sha=job_old.commit_sha,
+        )
+        db.add(session_old)
+        db.flush()
+
+        new_code = (
+            "# Refactored chat implementation\n"
+            "def new_helper():\n"
+            "    pass\n\n"
+            "def ask(db, session, question, provider=None, mode=None):\n"
+            "    resolved_mode = mode or 'auto'\n"
+            "    effective_provider = provider or get_provider(mode=resolved_mode)\n"
+            "    return 'refactored ask'\n"
+        )
+        job_new = IndexingJob(repository_id=repo.id, commit_sha="2" * 40, status="completed")
+        db.add(job_new)
+        db.flush()
+        db.add(
+            IndexedFile(
+                job_id=job_new.id,
+                path="src/auth.py",
+                language="python",
+                size_bytes=len(new_code),
+                content=new_code,
+            )
+        )
+        db.flush()
+
+        assert session_old.commit_sha == "1" * 40
+
+        query = "find the ask() function in src/auth.py"
+        ev_old = retrieve(db, repo.id, session_old.commit_sha, query)
+        assert len(ev_old) > 0
+        assert "legacy ask" in ev_old[0].content
+        assert "refactored ask" not in ev_old[0].content
+
+
+def test_new_sessions_use_latest_indexed_commit(test_session):
+    """New sessions created via create_chat_session bind to the latest completed index."""
+    from repopilot_api.main import create_chat_session
+    from repopilot_api.schemas import ChatSessionCreate
+
+    with test_session() as db:
+        repo = add_repo(db, github_id=8802, full_name="team/new-session-bind-test")
+        auth = add_auth(db, repo)
+
+        add_index(db, repo, "a" * 40, "def v1(): pass\n")
+        job2 = IndexingJob(repository_id=repo.id, commit_sha="b" * 40, status="completed")
+        db.add(job2)
+        db.flush()
+        db.add(
+            IndexedFile(
+                job_id=job2.id,
+                path="src/auth.py",
+                language="python",
+                size_bytes=20,
+                content="def v2(): pass\n",
+            )
+        )
+        db.flush()
+
+        res = create_chat_session(ChatSessionCreate(repository_id=repo.id), db, auth)
+        assert res["commit_sha"] == "b" * 40
+
+
+def test_retrieval_never_mixes_evidence_across_commits(test_session):
+    """Evidence retrieval strictly isolates files by commit_sha."""
+    with test_session() as db:
+        repo = add_repo(db, github_id=8803, full_name="team/commit-isolation-test")
+        add_index(db, repo, "c" * 40, "def feature_c(): pass\n")
+        job2 = IndexingJob(repository_id=repo.id, commit_sha="d" * 40, status="completed")
+        db.add(job2)
+        db.flush()
+        db.add(
+            IndexedFile(
+                job_id=job2.id,
+                path="src/auth.py",
+                language="python",
+                size_bytes=25,
+                content="def feature_d(): pass\n",
+            )
+        )
+        db.flush()
+
+        ev_c = retrieve(db, repo.id, "c" * 40, "feature")
+        assert len(ev_c) == 1
+        assert "feature_c" in ev_c[0].content
+        assert "feature_d" not in ev_c[0].content
+
+        ev_d = retrieve(db, repo.id, "d" * 40, "feature")
+        assert len(ev_d) == 1
+        assert "feature_d" in ev_d[0].content
+        assert "feature_c" not in ev_d[0].content
+
+
+def test_correct_citations_for_ask_and_effective_provider(test_session):
+    """Retrieval prioritizes exact function declarations and includes effective_provider logic."""
+    with test_session() as db:
+        repo = add_repo(db, github_id=8804, full_name="team/ask-citation-test")
+        code = (
+            "# System prompt string that contains generic citation instructions:\n"
+            "# Never invent file paths, line numbers, or citation labels. Cite every claim.\n"
+            "# Explain the exact source code and give line numbers.\n\n"
+            "def ask(\n"
+            "    db: Session,\n"
+            "    session: ChatSession,\n"
+            "    question: str,\n"
+            "    provider: Provider | None = None,\n"
+            "    mode: str | None = None,\n"
+            ") -> ChatMessage:\n"
+            "    history = _bounded_history(db, session)\n"
+            "    resolved_mode = mode or classify_intent(question, history)\n"
+            "    effective_provider = provider or get_provider(mode=resolved_mode)\n"
+            "    return ChatMessage(content='ok')\n"
+        )
+        job = IndexingJob(repository_id=repo.id, commit_sha="e" * 40, status="completed")
+        db.add(job)
+        db.flush()
+        db.add(
+            IndexedFile(
+                job_id=job.id,
+                path="apps/api/src/repopilot_api/chat.py",
+                language="python",
+                size_bytes=len(code),
+                content=code,
+            )
+        )
+        db.flush()
+
+        query = (
+            "Find the ask() function in my RepoPilot Fix repository. Give its exact file path "
+            "and line numbers. Explain how it selects the AI provider, and cite the source code."
+        )
+        ev = retrieve(db, repo.id, "e" * 40, query)
+        assert len(ev) > 0
+        top = ev[0]
+        assert top.path == "apps/api/src/repopilot_api/chat.py"
+        assert "def ask(" in top.content
+        assert "effective_provider = provider or get_provider" in top.content
+
+
+def test_exact_failing_prompt_classified_as_repository_and_grounded(test_session):
+    """The exact failing prompt is classified as REPOSITORY and grounded in real source code."""
+    from repopilot_api.chat import ChatMode, classify_intent
+
+    query = (
+        "Explain how ask() selects the AI provider. "
+        "What happens when provider is None? "
+        "How do GENERAL and CODING modes select their handlers? "
+        "Provide exact source citations."
+    )
+    assert classify_intent(query) == ChatMode.REPOSITORY
+
+    with test_session() as db:
+        repo = add_repo(db, github_id=8805, full_name="team/failing-prompt-test")
+        code = (
+            "class ChatMode(str, Enum):\n"
+            "    GENERAL = 'general'\n"
+            "    CODING = 'coding'\n"
+            "    REPOSITORY = 'repository'\n\n"
+            "def ask(\n"
+            "    db: Session,\n"
+            "    session: ChatSession,\n"
+            "    question: str,\n"
+            "    provider: Provider | None = None,\n"
+            "    mode: str | None = None,\n"
+            ") -> ChatMessage:\n"
+            "    history = _bounded_history(db, session)\n"
+            "    resolved_mode = mode or classify_intent(question, history)\n"
+            "    effective_provider = provider or get_provider(mode=resolved_mode)\n"
+            "    return ChatMessage(content='ok')\n"
+        )
+        job = IndexingJob(repository_id=repo.id, commit_sha="f" * 40, status="completed")
+        db.add(job)
+        db.flush()
+        db.add(
+            IndexedFile(
+                job_id=job.id,
+                path="apps/api/src/repopilot_api/chat.py",
+                language="python",
+                size_bytes=len(code),
+                content=code,
+            )
+        )
+        db.flush()
+
+        session = ChatSession(repository_id=repo.id, commit_sha=job.commit_sha)
+        db.add(session)
+        db.flush()
+
+        response = ask(db, session, query, MockProvider())
+        assert response.mode == ChatMode.REPOSITORY.value
+        citations = json.loads(response.citations)
+        assert len(citations) >= 1
+        assert citations[0]["path"] == "apps/api/src/repopilot_api/chat.py"
+        assert citations[0]["start_line"] >= 1
+
+        # Must not contain fabricated paths or fictional handlers
+        for bad_claim in [
+            "repopilot/core/engine.py",
+            "repopilot/core/config.py",
+            "repopilot/core/modes.py",
+            "GeneralHandler",
+            "CodingHandler",
+        ]:
+            assert bad_claim not in response.content
+
+
+def test_fabricated_paths_and_claims_rejected(test_session):
+    """Fabricated repository file paths and hallucinated handlers in answers are rejected."""
+    with test_session() as db:
+        repo = add_repo(db, github_id=8806, full_name="team/fabricated-paths-test")
+        code = "def ask():\n    return 'real_code'\n"
+        job = IndexingJob(repository_id=repo.id, commit_sha="g" * 40, status="completed")
+        db.add(job)
+        db.flush()
+        db.add(
+            IndexedFile(
+                job_id=job.id,
+                path="apps/api/src/repopilot_api/chat.py",
+                language="python",
+                size_bytes=len(code),
+                content=code,
+            )
+        )
+        db.flush()
+
+        session = ChatSession(repository_id=repo.id, commit_sha=job.commit_sha)
+        db.add(session)
+        db.flush()
+
+        fabricated_answers = [
+            "The provider is resolved in repopilot/core/engine.py [1].",
+            "Configuration fallback is in repopilot/core/config.py:10-20 [1].",
+            "Mode routing is implemented in repopilot/core/modes.py [1].",
+            "Refer to [`repopilot/core/engine.py`](repopilot/core/engine.py) [1]",
+            "GeneralHandler and CodingHandler are in core/handlers.py [1].",
+        ]
+
+        class FakeAnswerProvider(Provider):
+            def __init__(self, fake_ans: str):
+                self.fake_ans = fake_ans
+
+            def answer(self, question, evidence):
+                return self.fake_ans
+
+            def answer_with_context(self, question, evidence, history):
+                return self.fake_ans
+
+        for fake_text in fabricated_answers:
+            msg = ask(
+                db,
+                session,
+                "Explain how ask() selects the AI provider",
+                FakeAnswerProvider(fake_text),
+            )
+            assert "couldn't verify the source citations" in msg.content
+            assert json.loads(msg.citations) == []
+
+
+def test_unsupported_claims_rejected_or_marked_as_unknown(test_session):
+    """Unsupported claims for non-existent entities fail retrieval and return no evidence."""
+    with test_session() as db:
+        repo = add_repo(db, github_id=8807, full_name="team/unknown-claims-test")
+        code = "def authenticate():\n    return True\n"
+        job = IndexingJob(repository_id=repo.id, commit_sha="h" * 40, status="completed")
+        db.add(job)
+        db.flush()
+        db.add(
+            IndexedFile(
+                job_id=job.id,
+                path="src/auth.py",
+                language="python",
+                size_bytes=len(code),
+                content=code,
+            )
+        )
+        db.flush()
+
+        session = ChatSession(repository_id=repo.id, commit_sha=job.commit_sha)
+        db.add(session)
+        db.flush()
+
+        # Query asking for completely non-existent handlers and files
+        query = (
+            "Explain how GeneralHandler and CodingHandler are implemented "
+            "in repopilot/core/modes.py"
+        )
+        msg = ask(db, session, query, MockProvider())
+        assert "couldn't find enough indexed source evidence" in msg.content
+        assert json.loads(msg.citations) == []
+
+        # Provider explicitly returning insufficient evidence
+        class InsufficientProvider(Provider):
+            def answer(self, question, evidence):
+                return "I couldn't find enough indexed source evidence to answer that question."
+
+            def answer_with_context(self, question, evidence, history):
+                return "I couldn't find enough indexed source evidence to answer that question."
+
+        msg2 = ask(db, session, "Where is authenticate located?", InsufficientProvider())
+        assert "couldn't find enough indexed source evidence" in msg2.content
+        assert json.loads(msg2.citations) == []
+
+
+def test_general_and_coding_assistant_behavior_preserved(test_session):
+    """General AI and Coding assistant modes remain functional and cite no repository files."""
+    from repopilot_api.chat import ChatMode, classify_intent
+
+    # Intent checks
+    assert classify_intent("hi") == ChatMode.GENERAL
+    assert classify_intent("What is recursion?") == ChatMode.GENERAL
+    assert classify_intent("Explain binary search") == ChatMode.CODING
+    assert classify_intent("Fix this Python code: def add(a, b): return a") == ChatMode.CODING
+
+    with test_session() as db:
+        repo = add_repo(db, github_id=8808, full_name="team/modes-preserved-test")
+        job = add_index(db, repo, "i" * 40, "x = 1\n")
+        session = ChatSession(repository_id=repo.id, commit_sha=job.commit_sha)
+        db.add(session)
+        db.flush()
+
+        # General Mode
+        gen_msg = ask(db, session, "What is recursion?", MockProvider())
+        assert gen_msg.mode == ChatMode.GENERAL.value
+        assert json.loads(gen_msg.citations) == []
+        assert "Recursion is a programming concept" in gen_msg.content
+
+        # Coding Mode
+        code_msg = ask(db, session, "Explain binary search", MockProvider())
+        assert code_msg.mode == ChatMode.CODING.value
+        assert json.loads(code_msg.citations) == []
+        assert "binary_search" in code_msg.content

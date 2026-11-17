@@ -7,6 +7,7 @@ import os
 import random
 import re
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -165,6 +166,8 @@ def parse_retry_after(header_val: str | None) -> float | None:
 def _sleep_backoff(delay: float) -> None:
     """Sleep for backoff duration. Can be intercepted in tests."""
     time.sleep(delay)
+
+
 OPERATION_GROUPS = {
     "delete": {
         "delete",
@@ -252,21 +255,55 @@ def _search_tokens(text: str) -> list[str]:
     return variants
 
 
+GENERIC_QUERY_TERMS = {
+    "ai",
+    "api",
+    "app",
+    "cd",
+    "ci",
+    "code",
+    "codebase",
+    "db",
+    "fix",
+    "id",
+    "io",
+    "ip",
+    "llm",
+    "os",
+    "pr",
+    "project",
+    "qa",
+    "repo",
+    "repository",
+    "ui",
+    "uri",
+    "url",
+}
+
+
 def _query_entities(query: str) -> set[str]:
     """Return proper names and acronyms that should be present in supporting source."""
     question_words = {"how", "what", "when", "where", "which", "who", "why"}
-    words = re.findall(r"[A-Za-z][A-Za-z0-9]*", query)
+    scrubbed = re.sub(
+        r"\b(?:in|from|across|throughout)\s+(?:(?:this|the|my|our)\s+)?(?:[\w-]+\s+)*"
+        r"(?:repo|repository|codebase|project)\b",
+        " ",
+        query,
+        flags=re.IGNORECASE,
+    )
     entities = set()
-    for index, word in enumerate(words):
+    for m in re.finditer(r"[A-Za-z][A-Za-z0-9]*", scrubbed):
+        word = m.group(0)
+        start = m.start()
+        prefix = scrubbed[:start].rstrip()
+        is_sentence_start = (not prefix) or prefix[-1] in ".!?:;\n"
+        lower = word.lower()
+        if lower in GENERIC_QUERY_TERMS or lower in question_words or lower in STOP_WORDS:
+            continue
         if word.isupper() and len(word) > 1:
-            entities.add(word.lower())
-        elif (
-            index > 0
-            and word[0].isupper()
-            and word.lower() not in question_words
-            and word.lower() not in STOP_WORDS
-        ):
-            entities.add(word.lower())
+            entities.add(lower)
+        elif not is_sentence_start and word[0].isupper():
+            entities.add(lower)
     return entities
 
 
@@ -351,13 +388,20 @@ def retrieve(db: Session, repository_id: int, commit_sha: str, query: str) -> li
         for number, tokens in enumerate(tokenized_lines, 1):
             score = sum(weights[term] for term in terms.intersection(tokens))
             if score:
-                declaration = bool(
-                    re.match(r"\s*(?:async\s+)?(?:def|class|function)\b", lines[number - 1])
+                decl_m = re.match(
+                    r"\s*(?:async\s+)?(?:def|class)\s+([A-Za-z0-9_]+)\b", lines[number - 1]
                 )
+                declaration = bool(decl_m) or bool(
+                    re.match(r"\s*(?:async\s+)?function\b", lines[number - 1])
+                )
+                if decl_m and decl_m.group(1).lower() in terms:
+                    score += 5.0
+                elif declaration:
+                    score += 1.5
                 matching.append((score, declaration, number))
         if not matching:
             continue
-        _, _, line_number = max(matching, key=lambda item: (item[0], item[1], -item[2]))
+        _, is_decl, line_number = max(matching, key=lambda item: (item[0], item[1], -item[2]))
         # BM25-style term frequency with length normalization reduces repetition bias.
         document_length = len(content_tokens)
         score = 0.0
@@ -380,7 +424,11 @@ def retrieve(db: Session, repository_id: int, commit_sha: str, query: str) -> li
             score *= 0.65
         if "migrations" in path_parts and not terms.intersection({"migration", "migrations"}):
             score *= 0.75
-        start, end = max(1, line_number - 5), min(len(lines), line_number + 5)
+        if is_decl:
+            start = max(1, line_number - 1)
+            end = min(len(lines), line_number + 20)
+        else:
+            start, end = max(1, line_number - 5), min(len(lines), line_number + 5)
         content = "\n".join(lines[start - 1 : end])
         if _chunk_supports_operations(content, requested_operations):
             evidence.append(Evidence(file.path, start, end, content, score))
@@ -426,14 +474,20 @@ def classify_intent(query: str, history: list[dict[str, str]] | None = None) -> 
     # 3. Repository Intelligence (Explicit repository indicators)
     has_repo_keyword = bool(
         re.search(
-            r"\b(?:in|from|across|throughout)\s+(?:this|the|my|our)\s+"
+            r"\b(?:in|from|across|throughout)\s+(?:(?:this|the|my|our)\s+)?(?:[\w-]+\s+)*"
             r"(?:repo|repository|codebase|project)\b",
             clean_q,
             re.IGNORECASE,
         )
         or re.search(
-            r"\b(?:this|our|the|my)\s+(?:repo|repository|codebase|project)\s+"
+            r"\b(?:this|our|the|my)\s+(?:[\w-]+\s+)*(?:repo|repository|codebase|project)\s+"
             r"(?:has|uses|implements|handles|contains|defines)\b",
+            clean_q,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:file\s+paths?|line\s+(?:numbers?|ranges?)|(?:source\s+)?citations?|"
+            r"cite\s+(?:the\s+)?(?:source|code)|source\s+(?:code|evidence|citations?))\b",
             clean_q,
             re.IGNORECASE,
         )
@@ -447,8 +501,20 @@ def classify_intent(query: str, history: list[dict[str, str]] | None = None) -> 
     )
     has_location_query = bool(
         re.search(
-            r"\b(?:where\s+is|how\s+does|what\s+does|show\s+me|find|locate)\s+.*?\s+"
-            r"(?:implemented|handled|defined|located|configured|called|work)\b",
+            r"\b(?:where\s+is|how\s+(?:does|do|can|is)|what\s+(?:does|is|are|happens?\s+(?:when|if))|"
+            r"show\s+(?:me\s+)?(?:how)?|find|locate|explain\s+(?:how|what|where)?)\s+.*?\s+"
+            r"(?:implemented|handled|defined|located|configured|called|work|works|selects?|selected|"
+            r"determines?|determined|chooses?|chosen|initializes?|initialized)\b",
+            clean_q,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:find|locate|explain|show)\s+(?:how\s+)?(?:the\s+)?(?:\w+\.)*\w+\s*\(\s*\)",
+            clean_q,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"\b[a-zA-Z_][a-zA-Z0-9_]*\s*\(\s*\)\s+(?:selects?|handles?|calls?|works?|returns?|implements?)\b",
             clean_q,
             re.IGNORECASE,
         )
@@ -456,7 +522,10 @@ def classify_intent(query: str, history: list[dict[str, str]] | None = None) -> 
         or (re.match(r"^\s*explain\s+", lower_q) and has_file_path)
     )
     has_symbol_query = bool(
-        re.search(r"\b(?:how\s+does|what\s+is\s+in)\s+[a-zA-Z_][a-zA-Z0-9_]*", lower_q)
+        re.search(
+            r"\b(?:how\s+(?:does|do)|what\s+(?:is\s+in|does|happens?\s+when))\s+[a-zA-Z_][a-zA-Z0-9_]*",
+            lower_q,
+        )
         or re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", clean_q)
     )
     if has_repo_keyword or has_file_path or has_location_query or has_symbol_query:
@@ -811,8 +880,7 @@ def _parse_completion_response(body: object, model: str, duration: float = 0.0) 
             )
             raise ValueError("Response was blocked by provider safety filters.")
         logger.warning(
-            "Cloud provider returned empty response: "
-            "model=%s, duration=%.2fs, finish_reason=%s",
+            "Cloud provider returned empty response: model=%s, duration=%.2fs, finish_reason=%s",
             model,
             duration,
             finish_reason,
@@ -946,9 +1014,7 @@ def _handle_cloud_error(exc: Exception, model: str, duration: float = 0.0) -> Pr
             if not detail.startswith(prefix):
                 return ProviderError(f"{prefix}{detail}")
             return ProviderError(detail)
-        return ProviderError(
-            f"{prefix}Provider returned an unexpected or malformed response."
-        )
+        return ProviderError(f"{prefix}Provider returned an unexpected or malformed response.")
     logger.error(
         "Cloud provider unexpected error: model=%s, duration=%.2fs, exc=%s",
         model,
@@ -1065,7 +1131,7 @@ class CompatibleCloudProvider(Provider):
                 if retry_after is not None:
                     delay = min(self.max_backoff, max(0.1, retry_after))
                 else:
-                    backoff = min(self.max_backoff, self.base_backoff * (2 ** attempt))
+                    backoff = min(self.max_backoff, self.base_backoff * (2**attempt))
                     jitter = random.uniform(0.1, 0.4)
                     delay = min(self.max_backoff, backoff + jitter)
 
@@ -1107,7 +1173,7 @@ class CompatibleCloudProvider(Provider):
                     )
                     raise _handle_cloud_error(exc, self.model, duration=duration) from exc
 
-                backoff = min(self.max_backoff, self.base_backoff * (2 ** attempt))
+                backoff = min(self.max_backoff, self.base_backoff * (2**attempt))
                 delay = min(self.max_backoff, backoff + random.uniform(0.1, 0.4))
                 elapsed_now = time.monotonic() - start_time
 
@@ -1145,7 +1211,11 @@ class CompatibleCloudProvider(Provider):
             "You are RepoPilot Fix, a helpful and knowledgeable AI software engineering assistant. "
             "Answer the user's question clearly, accurately, and concisely. Provide helpful "
             "conceptual explanations, programming guidance, or friendly conversational answers. "
-            "Use GitHub Flavored Markdown for formatting."
+            "Use GitHub Flavored Markdown for formatting. "
+            "Do not invent or fabricate repository files, internal implementation details, "
+            "or source citations for repositories. If asked about repository-specific files or "
+            "code without provided source evidence, clearly state that you do not have indexed "
+            "repository source evidence for that question."
         )
         prior_turns = ""
         if history:
@@ -1168,7 +1238,11 @@ class CompatibleCloudProvider(Provider):
             "You are RepoPilot Fix, an expert coding assistant and senior software engineer. "
             "Help the user understand code snippets, diagnose bugs, suggest improvements, write "
             "clean idiomatic code, and explain data structures and algorithms. Always format code "
-            "using standard Markdown code blocks with appropriate language tags."
+            "using standard Markdown code blocks with appropriate language tags. "
+            "Do not invent or fabricate repository files, internal implementation details, "
+            "or source citations for repositories. If asked about repository-specific files or "
+            "code without provided source evidence, clearly state that you do not have indexed "
+            "repository source evidence for that question."
         )
         prior_turns = ""
         if history:
@@ -1538,7 +1612,17 @@ def _citation_references_are_valid(answer: str, evidence: list[Evidence]) -> boo
     labels = [int(reference) for reference in references]
     if not labels or any(label < 1 or label > len(evidence) for label in labels):
         return False
-    cited = {evidence[label - 1].path: evidence[label - 1] for label in labels}
+
+    cited_by_path: dict[str, list[Evidence]] = defaultdict(list)
+    valid_paths: set[str] = set()
+    valid_basenames: set[str] = set()
+    for label in labels:
+        item = evidence[label - 1]
+        cited_by_path[item.path].append(item)
+        cited_by_path[item.path.rsplit("/", 1)[-1]].append(item)
+        valid_paths.add(item.path)
+        valid_basenames.add(item.path.rsplit("/", 1)[-1])
+
     path_references = re.findall(
         r"(?<![\w/])([\w./-]+\.(?:py|tsx?|jsx?|json|md|toml|ya?ml)):(\d+)"
         r"(?:-(\d+))?",
@@ -1546,9 +1630,29 @@ def _citation_references_are_valid(answer: str, evidence: list[Evidence]) -> boo
         re.IGNORECASE,
     )
     for path, start, end in path_references:
-        item = cited.get(path)
-        if item is None or int(start) < item.start_line or int(end or start) > item.end_line:
+        items = cited_by_path.get(path)
+        if not items:
             return False
+        start_line = int(start)
+        end_line = int(end or start)
+        if not any(item.start_line <= start_line and end_line <= item.end_line for item in items):
+            return False
+
+    # Ensure no fabricated or ungrounded file paths appear in the answer
+    text_no_urls = re.sub(r"https?://\S+", "", answer)
+    all_paths = re.findall(
+        r"(?<![\w/@:.-])([a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)*\.(?:py|tsx?|jsx?|toml|ya?ml|json|md))\b",
+        text_no_urls,
+        re.IGNORECASE,
+    )
+    for p in all_paths:
+        if p.startswith(("application/", "text/", "image/", "multipart/")):
+            continue
+        norm_p = p.lstrip("/").removeprefix("./")
+        basename = norm_p.rsplit("/", 1)[-1]
+        if norm_p not in valid_paths and basename not in valid_basenames:
+            return False
+
     return True
 
 
@@ -1616,10 +1720,11 @@ def ask(
                 if i in used and item.start_line >= 1 and item.end_line >= item.start_line
             ]
         if bounded and not citations and answer.strip():
-            answer = (
-                "I couldn't verify the source citations for that response, "
-                "so I can't provide a grounded answer."
-            )
+            if "couldn't find enough indexed source evidence" not in answer.lower():
+                answer = (
+                    "I couldn't verify the source citations for that response, "
+                    "so I can't provide a grounded answer."
+                )
 
     user_msg = ChatMessage(session_id=session.id, role="user", content=question, citations="[]")
     user_msg.mode = resolved_mode.value
