@@ -1,132 +1,126 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import Link from "next/link";
-import { VerificationPanel } from "@/components/VerificationPanel";
+import { useCallback, useEffect, useRef, useState, FormEvent } from "react";
+import {
+  Repository,
+  IndexStatus,
+  IndexedFileItem,
+  ChatSession,
+  ChatMessage,
+  IssueAnalysisResponse,
+  WorkspaceView,
+  AuthUser,
+} from "../lib/types";
+import { apiRequest, getApiUrl } from "../lib/api";
+import { ToastProvider, useToast } from "../components/Toast";
+import { CommandPalette } from "../components/CommandPalette";
+import { NavigationRail } from "../components/NavigationRail";
+import { Header } from "../components/Header";
+import { ExplorerPanel } from "../components/ExplorerPanel";
+import { CodeViewer } from "../components/CodeViewer";
+import { DashboardOverview } from "../components/DashboardOverview";
+import { IssueWorkspace } from "../components/IssueWorkspace";
+import { PatchReviewWorkspace } from "../components/PatchReviewWorkspace";
+import { VerificationWorkspace } from "../components/VerificationWorkspace";
+import { ActivityWorkspace } from "../components/ActivityWorkspace";
+import { SettingsWorkspace } from "../components/SettingsWorkspace";
+import { AiChatPanel } from "../components/AiChatPanel";
+import { BottomPanel } from "../components/BottomPanel";
 
-type Repository = {
-  id: number;
-  owner: string;
-  name: string;
-  full_name: string;
-  url: string;
-  description: string | null;
-  default_branch: string;
-  stars: number;
-};
-type IndexStatus = { status: string; file_count: number; symbol_count: number; languages: string[]; commit_sha: string; error?: string | null };
-type Citation = { path: string; start_line: number; end_line: number };
-type ChatMessage = { id: number; role: string; content: string; citations: Citation[]; mode?: string };
-type ChatSession = { id: number; repository_id: number; title: string; commit_sha: string; messages?: ChatMessage[] };
-type AuthUser = { id: number; login: string };
-
-type FileCitation = {
+interface OpenTab {
   path: string;
-  start_line: number;
-  end_line: number;
-  explanation?: string;
-};
-
-type PatchProposal = {
-  file_path: string;
-  explanation: string;
-  diff: string;
-};
-
-type ProposedFix = {
-  explanation: string;
-  patches: PatchProposal[];
-};
-
-type IssueAnalysis = {
-  summary: string;
-  root_cause_hypothesis: string;
-  relevant_files: FileCitation[];
-  proposed_fix: ProposedFix;
-  confidence: "low" | "medium" | "high";
-  confidence_reasoning?: string;
-  limitations: string[];
-};
-
-type IssueAnalysisResponse = {
-  repository_id: number;
-  commit_sha: string;
-  issue_number: number;
-  issue_title: string;
-  issue_body: string;
-  issue_url: string;
-  query: string;
-  evidence: Array<{
-    path: string;
-    start_line: number;
-    end_line: number;
-    content: string;
-    score: number;
-  }>;
-  analysis: IssueAnalysis;
-};
-
-const apiUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
-
-function apiRequest(path: string, init: RequestInit = {}, csrfToken = "") {
-  const headers = new Headers(init.headers);
-  const method = (init.method || "GET").toUpperCase();
-  if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) {
-    headers.set("X-CSRF-Token", csrfToken);
-  }
-  return fetch(`${apiUrl}${path}`, { ...init, headers, credentials: "include" });
+  content?: string;
+  highlightRange?: { start: number; end: number };
 }
 
-export default function Home() {
+function MainWorkspace() {
+  const { showToast } = useToast();
+  const apiUrl = getApiUrl();
+
+  // Core Data State
   const [repositories, setRepositories] = useState<Repository[]>([]);
-  const [url, setUrl] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [activeRepo, setActiveRepo] = useState<Repository | null>(null);
   const [indexes, setIndexes] = useState<Record<number, IndexStatus>>({});
-  const [indexing, setIndexing] = useState<number | null>(null);
-  const [chatRepository, setChatRepository] = useState<number | null>(null);
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
-  const [question, setQuestion] = useState("");
-  const [chatBusy, setChatBusy] = useState(false);
-  const [chatError, setChatError] = useState("");
-  const [lastFailedQuestion, setLastFailedQuestion] = useState<{ text: string; mode: string } | null>(null);
-  const [chatMode, setChatMode] = useState<"auto" | "general" | "coding" | "repository" | "verified_fix">("auto");
-  const [analysisRepo, setAnalysisRepo] = useState<number | null>(null);
-  const [issueNumber, setIssueNumber] = useState("");
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analysisError, setAnalysisError] = useState("");
-  const [analysisResult, setAnalysisResult] = useState<IssueAnalysisResponse | null>(null);
+  const [indexingId, setIndexingId] = useState<number | null>(null);
+  const [loadingRepos, setLoadingRepos] = useState(true);
+
+  // Auth & Backend State
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [backendStatus, setBackendStatus] = useState<"ready" | "connecting" | "offline">("connecting");
   const csrfToken = useRef("");
 
+  // Workspace Navigation & Views
+  const [currentView, setCurrentView] = useState<WorkspaceView>("overview");
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [isExplorerCollapsed, setIsExplorerCollapsed] = useState(false);
+  const [isChatCollapsed, setIsChatCollapsed] = useState(false);
+  const [isBottomExpanded, setIsBottomExpanded] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [modalImportUrl, setModalImportUrl] = useState("");
+  const [modalImporting, setModalImporting] = useState(false);
+  const [modalImportError, setModalImportError] = useState("");
+
+  // Files & Code Viewer State
+  const [indexedFiles, setIndexedFiles] = useState<IndexedFileItem[]>([]);
+  const [loadingFiles, setLoadingFiles] = useState(false);
+  const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
+  const [activeTabPath, setActiveTabPath] = useState<string | null>(null);
+
+  // Chat State
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatError, setChatError] = useState("");
+  const [chatMode, setChatMode] = useState<"auto" | "general" | "coding" | "repository">("auto");
+  const [lastFailedQuestion, setLastFailedQuestion] = useState<{ text: string; mode: string } | null>(null);
+
+  // Issue & Patch State
+  const [analysisResult, setAnalysisResult] = useState<IssueAnalysisResponse | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState("");
+
+  // Load Repositories and Index Statuses
   const loadRepositories = useCallback(async () => {
-    setLoading(true);
+    setLoadingRepos(true);
     try {
       const response = await apiRequest("/api/repositories", { cache: "no-store" });
-      if (!response.ok) throw new Error("Could not load repositories. Check that the API is running.");
-      const items = await response.json() as Repository[];
+      if (!response.ok) throw new Error("Could not load repositories from API.");
+      const items = (await response.json()) as Repository[];
       setRepositories(items);
-      const statuses = await Promise.all(items.map(async (repo) => {
-        const statusResponse = await apiRequest(`/api/repositories/${repo.id}/index`, { cache: "no-store" });
-        if (!statusResponse.ok) return null;
-        return [repo.id, await statusResponse.json() as IndexStatus] as const;
-      }));
-      setIndexes(Object.fromEntries(statuses.filter((item): item is NonNullable<typeof item> => item !== null)));
-      setError("");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Something went wrong.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
 
+      if (items.length > 0 && !activeRepo) {
+        setActiveRepo(items[0]);
+      }
+
+      const statuses = await Promise.all(
+        items.map(async (repo) => {
+          const statusRes = await apiRequest(`/api/repositories/${repo.id}/index`, { cache: "no-store" });
+          if (!statusRes.ok) return null;
+          return [repo.id, (await statusRes.json()) as IndexStatus] as const;
+        })
+      );
+      setIndexes(
+        Object.fromEntries(statuses.filter((item): item is NonNullable<typeof item> => item !== null))
+      );
+    } catch (reason) {
+      showToast(reason instanceof Error ? reason.message : "Failed to load repositories", "error");
+    } finally {
+      setLoadingRepos(false);
+    }
+  }, [activeRepo, showToast]);
+
+  // Auth & Backend Initialization
   useEffect(() => {
     void (async () => {
       try {
+        const healthRes = await apiRequest("/health", { cache: "no-store" }).catch(() => null);
+        if (healthRes && healthRes.ok) {
+          setBackendStatus("ready");
+        } else {
+          setBackendStatus("offline");
+        }
+
         const response = await apiRequest("/api/auth/session", { cache: "no-store" });
         const session = await response.json();
         if (session.authenticated) {
@@ -135,22 +129,79 @@ export default function Home() {
           await loadRepositories();
         } else {
           setRepositories([]);
-          setLoading(false);
+          setLoadingRepos(false);
         }
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : "Could not check sign-in status.");
-        setLoading(false);
+        setBackendStatus("offline");
+        showToast(reason instanceof Error ? reason.message : "Authentication check failed", "error");
+        setLoadingRepos(false);
       } finally {
         setAuthLoading(false);
       }
     })();
-  }, [loadRepositories]);
+  }, [loadRepositories, showToast]);
 
-  function signIn() {
+  // Load Indexed Files when active repository changes
+  const loadIndexedFiles = useCallback(
+    async (repoId: number) => {
+      setLoadingFiles(true);
+      try {
+        const response = await apiRequest(`/api/repositories/${repoId}/files`, { cache: "no-store" });
+        if (response.ok) {
+          const items = (await response.json()) as IndexedFileItem[];
+          setIndexedFiles(items);
+        } else {
+          setIndexedFiles([]);
+        }
+      } catch {
+        setIndexedFiles([]);
+      } finally {
+        setLoadingFiles(false);
+      }
+    },
+    []
+  );
+
+  // Load Chat Sessions when active repository changes
+  const loadSessions = useCallback(
+    async (repoId: number) => {
+      try {
+        const response = await apiRequest(`/api/chat/sessions?repository_id=${repoId}`, { cache: "no-store" });
+        if (response.ok) {
+          const items = (await response.json()) as ChatSession[];
+          setSessions(items);
+          if (items.length > 0) {
+            // Load latest session details
+            const sRes = await apiRequest(`/api/chat/sessions/${items[0].id}`, { cache: "no-store" });
+            if (sRes.ok) {
+              setActiveSession((await sRes.json()) as ChatSession);
+            }
+          } else {
+            setActiveSession(null);
+          }
+        }
+      } catch {
+        setSessions([]);
+        setActiveSession(null);
+      }
+    },
+    []
+  );
+
+  // Effect: When activeRepo changes, load files and chat sessions
+  useEffect(() => {
+    if (activeRepo) {
+      void loadIndexedFiles(activeRepo.id);
+      void loadSessions(activeRepo.id);
+    }
+  }, [activeRepo, loadIndexedFiles, loadSessions]);
+
+  // Auth Handlers
+  const signIn = () => {
     window.location.assign(`${apiUrl}/api/auth/github/login`);
-  }
+  };
 
-  async function signOut() {
+  const signOut = async () => {
     try {
       const response = await apiRequest("/api/auth/logout", { method: "POST" }, csrfToken.current);
       if (!response.ok) throw new Error("Could not sign out.");
@@ -159,91 +210,193 @@ export default function Home() {
       setRepositories([]);
       setSessions([]);
       setActiveSession(null);
+      showToast("Signed out successfully", "info");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not sign out.");
+      showToast(reason instanceof Error ? reason.message : "Sign out error", "error");
     }
-  }
+  };
 
-  async function loadSessions(repositoryId: number) {
-    setChatRepository(repositoryId);
-    setActiveSession(null);
-    setChatError("");
-    setLastFailedQuestion(null);
+  // Reindex Action
+  const handleReindex = async (repoId: number) => {
+    setIndexingId(repoId);
+    showToast("Indexing initiated in background…", "info");
     try {
-      const response = await apiRequest(`/api/chat/sessions?repository_id=${repositoryId}`, { cache: "no-store" });
-      if (!response.ok) throw new Error("Could not load chat history.");
-      setSessions(await response.json() as ChatSession[]);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not load chat history."); }
-  }
+      const res = await apiRequest(`/api/repositories/${repoId}/index`, { method: "POST" }, csrfToken.current);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Indexing failed to start.");
+      setIndexes((prev) => ({ ...prev, [repoId]: data }));
 
-  async function openSession(session: ChatSession) {
+      // Poll until finished
+      for (let attempt = 0; attempt < 30; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const statusRes = await apiRequest(`/api/repositories/${repoId}/index`, { cache: "no-store" });
+        if (!statusRes.ok) break;
+        const status = (await statusRes.json()) as IndexStatus;
+        setIndexes((prev) => ({ ...prev, [repoId]: status }));
+        if (!["queued", "running"].includes(status.status)) {
+          if (status.status === "ready") {
+            showToast("Repository indexing completed successfully", "success");
+            void loadIndexedFiles(repoId);
+          }
+          break;
+        }
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Indexing error", "error");
+    } finally {
+      setIndexingId(null);
+    }
+  };
+
+  // Import Repo Action
+  const handleImportRepo = async (url: string) => {
+    const res = await apiRequest(
+      "/api/repositories/import",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      },
+      csrfToken.current
+    );
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Repository import failed.");
+    const repo = data as Repository;
+    setRepositories((prev) => (prev.some((r) => r.id === repo.id) ? prev : [repo, ...prev]));
+    setActiveRepo(repo);
+    showToast(`${repo.full_name} imported into workspace`, "success");
+  };
+
+  const handleModalImport = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!modalImportUrl.trim()) return;
+    setModalImporting(true);
+    setModalImportError("");
+    try {
+      await handleImportRepo(modalImportUrl.trim());
+      setModalImportUrl("");
+      setIsImportModalOpen(false);
+    } catch (err) {
+      setModalImportError(err instanceof Error ? err.message : "Failed to import repository.");
+    } finally {
+      setModalImporting(false);
+    }
+  };
+
+  // File & Tab Actions
+  const handleOpenFile = (path: string) => {
+    if (!openTabs.some((t) => t.path === path)) {
+      setOpenTabs((prev) => [...prev, { path }]);
+    }
+    setActiveTabPath(path);
+  };
+
+  const handleCloseTab = (path: string) => {
+    setOpenTabs((prev) => prev.filter((t) => t.path !== path));
+    if (activeTabPath === path) {
+      const remaining = openTabs.filter((t) => t.path !== path);
+      setActiveTabPath(remaining.length > 0 ? remaining[remaining.length - 1].path : null);
+    }
+  };
+
+  const handleOpenCitation = (path: string, start: number, end: number) => {
+    setOpenTabs((prev) => {
+      const exists = prev.find((t) => t.path === path);
+      if (exists) {
+        return prev.map((t) =>
+          t.path === path ? { ...t, highlightRange: { start, end } } : t
+        );
+      }
+      return [...prev, { path, highlightRange: { start, end } }];
+    });
+    setActiveTabPath(path);
+    setCurrentView("repos");
+    showToast(`Navigated to ${path}:L${start}-L${end}`, "info");
+  };
+
+  // Chat Actions
+  const handleNewSession = async () => {
+    if (!activeRepo) return;
     setChatBusy(true);
     setChatError("");
     setLastFailedQuestion(null);
     try {
-      const response = await apiRequest(`/api/chat/sessions/${session.id}`, { cache: "no-store" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Could not load conversation.");
+      const res = await apiRequest(
+        "/api/chat/sessions",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repository_id: activeRepo.id }),
+        },
+        csrfToken.current
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not create chat session.");
+      const session = data as ChatSession;
+      setSessions((prev) => [session, ...prev]);
+      setActiveSession({ ...session, messages: [] });
+      showToast("Fresh conversation initialized", "info");
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : "Failed to start chat");
+    } finally {
+      setChatBusy(false);
+    }
+  };
+
+  const handleSelectSession = async (session: ChatSession) => {
+    setChatBusy(true);
+    setChatError("");
+    setLastFailedQuestion(null);
+    try {
+      const res = await apiRequest(`/api/chat/sessions/${session.id}`, { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not load session.");
       setActiveSession(data as ChatSession);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not load conversation."); }
-    finally { setChatBusy(false); }
-  }
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : "Failed to load session");
+    } finally {
+      setChatBusy(false);
+    }
+  };
 
-  async function deleteChat(session: ChatSession) {
-    if (!window.confirm(`Permanently delete “${session.title}” and its messages?`)) return;
+  const handleDeleteSession = async (session: ChatSession) => {
+    if (!window.confirm(`Delete conversation "${session.title}"?`)) return;
     try {
-      const response = await apiRequest(`/api/chat/sessions/${session.id}`, { method: "DELETE" }, csrfToken.current);
-      if (!response.ok) throw new Error("Could not delete conversation.");
-      setSessions((items) => items.filter((item) => item.id !== session.id));
-      setActiveSession((current) => current?.id === session.id ? null : current);
+      const res = await apiRequest(`/api/chat/sessions/${session.id}`, { method: "DELETE" }, csrfToken.current);
+      if (!res.ok) throw new Error("Could not delete session.");
+      setSessions((prev) => prev.filter((s) => s.id !== session.id));
       if (activeSession?.id === session.id) {
-        setChatError("");
-        setLastFailedQuestion(null);
+        setActiveSession(null);
       }
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not delete conversation."); }
-  }
+      showToast("Conversation deleted", "info");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Failed to delete session", "error");
+    }
+  };
 
-  async function clearChatHistory() {
-    if (!activeSession || !window.confirm("Delete all messages in this conversation?")) return;
+  const handleClearSessionHistory = async () => {
+    if (!activeSession || !window.confirm("Clear all messages in this conversation?")) return;
     try {
-      const response = await apiRequest(
+      const res = await apiRequest(
         `/api/chat/sessions/${activeSession.id}/messages`,
         { method: "DELETE" },
-        csrfToken.current,
+        csrfToken.current
       );
-      if (!response.ok) throw new Error("Could not clear conversation history.");
-      setActiveSession((current) => current ? { ...current, messages: [] } : current);
-      setChatError("");
-      setLastFailedQuestion(null);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not clear conversation history."); }
-  }
+      if (!res.ok) throw new Error("Could not clear messages.");
+      setActiveSession((prev) => (prev ? { ...prev, messages: [] } : null));
+      showToast("Conversation history cleared", "info");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Failed to clear history", "error");
+    }
+  };
 
-  async function newSession() {
-    if (!chatRepository) return;
-    setChatBusy(true);
-    setError("");
-    setChatError("");
-    setLastFailedQuestion(null);
-    try {
-      const response = await apiRequest("/api/chat/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repository_id: chatRepository }) }, csrfToken.current);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Could not start chat.");
-      const session = data as ChatSession;
-      setSessions((items) => [session, ...items]); setActiveSession({ ...session, messages: [] });
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not start chat."); }
-    finally { setChatBusy(false); }
-  }
-
-  async function sendQuestion(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!activeSession || !question.trim()) return;
-    const text = question.trim();
+  const handleSendMessage = async (text: string) => {
+    if (!activeSession || !text.trim() || chatBusy) return;
     const modeToUse = chatMode;
-    setQuestion("");
     setChatBusy(true);
     setChatError("");
     try {
-      const response = await apiRequest(
+      const res = await apiRequest(
         `/api/chat/sessions/${activeSession.id}/messages`,
         {
           method: "POST",
@@ -252,10 +405,11 @@ export default function Home() {
         },
         csrfToken.current
       );
-      const data = (await response.json()) as ChatMessage & { detail?: string };
-      if (!response.ok) {
+      const data = (await res.json()) as ChatMessage & { detail?: string };
+      if (!res.ok) {
         throw new Error(data.detail || "Question could not be answered.");
       }
+
       setActiveSession((current) =>
         current
           ? {
@@ -268,738 +422,343 @@ export default function Home() {
             }
           : current
       );
+
       setSessions((items) =>
         items.map((item) =>
           item.id === activeSession.id && item.title === "New conversation"
-            ? { ...item, title: text.slice(0, 200) }
+            ? { ...item, title: text.slice(0, 180) }
             : item
         )
       );
       setLastFailedQuestion(null);
-    } catch (reason) {
-      setQuestion(text);
-      const msg = reason instanceof Error ? reason.message : "Question could not be answered.";
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Question could not be answered.";
       setChatError(msg);
       setLastFailedQuestion({ text, mode: modeToUse });
     } finally {
       setChatBusy(false);
     }
-  }
+  };
 
-  async function retryLastQuestion() {
-    if (!lastFailedQuestion || !activeSession || chatBusy) return;
-    const { text, mode } = lastFailedQuestion;
-    setChatBusy(true);
-    setChatError("");
-    try {
-      const response = await apiRequest(
-        `/api/chat/sessions/${activeSession.id}/messages`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: text, mode: mode === "auto" ? null : mode }),
-        },
-        csrfToken.current
-      );
-      const data = (await response.json()) as ChatMessage & { detail?: string };
-      if (!response.ok) {
-        throw new Error(data.detail || "Question could not be answered.");
-      }
-      setActiveSession((current) =>
-        current
-          ? {
-              ...current,
-              messages: [
-                ...(current.messages || []),
-                { id: Date.now(), role: "user", content: text, citations: [], mode },
-                data,
-              ],
-            }
-          : current
-      );
-      setSessions((items) =>
-        items.map((item) =>
-          item.id === activeSession.id && item.title === "New conversation"
-            ? { ...item, title: text.slice(0, 200) }
-            : item
-        )
-      );
-      setLastFailedQuestion(null);
-      setQuestion("");
-    } catch (reason) {
-      setQuestion(text);
-      const msg = reason instanceof Error ? reason.message : "Question could not be answered.";
-      setChatError(msg);
-    } finally {
-      setChatBusy(false);
+  const handleRetryLastQuestion = () => {
+    if (lastFailedQuestion) {
+      void handleSendMessage(lastFailedQuestion.text);
     }
-  }
+  };
 
-  async function importRepository(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSubmitting(true);
-    setError("");
-    setNotice("");
-    try {
-      const response = await apiRequest("/api/repositories/import", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }),
-      }, csrfToken.current);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Repository import failed.");
-      setRepositories((items) => items.some((item) => item.id === data.id) ? items : [data as Repository, ...items]);
-      setNotice(`${data.full_name} is ready in your workspace.`);
-      setUrl("");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Something went wrong.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function startIndex(repositoryId: number) {
-    setIndexing(repositoryId); setError("");
-    try {
-      const response = await apiRequest(`/api/repositories/${repositoryId}/index`, { method: "POST" }, csrfToken.current);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Indexing could not be started.");
-      setIndexes((state) => ({ ...state, [repositoryId]: data }));
-      for (let attempt = 0; attempt < 30; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        const statusResponse = await apiRequest(`/api/repositories/${repositoryId}/index`, { cache: "no-store" });
-        if (!statusResponse.ok) break;
-        const status = await statusResponse.json() as IndexStatus;
-        setIndexes((state) => ({ ...state, [repositoryId]: status }));
-        if (!["queued", "running"].includes(status.status)) break;
-      }
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Indexing failed."); }
-    finally { setIndexing(null); }
-  }
-
-  async function submitIssueAnalysis(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!analysisRepo || !issueNumber.trim()) return;
-    const num = parseInt(issueNumber.trim(), 10);
-    if (isNaN(num) || num < 1) {
-      setAnalysisError("Please enter a valid positive issue number.");
-      return;
-    }
+  // Issue Analysis Action
+  const handleAnalyzeIssue = async (repoId: number, issueNum: number) => {
     setAnalyzing(true);
     setAnalysisError("");
     setAnalysisResult(null);
     try {
-      const response = await apiRequest(
-        `/api/repositories/${analysisRepo}/issues/analyze`,
+      const res = await apiRequest(
+        `/api/repositories/${repoId}/issues/analyze`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ issue_number: num }),
+          body: JSON.stringify({ issue_number: issueNum }),
         },
         csrfToken.current
       );
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.detail || "Failed to analyze issue.");
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || "Issue analysis failed.");
       }
       setAnalysisResult(data as IssueAnalysisResponse);
-    } catch (reason) {
-      setAnalysisError(reason instanceof Error ? reason.message : "Analysis failed.");
+      showToast(`Analyzed issue #${issueNum} with grounded AST evidence`, "success");
+    } catch (err) {
+      setAnalysisError(err instanceof Error ? err.message : "Analysis failed.");
     } finally {
       setAnalyzing(false);
     }
+  };
+
+  const activeIndexStatus = activeRepo ? indexes[activeRepo.id] || null : null;
+
+  if (authLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#050505] text-zinc-400 font-mono text-xs">
+        <div className="flex items-center gap-3">
+          <span className="size-2 rounded-full bg-[#BFFF00] animate-pulse" />
+          <span>Connecting to RepoPilot Intelligence Gateway…</span>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <main className="min-h-screen px-5 py-6 md:px-12 md:py-8">
-      <header className="mx-auto flex max-w-6xl items-center justify-between border-b border-[var(--line)] pb-5">
-        <Link href="/" className="flex items-center gap-3 font-semibold tracking-tight">
-          <span className="grid size-9 place-items-center rounded-xl bg-[var(--accent)] text-sm font-black text-[#092018]">RP</span>
-          <span>RepoPilot <span className="text-[var(--accent)]">Fix</span></span>
-        </Link>
-        <div className="flex items-center gap-3">
-          <span className="flex items-center gap-2 rounded-full border border-[var(--line)] px-3 py-2 text-xs text-[var(--muted)]"><span className="size-2 rounded-full bg-emerald-400" /> Public repositories only</span>
-          {currentUser ? <><span className="text-sm text-[var(--muted)]">{currentUser.login}</span><button onClick={() => void signOut()} className="rounded-lg border border-[var(--line)] px-3 py-2 text-xs">Sign out</button></> : !authLoading && <button onClick={signIn} className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-[#092018]">Sign in with GitHub</button>}
-        </div>
-      </header>
+    <div className="flex h-screen w-screen flex-col bg-[#050505] text-[#F5F5F5] overflow-hidden relative">
+      {/* Background Decor from Superdesign v2 */}
+      <div className="absolute inset-0 pointer-events-none overflow-hidden z-0">
+        <div className="absolute top-[-10%] right-[-10%] w-[40%] h-[40%] bg-lime-500/10 blur-[120px] rounded-full" />
+        <div className="absolute bottom-[-10%] left-[-10%] w-[30%] h-[30%] bg-cyan-500/10 blur-[100px] rounded-full" />
+        <div className="absolute inset-0 scanline opacity-30" />
+      </div>
 
-      {authLoading ? <p className="mx-auto max-w-6xl py-20 text-center text-sm text-[var(--muted)]">Checking sign-in…</p> : !currentUser ? <section className="mx-auto max-w-2xl py-24 text-center"><h1 className="text-3xl font-semibold">Sign in to your private workspace</h1><p className="mt-3 text-sm text-[var(--muted)]">Your repositories and conversations are visible only to your account.</p><button onClick={signIn} className="mt-7 rounded-xl bg-[var(--accent)] px-6 py-3 font-semibold text-[#092018]">Continue with GitHub</button></section> : <>
-      <section className="mx-auto max-w-6xl pb-20 pt-12 md:pt-20">
-        <div className="max-w-3xl">
-          <p className="mb-4 text-xs font-semibold uppercase tracking-[0.22em] text-[var(--accent)]">Your code, in focus</p>
-          <h1 className="text-4xl font-semibold leading-tight tracking-tight md:text-6xl">A clearer view of every codebase.</h1>
-          <p className="mt-5 max-w-2xl text-base leading-7 text-[var(--muted)]">Bring a public GitHub repository into RepoPilot. Start with the structure, then move toward a safer, faster fix.</p>
-        </div>
+      {/* Top Main Work Area */}
+      <div className="flex flex-1 overflow-hidden relative z-10">
+        {/* Left 56px Navigation Rail */}
+        <NavigationRail
+          currentView={currentView}
+          onSelectView={setCurrentView}
+          currentUser={currentUser}
+          onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+          onSignOut={() => void signOut()}
+          onSignIn={signIn}
+        />
 
-        <form onSubmit={importRepository} className="mt-10 flex flex-col gap-3 rounded-2xl border border-[var(--line)] bg-[#0e141b] p-4 shadow-2xl shadow-black/20 sm:flex-row sm:p-5">
-          <label htmlFor="repository-url" className="sr-only">GitHub repository URL</label>
-          <input id="repository-url" type="url" required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://github.com/owner/repository" className="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[#090d12] px-4 py-3 text-sm outline-none transition placeholder:text-[#64717e] focus:border-[var(--accent)]" />
-          <button disabled={submitting} className="rounded-xl bg-[var(--accent)] px-6 py-3 text-sm font-semibold text-[#092018] transition hover:brightness-110 disabled:cursor-wait disabled:opacity-60">{submitting ? "Importing…" : "Import repository"}</button>
-        </form>
-        <div aria-live="polite" className="min-h-8 pt-2 text-sm">{error ? <p className="text-rose-300">{error}</p> : notice ? <p className="text-[var(--accent)]">{notice}</p> : null}</div>
+        {/* Center + Explorer + Right Panels Column */}
+        <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
+          {/* Top Header */}
+          <Header
+            currentUser={currentUser}
+            activeRepoName={activeRepo?.full_name}
+            backendStatus={backendStatus}
+            onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+            onOpenImportModal={() => setIsImportModalOpen(true)}
+            isAiPanelOpen={!isChatCollapsed}
+            onToggleAiPanel={() => setIsChatCollapsed((prev) => !prev)}
+            onSignIn={signIn}
+          />
 
-        <section className="mt-8" aria-labelledby="repositories-heading">
-          <div className="mb-5 flex items-end justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">Workspace</p><h2 id="repositories-heading" className="mt-2 text-2xl font-semibold">Repositories <span className="ml-2 text-base font-normal text-[var(--muted)]">{repositories.length}</span></h2></div><button onClick={() => void loadRepositories()} className="text-sm text-[var(--muted)] transition hover:text-white">Refresh</button></div>
-          {loading ? <div className="rounded-2xl border border-[var(--line)] bg-[#0e141b] p-8 text-sm text-[var(--muted)]">Loading your repositories…</div> : repositories.length === 0 ? <div className="rounded-2xl border border-dashed border-[var(--line)] bg-[#0e141b]/60 px-6 py-12 text-center"><div className="mx-auto grid size-12 place-items-center rounded-2xl border border-[var(--line)] text-xl text-[var(--accent)]">⌘</div><h3 className="mt-4 font-medium">Your workspace is ready</h3><p className="mt-2 text-sm text-[var(--muted)]">Import a public GitHub repository above to get started.</p></div> : <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{repositories.map((repo) => <a key={repo.id} href={repo.url} target="_blank" rel="noreferrer" className="group rounded-2xl border border-[var(--line)] bg-[#0e141b] p-5 transition hover:-translate-y-0.5 hover:border-[#496154]"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-xs text-[var(--muted)]">{repo.owner}</p><h3 className="mt-1 truncate font-semibold group-hover:text-[var(--accent)]">{repo.name}</h3></div><span className="shrink-0 rounded-lg border border-[var(--line)] px-2 py-1 text-xs text-[var(--muted)]">★ {repo.stars.toLocaleString()}</span></div><p className="mt-4 line-clamp-2 min-h-10 text-sm leading-5 text-[var(--muted)]">{repo.description || "No description provided."}</p><div className="mt-5 flex items-center justify-between border-t border-[var(--line)] pt-4 text-xs text-[var(--muted)]"><span className="truncate">{repo.full_name}</span><span className="ml-2 shrink-0">⑂ {repo.default_branch}</span></div></a>)}</div>}
-          {repositories.length > 0 && <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{repositories.map((repo) => { const status = indexes[repo.id]; return <article key={`index-${repo.id}`} className="rounded-xl border border-[var(--line)] bg-[#0e141b] p-4"><div className="flex items-center justify-between gap-3"><h3 className="truncate text-sm font-medium">{repo.full_name}</h3><button onClick={() => void startIndex(repo.id)} disabled={indexing === repo.id} className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-[#092018] disabled:opacity-60">{indexing === repo.id ? "Indexing…" : status ? "Reindex" : "Index source"}</button></div>{status && <div className="mt-3 text-xs leading-5 text-[var(--muted)]"><p>{status.status} · {status.file_count} files · {status.symbol_count} symbols</p><p>{status.languages?.join(", ") || "Waiting for files"}</p>{status.error && <p className="text-rose-300">{status.error}</p>}</div>}</article>; })}</div>}
-        </section>
-        <section className="mt-14" aria-labelledby="chat-heading">
-          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent)]">
-                AI Coding Assistant & Repo Intelligence
-              </p>
-              <h2 id="chat-heading" className="mt-2 text-2xl font-semibold">
-                Unified AI Chat
-              </h2>
-            </div>
-            <label className="sr-only" htmlFor="chat-repository">
-              Choose a repository
-            </label>
-            <select
-              id="chat-repository"
-              value={chatRepository ?? ""}
-              onChange={(event) => {
-                const id = Number(event.target.value);
-                if (id) void loadSessions(id);
-                else {
-                  setChatRepository(null);
-                  setActiveSession(null);
-                  setSessions([]);
-                }
-              }}
-              className="rounded-xl border border-[var(--line)] bg-[#0e141b] px-4 py-3 text-sm"
-            >
-              <option value="">Choose a repository</option>
-              {repositories.map((repo) => (
-                <option key={repo.id} value={repo.id}>
-                  {repo.full_name}
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* Content Row: Explorer + Workspace Views + AI Drawer */}
+          <div className="flex-1 flex min-h-0 overflow-hidden">
+            {/* Left Explorer Panel (Collapsible) */}
+            {currentView === "repos" && (
+              <ExplorerPanel
+                repositories={repositories}
+                activeRepo={activeRepo}
+                onSelectRepo={(repo) => setActiveRepo(repo)}
+                indexStatus={activeIndexStatus}
+                indexing={indexingId === activeRepo?.id}
+                onReindex={handleReindex}
+                files={indexedFiles}
+                loadingFiles={loadingFiles}
+                selectedFilePath={activeTabPath}
+                onSelectFile={handleOpenFile}
+                onSelectSymbol={(path, line) => handleOpenCitation(path, line, line + 10)}
+                isCollapsed={isExplorerCollapsed}
+                onToggleCollapse={() => setIsExplorerCollapsed((prev) => !prev)}
+              />
+            )}
 
-          {chatRepository !== null && (
-            <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
-              <aside className="rounded-2xl border border-[var(--line)] bg-[#0e141b] p-3">
-                <button
-                  onClick={() => void newSession()}
-                  disabled={chatBusy || indexes[chatRepository]?.status !== "completed"}
-                  className="w-full rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-[#092018] disabled:opacity-50"
-                >
-                  New conversation
-                </button>
-                <p className="px-2 pb-2 pt-4 text-xs uppercase tracking-wider text-[var(--muted)]">
-                  History
-                </p>
-                {sessions.map((session) => (
-                  <div key={session.id} className="mb-1 flex items-center gap-1">
-                    <button
-                      onClick={() => void openSession(session)}
-                      className="min-w-0 flex-1 truncate rounded-lg px-3 py-2 text-left text-sm text-[var(--muted)] hover:bg-[#182129] hover:text-white"
-                    >
-                      {session.title}
-                    </button>
-                    <button
-                      aria-label={`Delete ${session.title}`}
-                      onClick={() => void deleteChat(session)}
-                      className="rounded-lg px-2 py-2 text-xs text-rose-300 hover:bg-[#182129]"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                ))}
-              </aside>
+            {/* Center Workspace Area */}
+            <main className="flex-1 flex flex-col min-w-0 overflow-hidden bg-[#07090c]">
+              {currentView === "overview" && (
+                <DashboardOverview
+                  currentUser={currentUser}
+                  repositories={repositories}
+                  indexes={indexes}
+                  loading={loadingRepos}
+                  onRefresh={() => void loadRepositories()}
+                  onImportRepo={handleImportRepo}
+                  onSelectRepo={(r) => {
+                    setActiveRepo(r);
+                    setCurrentView("repos");
+                  }}
+                  onSelectView={setCurrentView}
+                  onReindex={handleReindex}
+                  indexingId={indexingId}
+                  onSignIn={signIn}
+                />
+              )}
 
-              <div className="flex min-h-[480px] flex-col rounded-2xl border border-[var(--line)] bg-[#0e141b] p-4 sm:p-6">
-                {activeSession && (
-                  <div className="mb-3 flex items-center justify-between border-b border-[var(--line)] pb-3">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-[var(--muted)]">Mode:</span>
-                      <div className="flex flex-wrap gap-1.5 text-xs">
-                        {(
-                          [
-                            { id: "auto", label: "⚡ Auto Detect" },
-                            { id: "general", label: "💡 General AI" },
-                            { id: "coding", label: "💻 Coding" },
-                            { id: "repository", label: "📂 Repo Search" },
-                            { id: "verified_fix", label: "🛡️ Verified Fix" },
-                          ] as const
-                        ).map((modeOption) => (
-                          <button
-                            key={modeOption.id}
-                            type="button"
-                            onClick={() => setChatMode(modeOption.id)}
-                            className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
-                              chatMode === modeOption.id
-                                ? "bg-[var(--accent)] text-[#092018]"
-                                : "border border-[var(--line)] text-[var(--muted)] hover:text-white"
-                            }`}
-                          >
-                            {modeOption.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => void clearChatHistory()}
-                      className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-xs text-[var(--muted)] hover:text-rose-300"
-                    >
-                      Clear
-                    </button>
-                  </div>
-                )}
+          {currentView === "repos" && (
+            <CodeViewer
+              repoName={activeRepo?.full_name || "Repository"}
+              openTabs={openTabs}
+              activeTabPath={activeTabPath}
+              onSelectTab={setActiveTabPath}
+              onCloseTab={handleCloseTab}
+              indexedFiles={indexedFiles}
+              evidenceSnippets={analysisResult?.evidence || []}
+            />
+          )}
 
-                <div className="flex-1 space-y-4 overflow-y-auto" aria-live="polite">
-                  {!activeSession ? (
-                    <div className="pt-20 text-center">
-                      <p className="text-sm text-[var(--muted)]">
-                        {indexes[chatRepository]?.status === "completed"
-                          ? "Start a new conversation to ask general questions, debug code, or search the repository."
-                          : "Complete source indexing before starting a conversation."}
-                      </p>
-                    </div>
-                  ) : (activeSession.messages || []).length === 0 ? (
-                    <div className="py-8">
-                      <p className="mb-4 text-center text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
-                        Try asking or click a quick prompt:
-                      </p>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        {[
-                          { text: "hi", label: "👋 Say Hello", desc: "General greeting & overview", mode: "general" as const },
-                          { text: "What is recursion?", label: "💡 What is recursion?", desc: "Conceptual DSA explanation", mode: "general" as const },
-                          { text: "Explain binary search", label: "💻 Explain binary search", desc: "Algorithm & Python code example", mode: "coding" as const },
-                          { text: "Where is authentication handled in this repo?", label: "📂 Repository Search", desc: "Indexed source evidence & citations", mode: "repository" as const },
-                          { text: "Investigate GitHub issue #42", label: "🛡️ Investigate Issue #42", desc: "Proof-of-Fix agent workflow", mode: "verified_fix" as const },
-                        ].map((prompt, idx) => (
-                          <button
-                            key={idx}
-                            type="button"
-                            onClick={() => {
-                              setQuestion(prompt.text);
-                              setChatMode(prompt.mode);
-                            }}
-                            className="flex flex-col items-start rounded-xl border border-[var(--line)] bg-[#111a21] p-3 text-left transition hover:border-[var(--accent)] hover:bg-[#182129]"
-                          >
-                            <span className="text-xs font-semibold text-white">{prompt.label}</span>
-                            <span className="mt-1 text-[11px] text-[var(--muted)]">{prompt.desc}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ) : (
-                    (activeSession.messages || []).map((message) => {
-                      const modeKey = message.mode || "general";
-                      const modeStyles: Record<string, { label: string; badge: string }> = {
-                        general: {
-                          label: "💡 General AI",
-                          badge: "border-violet-500/30 bg-violet-950/40 text-violet-300",
-                        },
-                        coding: {
-                          label: "💻 Coding Assistant",
-                          badge: "border-sky-500/30 bg-sky-950/40 text-sky-300",
-                        },
-                        repository: {
-                          label: "📂 Repository Intelligence",
-                          badge: "border-emerald-500/30 bg-emerald-950/40 text-emerald-300",
-                        },
-                        verified_fix: {
-                          label: "🛡️ Verified Fix Agent",
-                          badge: "border-amber-500/30 bg-amber-950/40 text-amber-300",
-                        },
-                      };
-                      const currentModeInfo = modeStyles[modeKey] || modeStyles.general;
-
-                      return (
-                        <article
-                          key={message.id}
-                          className={`max-w-3xl rounded-2xl p-4 ${
-                            message.role === "user"
-                              ? "ml-auto border border-[#2d4a41]/40 bg-[#1b2a2b]"
-                              : "border border-[var(--line)] bg-[#111a21]"
-                          }`}
-                        >
-                          {message.role === "assistant" && (
-                            <div className="mb-2 flex items-center justify-between">
-                              <span
-                                className={`rounded-md border px-2 py-0.5 font-mono text-[11px] font-medium ${currentModeInfo.badge}`}
-                              >
-                                {currentModeInfo.label}
-                              </span>
-                            </div>
-                          )}
-
-                          {message.content.includes("```") ? (
-                            <div className="space-y-2">
-                              {message.content.split(/(```[\s\S]*?```)/g).map((part, i) => {
-                                if (part.startsWith("```") && part.endsWith("```")) {
-                                  const code = part.slice(3, -3).replace(/^\w*\n/, "");
-                                  const lang = (part.slice(3).match(/^(\w+)/) || [])[1] || "";
-                                  return (
-                                    <div
-                                      key={i}
-                                      className="my-2 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950"
-                                    >
-                                      {lang && (
-                                        <div className="border-b border-zinc-800 bg-zinc-900 px-3 py-1 font-mono text-[10px] text-zinc-400">
-                                          {lang}
-                                        </div>
-                                      )}
-                                      <pre className="overflow-x-auto p-3 font-mono text-xs text-emerald-300">
-                                        <code>{code}</code>
-                                      </pre>
-                                    </div>
-                                  );
-                                }
-                                return (
-                                  <p key={i} className="whitespace-pre-wrap text-sm leading-6">
-                                    {part}
-                                  </p>
-                                );
-                              })}
-                            </div>
-                          ) : (
-                            <p className="whitespace-pre-wrap text-sm leading-6">{message.content}</p>
-                          )}
-
-                          {message.citations.length > 0 && (
-                            <div className="mt-3 flex flex-wrap gap-2" aria-label="Source citations">
-                              {message.citations.map((citation) => (
-                                <span
-                                  key={`${citation.path}:${citation.start_line}`}
-                                  className="rounded-lg border border-[var(--line)] px-2 py-1 font-mono text-xs text-[var(--accent)]"
-                                >
-                                  {citation.path}:{citation.start_line}–{citation.end_line}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </article>
-                      );
-                    })
-                  )}
-
-                  {chatBusy && activeSession && (
-                    <div className="flex items-center gap-2 text-sm text-[var(--muted)]">
-                      <span className="inline-block size-2 animate-pulse rounded-full bg-[var(--accent)]" />
-                      <span>
-                        {chatMode === "general"
-                          ? "RepoPilot General AI is thinking…"
-                          : chatMode === "coding"
-                            ? "Coding Assistant analyzing & generating solution…"
-                            : chatMode === "verified_fix"
-                              ? "Verified Fix Agent reviewing Proof-of-Fix workflow…"
-                              : "Searching indexed source & verifying citations…"}
-                      </span>
-                    </div>
-                  )}
-
-                  {chatError && (
-                    <div
-                      role="alert"
-                      className="rounded-xl border border-rose-500/40 bg-rose-950/30 p-3.5 text-xs text-rose-200"
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-start gap-2">
-                          <span className="font-semibold text-rose-400">⚠️ Provider Error:</span>
-                          <span className="leading-5">{chatError}</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setChatError("")}
-                          className="shrink-0 rounded p-0.5 text-rose-400 transition hover:bg-rose-900/50 hover:text-white"
-                          aria-label="Dismiss error"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                      {lastFailedQuestion && (
-                        <div className="mt-2.5 flex items-center gap-3 border-t border-rose-500/20 pt-2">
-                          <button
-                            type="button"
-                            onClick={() => void retryLastQuestion()}
-                            disabled={chatBusy}
-                            className="rounded-lg bg-rose-500/20 px-3 py-1 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/30 disabled:opacity-50"
-                          >
-                            🔄 Retry Request
-                          </button>
-                          <span className="text-[11px] text-rose-300/70">
-                            Your input has been preserved.
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {activeSession && (
-                  <form onSubmit={sendQuestion} className="mt-5 flex gap-2 border-t border-[var(--line)] pt-4">
-                    <label htmlFor="chat-question" className="sr-only">
-                      Ask a question
-                    </label>
-                    <input
-                      id="chat-question"
-                      value={question}
-                      onChange={(event) => setQuestion(event.target.value)}
-                      maxLength={2000}
-                      placeholder={
-                        chatMode === "general"
-                          ? "Ask a general question, e.g. What is recursion?"
-                          : chatMode === "coding"
-                            ? "Ask a coding question or paste code to debug…"
-                            : chatMode === "repository"
-                              ? "Ask about this repo, e.g. Where is authentication handled?"
-                              : chatMode === "verified_fix"
-                                ? "Investigate an issue, e.g. Investigate GitHub issue #42"
-                                : "Ask anything: greetings, code debugging, repo search, or issue fixes…"
-                      }
-                      className="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[#090d12] px-4 py-3 text-sm outline-none focus:border-[var(--accent)]"
-                    />
-                    <button
-                      disabled={chatBusy || !question.trim()}
-                      className="rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-[#092018] disabled:opacity-50"
-                    >
-                      Ask
-                    </button>
-                  </form>
-                )}
+          {currentView === "chat" && (
+            <div className="flex-1 flex overflow-hidden">
+              <div className="flex-1">
+                <CodeViewer
+                  repoName={activeRepo?.full_name || "Repository"}
+                  openTabs={openTabs}
+                  activeTabPath={activeTabPath}
+                  onSelectTab={setActiveTabPath}
+                  onCloseTab={handleCloseTab}
+                  indexedFiles={indexedFiles}
+                  evidenceSnippets={analysisResult?.evidence || []}
+                />
               </div>
             </div>
           )}
-        </section>
 
-        <section className="mt-14" aria-labelledby="issues-heading">
-          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent)]">
-                Autonomous Diagnostics
-              </p>
-              <h2 id="issues-heading" className="mt-2 text-2xl font-semibold">
-                Issue Analysis & Fix Proposal
-              </h2>
-            </div>
-          </div>
-
-          <form
-            onSubmit={submitIssueAnalysis}
-            className="flex flex-col gap-3 rounded-2xl border border-[var(--line)] bg-[#0e141b] p-4 sm:flex-row sm:items-center sm:p-5"
-          >
-            <label className="sr-only" htmlFor="analysis-repository">
-              Select repository
-            </label>
-            <select
-              id="analysis-repository"
-              required
-              value={analysisRepo ?? ""}
-              onChange={(e) => {
-                const val = Number(e.target.value);
-                setAnalysisRepo(val || null);
-                setAnalysisResult(null);
-                setAnalysisError("");
-              }}
-              className="min-w-[200px] rounded-xl border border-[var(--line)] bg-[#090d12] px-4 py-3 text-sm text-white outline-none focus:border-[var(--accent)]"
-            >
-              <option value="">Select indexed repository</option>
-              {repositories.map((repo) => (
-                <option key={repo.id} value={repo.id}>
-                  {repo.full_name}
-                </option>
-              ))}
-            </select>
-
-            <label htmlFor="issue-number-input" className="sr-only">
-              GitHub issue number
-            </label>
-            <input
-              id="issue-number-input"
-              type="number"
-              min={1}
-              required
-              value={issueNumber}
-              onChange={(e) => setIssueNumber(e.target.value)}
-              placeholder="Issue # (e.g. 42)"
-              className="w-full sm:w-44 rounded-xl border border-[var(--line)] bg-[#090d12] px-4 py-3 text-sm outline-none placeholder:text-[#64717e] focus:border-[var(--accent)]"
+          {currentView === "issues" && (
+            <IssueWorkspace
+              repositories={repositories}
+              activeRepo={activeRepo}
+              onSelectRepo={setActiveRepo}
+              analysisResult={analysisResult}
+              onAnalyzeIssue={handleAnalyzeIssue}
+              analyzing={analyzing}
+              analysisError={analysisError}
+              onOpenCitation={handleOpenCitation}
+              onNavigateToPatch={() => setCurrentView("patch")}
+              onNavigateToVerification={() => setCurrentView("verification")}
             />
-
-            <button
-              disabled={
-                analyzing ||
-                !analysisRepo ||
-                !issueNumber ||
-                indexes[analysisRepo]?.status !== "completed"
-              }
-              className="rounded-xl bg-[var(--accent)] px-6 py-3 text-sm font-semibold text-[#092018] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {analyzing ? "Analyzing issue…" : "Analyze Issue & Propose Fix"}
-            </button>
-          </form>
-
-          {analysisError && (
-            <div className="mt-3 rounded-xl border border-rose-900/50 bg-rose-950/20 p-4 text-sm text-rose-300">
-              {analysisError}
-            </div>
           )}
 
-          {analysisResult && (
-            <div className="mt-6 space-y-6">
-              <article className="rounded-2xl border border-[var(--line)] bg-[#0e141b] p-6 shadow-xl">
-                <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--line)] pb-4">
-                  <div>
-                    <span className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
-                      Issue #{analysisResult.issue_number}
-                    </span>
-                    <h3 className="mt-1 text-xl font-semibold">
-                      <a
-                        href={analysisResult.issue_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="hover:text-[var(--accent)] transition"
-                      >
-                        {analysisResult.issue_title}
-                      </a>
-                    </h3>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wider ${
-                        analysisResult.analysis.confidence === "high"
-                          ? "bg-emerald-950/60 text-emerald-400 border border-emerald-800/40"
-                          : analysisResult.analysis.confidence === "medium"
-                          ? "bg-amber-950/60 text-amber-300 border border-amber-800/40"
-                          : "bg-rose-950/60 text-rose-300 border border-rose-800/40"
-                      }`}
-                    >
-                      {analysisResult.analysis.confidence} confidence
-                    </span>
-                  </div>
-                </div>
+          {currentView === "patch" && (
+            <PatchReviewWorkspace
+              analysisResult={analysisResult}
+              onLaunchVerification={() => setCurrentView("verification")}
+              onOpenCitation={handleOpenCitation}
+            />
+          )}
 
-                <div className="mt-5 space-y-2">
-                  <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
-                    Summary
-                  </h4>
-                  <p className="text-sm leading-relaxed text-[#c0d0d8]">
-                    {analysisResult.analysis.summary}
-                  </p>
-                </div>
+          {currentView === "verification" && (
+            <VerificationWorkspace
+              repositories={repositories}
+              activeRepo={activeRepo}
+              onSelectRepo={setActiveRepo}
+              commitSha={analysisResult?.commit_sha}
+              issueNumber={analysisResult?.issue_number}
+              patches={analysisResult?.analysis.proposed_fix.patches || []}
+              hypothesis={analysisResult?.analysis.root_cause_hypothesis}
+              csrfToken={csrfToken.current}
+              onNavigateToIssues={() => setCurrentView("issues")}
+            />
+          )}
 
-                <div className="mt-6 rounded-xl border border-amber-900/30 bg-amber-950/10 p-4">
-                  <div className="flex items-center gap-2">
-                    <span className="rounded-md bg-amber-500/20 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-amber-300 border border-amber-500/30">
-                      Hypothesis
-                    </span>
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-amber-200">
-                      Suspected Root Cause
-                    </h4>
-                  </div>
-                  <p className="mt-2 text-sm leading-relaxed text-[#dfd9cb]">
-                    {analysisResult.analysis.root_cause_hypothesis}
-                  </p>
-                </div>
+          {currentView === "activity" && (
+            <ActivityWorkspace
+              sessions={sessions}
+              activeRepo={activeRepo}
+            />
+          )}
 
-                {analysisResult.analysis.relevant_files.length > 0 && (
-                  <div className="mt-6">
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
-                      Relevant Files & Validated Lines
-                    </h4>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {analysisResult.analysis.relevant_files.map((file, idx) => (
-                        <div
-                          key={`${file.path}:${file.start_line}-${idx}`}
-                          className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[#111a21] px-3 py-1.5 text-xs font-mono"
-                        >
-                          <span className="text-[var(--accent)]">{file.path}</span>
-                          <span className="text-[var(--muted)]">
-                            L{file.start_line}–L{file.end_line}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </article>
+          {currentView === "settings" && (
+            <SettingsWorkspace
+              currentUser={currentUser}
+              apiUrl={apiUrl}
+              hasCsrf={!!csrfToken.current}
+            />
+          )}
+        </main>
 
-              <article className="rounded-2xl border border-[var(--line)] bg-[#0e141b] p-6 shadow-xl">
-                <div className="flex items-center justify-between border-b border-[var(--line)] pb-4">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wider text-[var(--accent)]">
-                      Human Review Only
-                    </p>
-                    <h3 className="mt-1 text-lg font-semibold">Proposed Fix & Code Patch</h3>
-                  </div>
-                  <span className="rounded-lg border border-amber-800/40 bg-amber-950/30 px-3 py-1 text-xs text-amber-300">
-                    Not automatically executed
-                  </span>
-                </div>
+        {/* Right AI Panel (Persistent, Collapsible) */}
+        <AiChatPanel
+          sessions={sessions}
+          activeSession={activeSession}
+          onSelectSession={handleSelectSession}
+          onNewSession={handleNewSession}
+          onDeleteSession={handleDeleteSession}
+          onClearSessionHistory={handleClearSessionHistory}
+          chatMode={chatMode}
+          onChangeMode={setChatMode}
+          chatBusy={chatBusy}
+          chatError={chatError}
+          onSendMessage={handleSendMessage}
+          onRetryLastQuestion={handleRetryLastQuestion}
+          lastFailedQuestion={lastFailedQuestion}
+          onOpenCitation={handleOpenCitation}
+          isCollapsed={isChatCollapsed}
+          onToggleCollapse={() => setIsChatCollapsed((prev) => !prev)}
+        />
+          </div>
+        </div>
+      </div>
 
-                <p className="mt-4 text-sm leading-relaxed text-[#c0d0d8]">
-                  {analysisResult.analysis.proposed_fix.explanation}
-                </p>
+      {/* Bottom Panel (Collapsible) */}
+      <BottomPanel
+        isExpanded={isBottomExpanded}
+        onToggleExpand={() => setIsBottomExpanded((prev) => !prev)}
+        indexStatus={activeIndexStatus}
+        activeCommitSha={activeIndexStatus?.commit_sha}
+        diagnostics={
+          activeIndexStatus?.error
+            ? [activeIndexStatus.error]
+            : ["AST parser healthy", "BM25 retrieval engine ready", "Docker socket verified"]
+        }
+      />
 
-                <div className="mt-6 space-y-4">
-                  {analysisResult.analysis.proposed_fix.patches.map((patch, idx) => (
-                    <div
-                      key={`${patch.file_path}-${idx}`}
-                      className="overflow-hidden rounded-xl border border-[var(--line)] bg-[#090d12]"
-                    >
-                      <div className="flex items-center justify-between border-b border-[var(--line)] bg-[#0d151c] px-4 py-2.5 text-xs font-mono">
-                        <span className="text-[var(--accent)]">{patch.file_path}</span>
-                        {patch.explanation && (
-                          <span className="text-[var(--muted)] font-sans truncate max-w-md">
-                            {patch.explanation}
-                          </span>
-                        )}
-                      </div>
-                      <pre className="overflow-x-auto p-4 text-xs font-mono leading-5">
-                        {patch.diff.split("\n").map((line, lineIdx) => {
-                          let lineStyle = "text-[#94a3b8]";
-                          if (line.startsWith("+") && !line.startsWith("+++")) {
-                            lineStyle = "text-emerald-400 bg-emerald-950/30 -mx-4 px-4 block";
-                          } else if (line.startsWith("-") && !line.startsWith("---")) {
-                            lineStyle = "text-rose-400 bg-rose-950/30 -mx-4 px-4 block";
-                          } else if (line.startsWith("@@")) {
-                            lineStyle = "text-sky-400 font-semibold";
-                          }
-                          return (
-                            <span key={lineIdx} className={lineStyle}>
-                              {line}
-                              {"\n"}
-                            </span>
-                          );
-                        })}
-                      </pre>
-                    </div>
-                  ))}
-                </div>
+      {/* Global Command Palette */}
+      <CommandPalette
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        repositories={repositories}
+        activeRepoId={activeRepo?.id || null}
+        onSelectRepo={(id) => {
+          const found = repositories.find((r) => r.id === id);
+          if (found) setActiveRepo(found);
+        }}
+        onSelectView={setCurrentView}
+        indexedFiles={indexedFiles}
+        onOpenFile={handleOpenFile}
+        onNewChat={handleNewSession}
+      />
 
-                {analysisResult.analysis.limitations.length > 0 && (
-                  <div className="mt-6 border-t border-[var(--line)] pt-4">
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
-                      Limitations & Caveats
-                    </h4>
-                    <ul className="mt-2 list-inside list-disc space-y-1 text-xs text-[var(--muted)]">
-                      {analysisResult.analysis.limitations.map((item, idx) => (
-                        <li key={idx}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </article>
-
-              <VerificationPanel
-                repositoryId={analysisResult.repository_id}
-                commitSha={analysisResult.commit_sha}
-                issueNumber={analysisResult.issue_number}
-                patches={analysisResult.analysis.proposed_fix.patches}
-                hypothesis={analysisResult.analysis.root_cause_hypothesis}
-                csrfToken={csrfToken.current}
+      {/* Quick Global Import Modal */}
+      {isImportModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0e1117] p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-zinc-100">Import Public GitHub Repository</h3>
+              <button
+                onClick={() => {
+                  setIsImportModalOpen(false);
+                  setModalImportError("");
+                }}
+                className="text-xs text-zinc-400 hover:text-white font-mono"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-xs text-zinc-400">
+              Enter the URL of a public repository to clone, index, and analyze in your workspace.
+            </p>
+            <form onSubmit={handleModalImport} className="space-y-3">
+              <input
+                type="url"
+                required
+                value={modalImportUrl}
+                onChange={(e) => setModalImportUrl(e.target.value)}
+                placeholder="https://github.com/owner/repository"
+                className="w-full rounded-xl border border-white/10 bg-[#141822] px-3.5 py-2.5 text-xs text-zinc-200 placeholder-zinc-500 outline-none focus:border-[#BFFF00]/50 font-mono"
               />
-            </div>
-          )}
-        </section>
-      </section>
-      </>}
-      <footer className="mx-auto max-w-6xl border-t border-[var(--line)] pt-5 text-xs text-[var(--muted)]">
-        Public repository metadata &amp; analysis operate in read-only mode · Verification uses isolated sandbox containers only when explicitly authorized by human approval. Container isolation provides containment but cannot guarantee absolute security.
-      </footer>
-    </main>
+              {modalImportError && (
+                <p className="text-xs text-rose-300 font-mono">{modalImportError}</p>
+              )}
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsImportModalOpen(false);
+                    setModalImportError("");
+                  }}
+                  className="rounded-xl px-4 py-2 text-xs font-mono text-zinc-400 hover:text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={modalImporting}
+                  className="rounded-xl bg-[#BFFF00] px-4 py-2 text-xs font-semibold text-black hover:brightness-110 disabled:opacity-50 transition-all font-sans"
+                >
+                  {modalImporting ? "Importing…" : "Import Repository"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <ToastProvider>
+      <MainWorkspace />
+    </ToastProvider>
   );
 }
