@@ -332,6 +332,43 @@ def indexed_files(
     ]
 
 
+@app.get("/api/repositories/{repository_id}/file")
+def get_file_content(
+    repository_id: int,
+    path: str,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    if not path.strip():
+        raise HTTPException(422, "File path cannot be empty.")
+    _require_repository_access(db, repository_id, auth.user.id)
+    job = db.scalar(
+        select(IndexingJob)
+        .where(IndexingJob.repository_id == repository_id)
+        .order_by(IndexingJob.id.desc())
+    )
+    if job is None:
+        raise HTTPException(404, "Repository is not indexed.")
+    file_record = db.scalar(
+        select(IndexedFile).where(
+            IndexedFile.job_id == job.id,
+            IndexedFile.path == path,
+        )
+    )
+    if file_record is None:
+        raise HTTPException(404, f"File '{path}' not found in repository index.")
+    symbols = db.scalars(
+        select(CodeSymbol).where(CodeSymbol.file_id == file_record.id).order_by(CodeSymbol.line)
+    ).all()
+    return {
+        "path": file_record.path,
+        "language": file_record.language,
+        "size_bytes": file_record.size_bytes,
+        "content": file_record.content,
+        "symbols": [{"kind": s.kind, "name": s.name, "line": s.line} for s in symbols],
+    }
+
+
 @app.get("/api/repositories/{repository_id}/search")
 def search_index(
     repository_id: int,

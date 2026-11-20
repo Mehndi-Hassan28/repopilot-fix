@@ -31,6 +31,25 @@ export type IndexedFileItem = {
   symbols?: CodeSymbolItem[];
 };
 
+export type FileContentResponse = {
+  path: string;
+  language: string;
+  size_bytes: number;
+  content: string;
+  symbols: CodeSymbolItem[];
+};
+
+export type OpenTab = {
+  path: string;
+  content?: string;
+  symbols?: CodeSymbolItem[];
+  language?: string;
+  size_bytes?: number;
+  highlightRange?: { start: number; end: number };
+  loading?: boolean;
+  error?: string;
+};
+
 export type Citation = {
   path: string;
   start_line: number;

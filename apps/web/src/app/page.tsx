@@ -10,6 +10,8 @@ import {
   IssueAnalysisResponse,
   WorkspaceView,
   AuthUser,
+  OpenTab,
+  FileContentResponse,
 } from "../lib/types";
 import { apiRequest, getApiUrl } from "../lib/api";
 import { ToastProvider, useToast } from "../components/Toast";
@@ -27,11 +29,7 @@ import { SettingsWorkspace } from "../components/SettingsWorkspace";
 import { AiChatPanel } from "../components/AiChatPanel";
 import { BottomPanel } from "../components/BottomPanel";
 
-interface OpenTab {
-  path: string;
-  content?: string;
-  highlightRange?: { start: number; end: number };
-}
+
 
 function MainWorkspace() {
   const { showToast } = useToast();
@@ -284,9 +282,61 @@ function MainWorkspace() {
   };
 
   // File & Tab Actions
+  const loadFileContent = useCallback(
+    async (repoId: number, path: string) => {
+      setOpenTabs((prev) =>
+        prev.map((t) => (t.path === path ? { ...t, loading: true, error: undefined } : t))
+      );
+      try {
+        const res = await apiRequest(
+          `/api/repositories/${repoId}/file?path=${encodeURIComponent(path)}`,
+          { cache: "no-store" }
+        );
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || "Could not load file content.");
+        }
+        const data = (await res.json()) as FileContentResponse;
+        setOpenTabs((prev) =>
+          prev.map((t) =>
+            t.path === path
+              ? {
+                  ...t,
+                  content: data.content,
+                  symbols: data.symbols,
+                  language: data.language,
+                  size_bytes: data.size_bytes,
+                  loading: false,
+                }
+              : t
+          )
+        );
+      } catch (err) {
+        setOpenTabs((prev) =>
+          prev.map((t) =>
+            t.path === path
+              ? {
+                  ...t,
+                  loading: false,
+                  error: err instanceof Error ? err.message : "Failed to load file content",
+                }
+              : t
+          )
+        );
+      }
+    },
+    []
+  );
+
   const handleOpenFile = (path: string) => {
-    if (!openTabs.some((t) => t.path === path)) {
-      setOpenTabs((prev) => [...prev, { path }]);
+    const existing = openTabs.find((t) => t.path === path);
+    if (!existing) {
+      setOpenTabs((prev) => [...prev, { path, loading: true }]);
+      if (activeRepo) {
+        void loadFileContent(activeRepo.id, path);
+      }
+    } else if (!existing.content && !existing.loading && activeRepo) {
+      void loadFileContent(activeRepo.id, path);
     }
     setActiveTabPath(path);
   };
@@ -307,11 +357,25 @@ function MainWorkspace() {
           t.path === path ? { ...t, highlightRange: { start, end } } : t
         );
       }
-      return [...prev, { path, highlightRange: { start, end } }];
+      return [...prev, { path, highlightRange: { start, end }, loading: true }];
     });
+    const existing = openTabs.find((t) => t.path === path);
+    if ((!existing || !existing.content) && activeRepo) {
+      void loadFileContent(activeRepo.id, path);
+    }
     setActiveTabPath(path);
     setCurrentView("repos");
     showToast(`Navigated to ${path}:L${start}-L${end}`, "info");
+  };
+
+  const handleClearHighlight = (path: string) => {
+    setOpenTabs((prev) =>
+      prev.map((t) => (t.path === path ? { ...t, highlightRange: undefined } : t))
+    );
+  };
+
+  const handleSelectSymbol = (path: string, line: number) => {
+    handleOpenCitation(path, line, line);
   };
 
   // Chat Actions
@@ -537,7 +601,7 @@ function MainWorkspace() {
                 loadingFiles={loadingFiles}
                 selectedFilePath={activeTabPath}
                 onSelectFile={handleOpenFile}
-                onSelectSymbol={(path, line) => handleOpenCitation(path, line, line + 10)}
+                onSelectSymbol={handleSelectSymbol}
                 isCollapsed={isExplorerCollapsed}
                 onToggleCollapse={() => setIsExplorerCollapsed((prev) => !prev)}
               />
@@ -571,6 +635,8 @@ function MainWorkspace() {
               activeTabPath={activeTabPath}
               onSelectTab={setActiveTabPath}
               onCloseTab={handleCloseTab}
+              onClearHighlight={handleClearHighlight}
+              onSelectSymbol={handleSelectSymbol}
               indexedFiles={indexedFiles}
               evidenceSnippets={analysisResult?.evidence || []}
             />
