@@ -582,7 +582,7 @@ export function VerificationPanel({
 
       {/* Evidence Report View */}
       {activeRun && activeReport && (
-        <EvidenceReportView run={activeRun} report={activeReport} />
+        <EvidenceReportView run={activeRun} report={activeReport} csrfToken={csrfToken} />
       )}
 
       {/* Audit Timeline */}

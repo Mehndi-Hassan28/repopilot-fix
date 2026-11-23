@@ -8,6 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from repopilot_api.dependencies import get_db
+from repopilot_api.github_pr_service import (
+    GitHubPRError,
+    GitHubPullRequestService,
+)
 from repopilot_api.models import (
     ProofReport,
     RepositoryAccess,
@@ -16,8 +20,12 @@ from repopilot_api.models import (
 )
 from repopilot_api.sandbox import SandboxError
 from repopilot_api.schemas import (
+    PatchExportResponse,
     ProofOfFixResult,
     ProofReportRead,
+    PullRequestCreateRequest,
+    PullRequestCreateResponse,
+    PullRequestStatusResponse,
     VerificationApprovalRequest,
     VerificationAuditEventRead,
     VerificationCancelRequest,
@@ -421,3 +429,68 @@ def get_verification_audit_events(
             )
         )
     return result
+
+
+@router.post("/{verification_id}/create-pr", response_model=PullRequestCreateResponse)
+def create_pull_request(
+    repository_id: int,
+    verification_id: int,
+    payload: PullRequestCreateRequest = PullRequestCreateRequest(),
+    x_github_token: str | None = Header(default=None, alias="X-GitHub-Token"),
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(require_csrf),
+):
+    """Create a verified GitHub pull request for an approved verification run."""
+    access = _require_repository_access(db, repository_id, auth.user.id)
+    if access.role not in ("owner", "collaborator"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Unauthorized to create pull requests for this repository.",
+        )
+    try:
+        return GitHubPullRequestService.create_pull_request(
+            db=db,
+            repository_id=repository_id,
+            verification_id=verification_id,
+            user_id=auth.user.id,
+            payload=payload,
+            auth_token_header=x_github_token,
+        )
+    except GitHubPRError as err:
+        raise HTTPException(err.status_code, err.message) from err
+
+
+@router.get("/{verification_id}/export-patch", response_model=PatchExportResponse)
+def export_patch(
+    repository_id: int,
+    verification_id: int,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    """Export the approved verified patch and CLI manual application instructions."""
+    _require_repository_access(db, repository_id, auth.user.id)
+    try:
+        return GitHubPullRequestService.export_patch(
+            db=db,
+            repository_id=repository_id,
+            verification_id=verification_id,
+            user_id=auth.user.id,
+        )
+    except GitHubPRError as err:
+        raise HTTPException(err.status_code, err.message) from err
+
+
+@router.get("/{verification_id}/pr-status", response_model=PullRequestStatusResponse)
+def get_pr_status(
+    repository_id: int,
+    verification_id: int,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    """Query existing GitHub PR metadata for a verification run."""
+    _require_repository_access(db, repository_id, auth.user.id)
+    return GitHubPullRequestService.get_pr_status(
+        db=db,
+        repository_id=repository_id,
+        verification_id=verification_id,
+    )

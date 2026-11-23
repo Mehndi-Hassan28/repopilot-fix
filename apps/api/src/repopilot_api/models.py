@@ -263,3 +263,30 @@ class VerificationAuditEvent(Base):
     to_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
     details_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GitHubPullRequest(Base):
+    __tablename__ = "github_pull_requests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    repository_id: Mapped[int] = mapped_column(
+        ForeignKey("repositories.id", ondelete="CASCADE"), index=True
+    )
+    verification_run_id: Mapped[int] = mapped_column(
+        ForeignKey("verification_runs.id", ondelete="CASCADE"), index=True
+    )
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    issue_number: Mapped[int] = mapped_column(Integer, index=True)
+    pr_number: Mapped[int] = mapped_column(Integer)
+    pr_url: Mapped[str] = mapped_column(String(500))
+    branch_name: Mapped[str] = mapped_column(String(255))
+    base_branch: Mapped[str] = mapped_column(String(255))
+    head_sha: Mapped[str] = mapped_column(String(40))
+    patch_hash: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(500))
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

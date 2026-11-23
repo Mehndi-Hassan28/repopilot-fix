@@ -139,3 +139,40 @@ export type VerificationRejectionRequest = {
 export type VerificationCancelRequest = {
   reason?: string;
 };
+
+export type PullRequestCreateRequest = {
+  custom_branch_name?: string;
+  custom_title?: string;
+  custom_body?: string;
+  target_base_branch?: string;
+  github_token?: string;
+};
+
+export type PullRequestCreateResponse = {
+  success: boolean;
+  pr_number: number | null;
+  pr_url: string | null;
+  branch_name: string;
+  base_branch: string;
+  status: "created" | "already_exists" | "fallback_available";
+  message: string;
+};
+
+export type PatchExportResponse = {
+  patch_diff: string;
+  patch_hash: string;
+  filename: string;
+  instructions: string[];
+  issue_number: number;
+  commit_sha: string;
+  verdict: ProofVerdict;
+};
+
+export type PullRequestStatusResponse = {
+  has_pr: boolean;
+  pr_number?: number | null;
+  pr_url?: string | null;
+  branch_name?: string | null;
+  base_branch?: string | null;
+  created_at?: string | null;
+};

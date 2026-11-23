@@ -6,6 +6,10 @@ import {
   VerificationRejectionRequest,
   VerificationRunRead,
   ProofReportRead,
+  PullRequestCreateRequest,
+  PullRequestCreateResponse,
+  PatchExportResponse,
+  PullRequestStatusResponse,
 } from "./verification-types";
 
 const apiUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
@@ -186,6 +190,47 @@ export async function getVerificationAuditEvents(
 ): Promise<VerificationAuditEventRead[]> {
   return request<VerificationAuditEventRead[]>(
     `/api/repositories/${repositoryId}/verifications/${verificationId}/events`,
+    { method: "GET", cache: "no-store" }
+  );
+}
+
+export async function createPullRequest(
+  repositoryId: number,
+  verificationId: number,
+  payload: PullRequestCreateRequest,
+  csrfToken: string
+): Promise<PullRequestCreateResponse> {
+  const headers: Record<string, string> = {};
+  if (payload.github_token) {
+    headers["X-GitHub-Token"] = payload.github_token;
+  }
+  return request<PullRequestCreateResponse>(
+    `/api/repositories/${repositoryId}/verifications/${verificationId}/create-pr`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    },
+    csrfToken
+  );
+}
+
+export async function exportPatch(
+  repositoryId: number,
+  verificationId: number
+): Promise<PatchExportResponse> {
+  return request<PatchExportResponse>(
+    `/api/repositories/${repositoryId}/verifications/${verificationId}/export-patch`,
+    { method: "GET", cache: "no-store" }
+  );
+}
+
+export async function getPullRequestStatus(
+  repositoryId: number,
+  verificationId: number
+): Promise<PullRequestStatusResponse> {
+  return request<PullRequestStatusResponse>(
+    `/api/repositories/${repositoryId}/verifications/${verificationId}/pr-status`,
     { method: "GET", cache: "no-store" }
   );
 }
