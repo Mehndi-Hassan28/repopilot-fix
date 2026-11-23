@@ -1,20 +1,42 @@
 "use client";
 
-import { useState } from "react";
-import { ProofEvidence, ProofReportRead, VerificationRunRead } from "../lib/verification-types";
+import { useEffect, useState } from "react";
+import {
+  ProofEvidence,
+  ProofReportRead,
+  PullRequestStatusResponse,
+  VerificationRunRead,
+} from "../lib/verification-types";
+import { getPullRequestStatus } from "../lib/verification-api";
 import { ProofVerdictBadge } from "./StatusBadges";
+import { PullRequestModal } from "./PullRequestModal";
+import { PatchExportModal } from "./PatchExportModal";
 
 interface EvidenceReportViewProps {
   run: VerificationRunRead;
   report: ProofReportRead;
+  csrfToken?: string;
 }
 
-export function EvidenceReportView({ run, report }: EvidenceReportViewProps) {
+export function EvidenceReportView({ run, report, csrfToken = "" }: EvidenceReportViewProps) {
   const [showLogs, setShowLogs] = useState(false);
-  const evidence = report.evidence as ProofEvidence;
+  const [isPrModalOpen, setIsPrModalOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [prStatus, setPrStatus] = useState<PullRequestStatusResponse | null>(null);
 
+  const evidence = report.evidence as ProofEvidence;
   const baselinePassed = evidence.baseline_exit_code === 0;
   const patchedPassed = evidence.patched_exit_code === 0;
+
+  const isVerified = report.verdict === "verified_fix";
+  const isApproved = Boolean(run.approved_spec_hash);
+  const isPrEligible = isVerified && isApproved && run.status === "completed";
+
+  useEffect(() => {
+    getPullRequestStatus(run.repository_id, run.id)
+      .then((data) => setPrStatus(data))
+      .catch(() => setPrStatus(null));
+  }, [run.repository_id, run.id]);
 
   return (
     <div className="space-y-6">
@@ -67,6 +89,74 @@ export function EvidenceReportView({ run, report }: EvidenceReportViewProps) {
             {report.hypothesis}
           </div>
         )}
+      </div>
+
+      {/* 1b. Pull Request & Export Actions Banner */}
+      <div className="rounded-2xl border border-white/10 bg-[#0e1218] p-5 shadow-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <span
+              className={`size-2 rounded-full ${
+                prStatus?.has_pr ? "bg-[#BFFF00]" : isPrEligible ? "bg-emerald-400" : "bg-zinc-500"
+              }`}
+            />
+            <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-zinc-400">
+              GitHub Pull Request & Deployment
+            </span>
+          </div>
+          <h4 className="mt-1 text-sm font-semibold text-white">
+            {prStatus?.has_pr
+              ? `Pull Request #${prStatus.pr_number} Active on GitHub`
+              : isPrEligible
+              ? "Verified Fix Ready for Pull Request"
+              : "Pull Request Creation Gated"}
+          </h4>
+          <p className="mt-0.5 text-xs text-zinc-400">
+            {prStatus?.has_pr
+              ? `Branch: ${prStatus.branch_name} targeting ${prStatus.base_branch || "main"}.`
+              : isPrEligible
+              ? "Human approval confirmed and dual-sandbox verification passed. Ready to open PR."
+              : !isApproved
+              ? "Requires human approval before a PR can be created."
+              : !isVerified
+              ? "Requires a verified fix verdict before a PR can be created."
+              : "Run must be in completed status."}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <button
+            onClick={() => setIsExportModalOpen(true)}
+            className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-mono text-zinc-300 hover:text-white hover:bg-white/10 transition-colors"
+          >
+            Export Patch (Offline)
+          </button>
+
+          {prStatus?.has_pr && prStatus.pr_url ? (
+            <a
+              href={prStatus.pr_url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-[#BFFF00] px-4 py-2 text-xs font-semibold text-black hover:brightness-110 shadow-lg shadow-[#BFFF00]/10 transition-all font-mono"
+            >
+              <span>View PR #{prStatus.pr_number}</span>
+              <span>↗</span>
+            </a>
+          ) : (
+            <button
+              onClick={() => setIsPrModalOpen(true)}
+              disabled={!isPrEligible}
+              title={
+                !isPrEligible
+                  ? "Requires human approval and a verified fix verdict"
+                  : "Create GitHub Pull Request"
+              }
+              className="rounded-xl bg-[#BFFF00] px-4 py-2 text-xs font-semibold text-black hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-lg shadow-[#BFFF00]/10"
+            >
+              Create GitHub PR
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 2. Dual Sandbox Comparison Grid */}
@@ -241,6 +331,32 @@ export function EvidenceReportView({ run, report }: EvidenceReportViewProps) {
           </div>
         )}
       </div>
+
+      {/* PR Creation Modal */}
+      <PullRequestModal
+        isOpen={isPrModalOpen}
+        onClose={() => setIsPrModalOpen(false)}
+        run={run}
+        report={report}
+        csrfToken={csrfToken}
+        onPrCreated={(url, num) => {
+          setPrStatus({
+            has_pr: true,
+            pr_url: url,
+            pr_number: num,
+            branch_name: `repopilot/fix-issue-${run.issue_number}-${run.id}`,
+            base_branch: "main",
+          });
+        }}
+        onOpenExportFallback={() => setIsExportModalOpen(true)}
+      />
+
+      {/* Patch Export Modal */}
+      <PatchExportModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        run={run}
+      />
     </div>
   );
 }

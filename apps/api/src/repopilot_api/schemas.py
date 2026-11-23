@@ -395,6 +395,8 @@ class VerificationAuditEventType(StrEnum):
     FAILED = "failed"
     RETRIED = "retried"
     RECOVERED = "recovered"
+    PR_CREATED = "pr_created"
+    PATCH_EXPORTED = "patch_exported"
 
 
 class VerificationCreateRequest(BaseModel):
@@ -510,3 +512,58 @@ class VerificationRunRead(BaseModel):
     report: ProofReportRead | None = None
     created_at: str
     updated_at: str
+
+
+class PullRequestCreateRequest(BaseModel):
+    custom_branch_name: str | None = None
+    custom_title: str | None = None
+    custom_body: str | None = None
+    target_base_branch: str | None = None
+    github_token: str | None = None
+
+    @field_validator("custom_branch_name")
+    @classmethod
+    def validate_branch_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        clean = value.strip()
+        if not clean:
+            return None
+        disallowed = " ~^:?*[\x00-\x1f"
+        if (
+            clean.startswith(("-", "."))
+            or ".." in clean
+            or any(c in clean for c in disallowed)
+            or clean.endswith(("/", "."))
+        ):
+            raise ValueError(f"Invalid Git branch name: '{value}'")
+        return clean
+
+
+class PullRequestCreateResponse(BaseModel):
+    success: bool
+    pr_number: int | None = None
+    pr_url: str | None = None
+    branch_name: str
+    base_branch: str
+    status: str
+    message: str
+
+
+class PatchExportResponse(BaseModel):
+    patch_diff: str
+    patch_hash: str
+    filename: str
+    instructions: list[str]
+    issue_number: int
+    commit_sha: str
+    verdict: str
+
+
+class PullRequestStatusResponse(BaseModel):
+    has_pr: bool
+    pr_number: int | None = None
+    pr_url: str | None = None
+    branch_name: str | None = None
+    base_branch: str | None = None
+    created_at: str | None = None
