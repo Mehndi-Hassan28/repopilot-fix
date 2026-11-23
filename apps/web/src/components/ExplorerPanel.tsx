@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from "react";
 import { Repository, IndexStatus, IndexedFileItem } from "../lib/types";
+import { getIndexStatusBadge, isIndexCompleted, isIndexActive, isIndexFailed } from "../lib/index-status";
 
 interface ExplorerPanelProps {
   repositories: Repository[];
@@ -251,59 +252,56 @@ export function ExplorerPanel({
       </div>
 
       {/* Index Status Card */}
-      {activeRepo && (
-        <div className="p-3 border-b border-white/10 bg-[#0a0c0f] text-xs">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <span
-                className={`size-2 rounded-full ${
-                  indexing
-                    ? "bg-amber-400 animate-pulse"
-                    : indexStatus?.status === "ready"
-                    ? "bg-[#BFFF00]"
-                    : indexStatus?.status === "failed"
-                    ? "bg-rose-500"
-                    : "bg-zinc-500"
-                }`}
-              />
-              <span className="font-medium text-zinc-300 capitalize font-mono text-[11px]">
-                {indexing ? "Indexing…" : indexStatus?.status || "Not Indexed"}
-              </span>
+      {activeRepo && (() => {
+        const badge = getIndexStatusBadge(indexStatus?.status, indexing);
+        return (
+          <div className="p-3 border-b border-white/10 bg-[#0a0c0f] text-xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={`size-2 rounded-full ${badge.dotClass} ${
+                    badge.isAnimated ? "animate-pulse" : ""
+                  }`}
+                />
+                <span className={`font-medium capitalize font-mono text-[11px] ${badge.colorClass}`}>
+                  {badge.label}
+                </span>
+              </div>
+
+              <button
+                onClick={() => onReindex(activeRepo.id)}
+                disabled={indexing || isIndexActive(indexStatus?.status)}
+                className="rounded bg-white/5 border border-white/10 px-2 py-0.5 text-[10px] font-mono text-zinc-300 hover:bg-white/10 hover:text-white disabled:opacity-50 transition-colors"
+              >
+                {indexing || isIndexActive(indexStatus?.status) ? "Running" : "Reindex"}
+              </button>
             </div>
 
-            <button
-              onClick={() => onReindex(activeRepo.id)}
-              disabled={indexing}
-              className="rounded bg-white/5 border border-white/10 px-2 py-0.5 text-[10px] font-mono text-zinc-300 hover:bg-white/10 hover:text-white disabled:opacity-50 transition-colors"
-            >
-              {indexing ? "Running" : "Reindex"}
-            </button>
+            {indexStatus && (
+              <div className="mt-2 space-y-1 font-mono text-[11px] text-zinc-400">
+                <div className="flex justify-between">
+                  <span className="text-zinc-500">Commit:</span>
+                  <span className="text-cyan-300 truncate max-w-[120px]" title={indexStatus.commit_sha}>
+                    {indexStatus.commit_sha ? indexStatus.commit_sha.slice(0, 7) : "None"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-zinc-500">Files / Symbols:</span>
+                  <span>
+                    {indexStatus.file_count} / {indexStatus.symbol_count ?? 0}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {indexStatus?.error && (
+              <div className="mt-2 rounded border border-rose-900/40 bg-rose-950/20 p-2 text-[10px] text-rose-300">
+                {indexStatus.error}
+              </div>
+            )}
           </div>
-
-          {indexStatus && (
-            <div className="mt-2 space-y-1 font-mono text-[11px] text-zinc-400">
-              <div className="flex justify-between">
-                <span className="text-zinc-500">Commit:</span>
-                <span className="text-cyan-300 truncate max-w-[120px]" title={indexStatus.commit_sha}>
-                  {indexStatus.commit_sha ? indexStatus.commit_sha.slice(0, 7) : "None"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-zinc-500">Files / Symbols:</span>
-                <span>
-                  {indexStatus.file_count} / {indexStatus.symbol_count}
-                </span>
-              </div>
-            </div>
-          )}
-
-          {indexStatus?.error && (
-            <div className="mt-2 rounded border border-rose-900/40 bg-rose-950/20 p-2 text-[10px] text-rose-300">
-              {indexStatus.error}
-            </div>
-          )}
-        </div>
-      )}
+        );
+      })()}
 
       {/* File Search Input */}
       <div className="p-2 border-b border-white/10 bg-[#0d0f14]">
@@ -333,8 +331,12 @@ export function ExplorerPanel({
         ) : files.length === 0 ? (
           <div className="p-4 text-center text-xs text-zinc-500">
             {activeRepo
-              ? indexStatus?.status === "ready"
+              ? isIndexCompleted(indexStatus?.status)
                 ? "No indexed files in this repository."
+                : isIndexActive(indexStatus?.status) || indexing
+                ? "Repository is currently being indexed…"
+                : isIndexFailed(indexStatus?.status)
+                ? "Indexing failed for this repository."
                 : "Index repository source to browse code tree."
               : "Select a repository to explore."}
           </div>
