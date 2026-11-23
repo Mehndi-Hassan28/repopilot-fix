@@ -9,11 +9,21 @@ export type Repository = {
   stars: number;
 };
 
+export type IndexJobStatus =
+  | "queued"
+  | "pending"
+  | "running"
+  | "completed"
+  | "ready"
+  | "failed"
+  | (string & {});
+
 export type IndexStatus = {
-  status: string;
+  id?: number;
+  status: IndexJobStatus;
   file_count: number;
-  symbol_count: number;
-  languages: string[];
+  symbol_count?: number;
+  languages?: string[];
   commit_sha: string;
   error?: string | null;
 };

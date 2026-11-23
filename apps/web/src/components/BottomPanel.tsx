@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { IndexStatus } from "../lib/types";
+import { getIndexStatusBadge } from "../lib/index-status";
 
 interface BottomPanelProps {
   isExpanded: boolean;
@@ -75,18 +76,19 @@ export function BottomPanel({
               <span className="text-cyan-300 font-bold">{activeCommitSha.slice(0, 7)}</span>
             </div>
           )}
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`size-1.5 rounded-full ${
-                indexStatus?.status === "ready"
-                  ? "bg-[#BFFF00]"
-                  : indexStatus?.status === "failed"
-                  ? "bg-rose-500"
-                  : "bg-zinc-500"
-              }`}
-            />
-            <span className="capitalize">{indexStatus?.status || "Idle"}</span>
-          </div>
+          {(() => {
+            const badge = getIndexStatusBadge(indexStatus?.status, false, { unindexedLabel: "Idle" });
+            return (
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={`size-1.5 rounded-full ${badge.dotClass} ${
+                    badge.isAnimated ? "animate-pulse" : ""
+                  }`}
+                />
+                <span className={`capitalize ${badge.colorClass}`}>{badge.label}</span>
+              </div>
+            );
+          })()}
           <span className="text-zinc-600">Docker Sandbox Isolation</span>
         </div>
       </div>

@@ -231,3 +231,96 @@ def test_get_file_content_forbidden_without_access(test_session):
         with pytest.raises(HTTPException) as error:
             main.get_file_content(repo.id, "secret.py", session, other_auth)
         assert error.value.status_code == 404
+
+
+def test_indexing_status_returns_completed_metadata(test_session):
+    with test_session() as session:
+        auth = add_auth(session)
+        repo = Repository(
+            github_id=65432,
+            owner="octocat",
+            name="indexed-repo",
+            full_name="octocat/indexed-repo",
+            url="https://github.com/octocat/indexed-repo",
+            default_branch="main",
+            stars=15,
+        )
+        session.add(repo)
+        session.flush()
+        session.add(RepositoryAccess(repository_id=repo.id, user_id=auth.user.id, role="owner"))
+
+        job = IndexingJob(
+            repository_id=repo.id,
+            commit_sha="f" * 40,
+            status="completed",
+            file_count=2,
+            error=None,
+        )
+        session.add(job)
+        session.flush()
+
+        f1 = IndexedFile(job_id=job.id, path="app.py", language="python", size_bytes=100, content="print('hi')")
+        f2 = IndexedFile(job_id=job.id, path="util.py", language="python", size_bytes=200, content="def fn(): pass")
+        session.add_all([f1, f2])
+        session.flush()
+
+        session.add(CodeSymbol(file_id=f2.id, kind="function", name="fn", line=1))
+        session.commit()
+
+        result = main.indexing_status(repo.id, session, auth)
+        assert result["id"] == job.id
+        assert result["status"] == "completed"
+        assert result["commit_sha"] == "f" * 40
+        assert result["file_count"] == 2
+        assert result["languages"] == ["python"]
+        assert result["symbol_count"] == 1
+        assert result["error"] is None
+
+
+def test_indexing_status_returns_404_when_no_job(test_session):
+    with test_session() as session:
+        auth = add_auth(session)
+        repo = Repository(
+            github_id=65433,
+            owner="octocat",
+            name="unindexed-job-repo",
+            full_name="octocat/unindexed-job-repo",
+            url="https://github.com/octocat/unindexed-job-repo",
+            default_branch="main",
+            stars=0,
+        )
+        session.add(repo)
+        session.flush()
+        session.add(RepositoryAccess(repository_id=repo.id, user_id=auth.user.id, role="owner"))
+        session.commit()
+
+        with pytest.raises(HTTPException) as error:
+            main.indexing_status(repo.id, session, auth)
+        assert error.value.status_code == 404
+        assert "no indexing job found" in error.value.detail.lower()
+
+
+def test_indexing_status_forbidden_without_access(test_session):
+    with test_session() as session:
+        owner_auth = add_auth(session)
+        other_auth = add_auth(session)
+        repo = Repository(
+            github_id=65434,
+            owner="octocat",
+            name="private-repo",
+            full_name="octocat/private-repo",
+            url="https://github.com/octocat/private-repo",
+            default_branch="main",
+            stars=0,
+        )
+        session.add(repo)
+        session.flush()
+        session.add(RepositoryAccess(repository_id=repo.id, user_id=owner_auth.user.id, role="owner"))
+
+        job = IndexingJob(repository_id=repo.id, commit_sha="e" * 40, status="completed")
+        session.add(job)
+        session.commit()
+
+        with pytest.raises(HTTPException) as error:
+            main.indexing_status(repo.id, session, other_auth)
+        assert error.value.status_code == 404

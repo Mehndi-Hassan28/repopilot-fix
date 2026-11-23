@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { Repository, IndexStatus, WorkspaceView, AuthUser } from "../lib/types";
+import { countReadyIndexes, getIndexStatusBadge, isIndexActive } from "../lib/index-status";
 import { GithubIcon, PlusIcon } from "./Icons";
 
 interface DashboardOverviewProps {
@@ -57,7 +58,7 @@ export function DashboardOverview({
 
   const totalFiles = Object.values(indexes).reduce((acc, curr) => acc + (curr.file_count || 0), 0);
   const totalSymbols = Object.values(indexes).reduce((acc, curr) => acc + (curr.symbol_count || 0), 0);
-  const readyCount = Object.values(indexes).filter((i) => i.status === "ready").length;
+  const readyCount = countReadyIndexes(indexes);
 
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-8 bg-[#050505] relative custom-scrollbar">
@@ -238,6 +239,7 @@ export function DashboardOverview({
             {repositories.map((repo) => {
               const status = indexes[repo.id];
               const isIndexing = indexingId === repo.id;
+              const badge = getIndexStatusBadge(status?.status, isIndexing, { unindexedLabel: "Unindexed" });
 
               return (
                 <div
@@ -267,24 +269,16 @@ export function DashboardOverview({
                       <div className="flex justify-between items-center">
                         <span className="text-zinc-500">Status:</span>
                         <span
-                          className={`font-semibold capitalize flex items-center gap-1.5 ${
-                            isIndexing
-                              ? "text-amber-400 animate-pulse"
-                              : status?.status === "ready"
-                              ? "text-[#BFFF00]"
-                              : "text-zinc-400"
+                          className={`font-semibold capitalize flex items-center gap-1.5 ${badge.colorClass} ${
+                            badge.isAnimated ? "animate-pulse" : ""
                           }`}
                         >
                           <span
-                            className={`size-1.5 rounded-full ${
-                              isIndexing
-                                ? "bg-amber-400 animate-ping"
-                                : status?.status === "ready"
-                                ? "bg-[#BFFF00]"
-                                : "bg-zinc-500"
+                            className={`size-1.5 rounded-full ${badge.dotClass} ${
+                              badge.isAnimated ? "animate-ping" : ""
                             }`}
                           />
-                          {isIndexing ? "Indexing…" : status?.status || "Unindexed"}
+                          {badge.label}
                         </span>
                       </div>
 
@@ -319,10 +313,10 @@ export function DashboardOverview({
 
                     <button
                       onClick={() => onReindex(repo.id)}
-                      disabled={isIndexing}
+                      disabled={isIndexing || isIndexActive(status?.status)}
                       className="rounded-lg bg-white/5 border border-white/10 px-3 py-1 text-[11px] font-mono text-zinc-300 hover:bg-white/10 hover:text-white disabled:opacity-50 transition-colors"
                     >
-                      {isIndexing ? "Indexing…" : status ? "Reindex" : "Index"}
+                      {isIndexing || isIndexActive(status?.status) ? "Indexing…" : status ? "Reindex" : "Index"}
                     </button>
                   </div>
                 </div>

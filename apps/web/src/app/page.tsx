@@ -13,6 +13,7 @@ import {
   OpenTab,
   FileContentResponse,
 } from "../lib/types";
+import { isIndexCompleted, isIndexActive, isIndexFailed } from "../lib/index-status";
 import { apiRequest, getApiUrl } from "../lib/api";
 import { ToastProvider, useToast } from "../components/Toast";
 import { CommandPalette } from "../components/CommandPalette";
@@ -78,6 +79,27 @@ function MainWorkspace() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
 
+  // Load Indexed Files when active repository changes
+  const loadIndexedFiles = useCallback(
+    async (repoId: number) => {
+      setLoadingFiles(true);
+      try {
+        const response = await apiRequest(`/api/repositories/${repoId}/files`, { cache: "no-store" });
+        if (response.ok) {
+          const items = (await response.json()) as IndexedFileItem[];
+          setIndexedFiles(items);
+        } else {
+          setIndexedFiles([]);
+        }
+      } catch {
+        setIndexedFiles([]);
+      } finally {
+        setLoadingFiles(false);
+      }
+    },
+    []
+  );
+
   // Load Repositories and Index Statuses
   const loadRepositories = useCallback(async () => {
     setLoadingRepos(true);
@@ -101,12 +123,15 @@ function MainWorkspace() {
       setIndexes(
         Object.fromEntries(statuses.filter((item): item is NonNullable<typeof item> => item !== null))
       );
+      if (activeRepo) {
+        void loadIndexedFiles(activeRepo.id);
+      }
     } catch (reason) {
       showToast(reason instanceof Error ? reason.message : "Failed to load repositories", "error");
     } finally {
       setLoadingRepos(false);
     }
-  }, [activeRepo, showToast]);
+  }, [activeRepo, loadIndexedFiles, showToast]);
 
   // Auth & Backend Initialization
   useEffect(() => {
@@ -138,27 +163,6 @@ function MainWorkspace() {
       }
     })();
   }, [loadRepositories, showToast]);
-
-  // Load Indexed Files when active repository changes
-  const loadIndexedFiles = useCallback(
-    async (repoId: number) => {
-      setLoadingFiles(true);
-      try {
-        const response = await apiRequest(`/api/repositories/${repoId}/files`, { cache: "no-store" });
-        if (response.ok) {
-          const items = (await response.json()) as IndexedFileItem[];
-          setIndexedFiles(items);
-        } else {
-          setIndexedFiles([]);
-        }
-      } catch {
-        setIndexedFiles([]);
-      } finally {
-        setLoadingFiles(false);
-      }
-    },
-    []
-  );
 
   // Load Chat Sessions when active repository changes
   const loadSessions = useCallback(
@@ -231,10 +235,12 @@ function MainWorkspace() {
         if (!statusRes.ok) break;
         const status = (await statusRes.json()) as IndexStatus;
         setIndexes((prev) => ({ ...prev, [repoId]: status }));
-        if (!["queued", "running"].includes(status.status)) {
-          if (status.status === "ready") {
+        if (!isIndexActive(status.status)) {
+          if (isIndexCompleted(status.status)) {
             showToast("Repository indexing completed successfully", "success");
             void loadIndexedFiles(repoId);
+          } else if (isIndexFailed(status.status)) {
+            showToast(status.error || "Repository indexing failed", "error");
           }
           break;
         }
@@ -263,6 +269,15 @@ function MainWorkspace() {
     setRepositories((prev) => (prev.some((r) => r.id === repo.id) ? prev : [repo, ...prev]));
     setActiveRepo(repo);
     showToast(`${repo.full_name} imported into workspace`, "success");
+    try {
+      const statusRes = await apiRequest(`/api/repositories/${repo.id}/index`, { cache: "no-store" });
+      if (statusRes.ok) {
+        const indexData = (await statusRes.json()) as IndexStatus;
+        setIndexes((prev) => ({ ...prev, [repo.id]: indexData }));
+      }
+    } catch {
+      // Unindexed repo on fresh import
+    }
   };
 
   const handleModalImport = async (e: FormEvent) => {

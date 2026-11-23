@@ -1,4 +1,5 @@
 import { ProofVerdict, VerificationJobStatus } from "../lib/verification-types";
+import { getIndexStatusBadge, BadgeOptions } from "../lib/index-status";
 
 export function VerificationStatusBadge({ status }: { status: VerificationJobStatus }) {
   switch (status) {
@@ -139,4 +140,34 @@ export function ProofVerdictBadge({ verdict }: { verdict: ProofVerdict }) {
         </span>
       );
   }
+}
+
+export function IndexStatusBadge({
+  status,
+  isIndexing,
+  size = "sm",
+  options,
+}: {
+  status?: string | null;
+  isIndexing?: boolean;
+  size?: "sm" | "md";
+  options?: BadgeOptions;
+}) {
+  const badge = getIndexStatusBadge(status, isIndexing, options);
+  const dotSize = size === "md" ? "size-2" : "size-1.5";
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 font-mono text-[11px] font-semibold capitalize ${badge.colorClass} ${
+        badge.isAnimated ? "animate-pulse" : ""
+      }`}
+    >
+      <span
+        className={`${dotSize} rounded-full ${badge.dotClass} ${
+          badge.isAnimated ? "animate-ping" : ""
+        }`}
+      />
+      <span>{badge.label}</span>
+    </span>
+  );
 }
