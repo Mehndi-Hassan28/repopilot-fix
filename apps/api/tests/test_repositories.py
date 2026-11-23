@@ -259,8 +259,20 @@ def test_indexing_status_returns_completed_metadata(test_session):
         session.add(job)
         session.flush()
 
-        f1 = IndexedFile(job_id=job.id, path="app.py", language="python", size_bytes=100, content="print('hi')")
-        f2 = IndexedFile(job_id=job.id, path="util.py", language="python", size_bytes=200, content="def fn(): pass")
+        f1 = IndexedFile(
+            job_id=job.id,
+            path="app.py",
+            language="python",
+            size_bytes=100,
+            content="print('hi')",
+        )
+        f2 = IndexedFile(
+            job_id=job.id,
+            path="util.py",
+            language="python",
+            size_bytes=200,
+            content="def fn(): pass",
+        )
         session.add_all([f1, f2])
         session.flush()
 
@@ -315,7 +327,9 @@ def test_indexing_status_forbidden_without_access(test_session):
         )
         session.add(repo)
         session.flush()
-        session.add(RepositoryAccess(repository_id=repo.id, user_id=owner_auth.user.id, role="owner"))
+        session.add(
+            RepositoryAccess(repository_id=repo.id, user_id=owner_auth.user.id, role="owner")
+        )
 
         job = IndexingJob(repository_id=repo.id, commit_sha="e" * 40, status="completed")
         session.add(job)
