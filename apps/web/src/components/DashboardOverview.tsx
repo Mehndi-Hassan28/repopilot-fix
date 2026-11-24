@@ -114,6 +114,12 @@ export function DashboardOverview({
 
         <div className="flex items-center gap-3">
           <button
+            onClick={() => onSelectView("demo")}
+            className="rounded-xl border border-[#BFFF00]/40 bg-[#BFFF00]/10 px-3.5 py-1.5 text-xs font-semibold text-[#BFFF00] hover:bg-[#BFFF00] hover:text-black transition-all flex items-center gap-1.5 font-sans"
+          >
+            <span>⚡ Interactive Demo</span>
+          </button>
+          <button
             onClick={onRefresh}
             className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-300 hover:text-white hover:border-white/20 transition-all font-mono"
             title="Refresh repository list"
@@ -133,6 +139,49 @@ export function DashboardOverview({
           >
             Open AI Workspace
           </button>
+        </div>
+      </div>
+
+      {/* Interactive Demo Showcase Hero Card */}
+      <div className="relative z-10 overflow-hidden rounded-2xl border border-[#BFFF00]/30 bg-gradient-to-r from-[#0d1612] via-[#09151c] to-[#0c1017] p-6 shadow-2xl shadow-[#BFFF00]/5">
+        <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
+          <div className="space-y-2 max-w-2xl">
+            <div className="flex items-center gap-2">
+              <span className="size-2 rounded-full bg-[#BFFF00] animate-ping" />
+              <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-[#BFFF00]">
+                Interactive Proof-of-Fix Showcase
+              </span>
+              <span className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-mono text-cyan-300">
+                Deterministic Fixture
+              </span>
+            </div>
+            <h2 className="text-xl md:text-2xl font-bold tracking-tight text-white">
+              Evidence-Driven Autonomous Software Repair
+            </h2>
+            <p className="text-xs md:text-sm text-zinc-300 leading-relaxed">
+              Step through RepoPilot Fix&apos;s end-to-end repair lifecycle in a reproducible environment: codebase indexing, AST root-cause explanation, patch diff inspection, mandatory human approval gating, dual-container Docker verification, and verifiable proof reporting without external API dependencies.
+            </p>
+            <div className="flex flex-wrap items-center gap-3 pt-1 text-[11px] font-mono text-zinc-400">
+              <span className="flex items-center gap-1.5 text-zinc-300">
+                <span className="text-[#BFFF00]">✓</span> 9 Guided Stages
+              </span>
+              <span className="flex items-center gap-1.5 text-zinc-300">
+                <span className="text-cyan-400">✓</span> Isolated Docker Dual-Sandbox
+              </span>
+              <span className="flex items-center gap-1.5 text-zinc-300">
+                <span className="text-purple-400">✓</span> Cryptographic Proof-of-Fix
+              </span>
+            </div>
+          </div>
+          <div className="shrink-0 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
+            <button
+              onClick={() => onSelectView("demo")}
+              className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#BFFF00] to-emerald-400 px-6 py-3 text-xs md:text-sm font-bold text-black hover:brightness-110 shadow-lg shadow-[#BFFF00]/20 transition-all font-sans"
+            >
+              <span>Launch Interactive Demo</span>
+              <span className="font-mono">→</span>
+            </button>
+          </div>
         </div>
       </div>
 

@@ -22,6 +22,7 @@ import { Header } from "../components/Header";
 import { ExplorerPanel } from "../components/ExplorerPanel";
 import { CodeViewer } from "../components/CodeViewer";
 import { DashboardOverview } from "../components/DashboardOverview";
+import { InteractiveDemoWorkspace } from "../components/InteractiveDemoWorkspace";
 import { IssueWorkspace } from "../components/IssueWorkspace";
 import { PatchReviewWorkspace } from "../components/PatchReviewWorkspace";
 import { VerificationWorkspace } from "../components/VerificationWorkspace";
@@ -640,6 +641,21 @@ function MainWorkspace() {
                   onReindex={handleReindex}
                   indexingId={indexingId}
                   onSignIn={signIn}
+                />
+              )}
+
+              {currentView === "demo" && (
+                <InteractiveDemoWorkspace
+                  currentUser={currentUser}
+                  csrfToken={csrfToken.current}
+                  onSelectRepo={(r) => {
+                    setActiveRepo(r);
+                    if (!repositories.some((repo) => repo.id === r.id)) {
+                      setRepositories((prev) => [r, ...prev]);
+                    }
+                  }}
+                  onSelectView={setCurrentView}
+                  onAnalysisLoaded={(result) => setAnalysisResult(result)}
                 />
               )}
 

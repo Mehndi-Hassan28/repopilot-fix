@@ -142,6 +142,7 @@ export type IssueAnalysisResponse = {
 
 export type WorkspaceView =
   | "overview"
+  | "demo"
   | "repos"
   | "chat"
   | "issues"
@@ -149,6 +150,50 @@ export type WorkspaceView =
   | "verification"
   | "activity"
   | "settings";
+
+export type DemoIssue = {
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  html_url: string;
+  author: string;
+  labels: string[];
+};
+
+export type DemoStatusResponse = {
+  initialized: boolean;
+  repository_id?: number | null;
+  repository_name?: string | null;
+  repository_full_name?: string | null;
+  default_branch?: string;
+  commit_sha?: string | null;
+  docker_available: boolean;
+  docker_status_message: string;
+  sandbox_image: string;
+  preconfigured_issue_number: number;
+  has_active_run: boolean;
+  latest_run_id?: number | null;
+  latest_run_status?: string | null;
+  latest_report_verdict?: string | null;
+  approved_spec_hash?: string | null;
+};
+
+export type DemoInitializeResponse = {
+  repository: Repository;
+  indexing_job: {
+    id: number;
+    status: string;
+    file_count: number;
+    commit_sha: string;
+  };
+  issue: DemoIssue;
+  test_command: string[];
+  sandbox_image: string;
+  docker_available: boolean;
+  docker_status_message: string;
+  is_mock_ai: boolean;
+};
 
 export type ToastMessage = {
   id: string;

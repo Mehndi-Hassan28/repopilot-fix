@@ -497,6 +497,54 @@ class GitHubPullRequestService:
                 message=f"Pull request #{existing_pr.pr_number} already exists for this run.",
             )
 
+        # Intercept deterministic demo repositories to prevent external GitHub write calls
+        is_demo_repo = (
+            repo.github_id >= 990000000
+            or (repo.owner == "repopilot" and "demo" in repo.name)
+        )
+        if is_demo_repo:
+            pr_number = 101
+            pr_url = f"https://github.com/{repo.owner}/{repo.name}/pull/{pr_number}"
+            branch_name = (
+                payload.custom_branch_name or f"repopilot/fix-issue-{run.issue_number}-{run.id}"
+            ).strip()
+            title = (
+                payload.custom_title
+                or "fix(calculator): resolve power operator multiplication bug"
+            )
+            body = payload.custom_body or (
+                f"## Automated Fix by RepoPilot Dual-Sandbox Engine\n\n"
+                f"- **Verdict**: `{report.verdict}`\n"
+                f"- **Verification Run**: `#{run.id}`\n"
+                f"- **Approved Spec Hash**: `{run.approved_spec_hash}`\n\n"
+                f"{report.summary}"
+            )
+            record = GitHubPullRequest(
+                repository_id=repository_id,
+                verification_run_id=run.id,
+                created_by_user_id=user_id,
+                issue_number=run.issue_number,
+                pr_number=pr_number,
+                pr_url=pr_url,
+                branch_name=branch_name,
+                base_branch=repo.default_branch or "main",
+                head_sha="mock_commit_sha_" + "a" * 24,
+                patch_hash=run.patch_hash or "",
+                title=title,
+                body=body,
+            )
+            db.add(record)
+            db.commit()
+            return PullRequestCreateResponse(
+                success=True,
+                pr_number=pr_number,
+                pr_url=pr_url,
+                branch_name=branch_name,
+                base_branch=repo.default_branch or "main",
+                status="created",
+                message=f"Simulated GitHub pull request #{pr_number} created for demo repository.",
+            )
+
         token = cls._resolve_token(payload, auth_token_header)
         gh_client = GitHubPRClient(token=token, client=client)
 
