@@ -259,22 +259,34 @@ GENERIC_QUERY_TERMS = {
     "ai",
     "api",
     "app",
+    "bool",
+    "boolean",
     "cd",
     "ci",
     "code",
     "codebase",
     "db",
+    "dict",
+    "false",
     "fix",
+    "float",
     "id",
+    "int",
     "io",
     "ip",
+    "list",
     "llm",
+    "none",
+    "null",
     "os",
     "pr",
     "project",
     "qa",
     "repo",
     "repository",
+    "str",
+    "string",
+    "true",
     "ui",
     "uri",
     "url",
@@ -328,9 +340,6 @@ def _chunk_supports_operations(content: str, operations: list[set[str]]) -> bool
 
 def retrieve(db: Session, repository_id: int, commit_sha: str, query: str) -> list[Evidence]:
     """Rank bounded line windows by weighted word matches, AST symbols, and dependency graph."""
-    terms = set(_search_tokens(query)) - STOP_WORDS
-    if not terms:
-        return []
     files = db.scalars(
         select(IndexedFile)
         .join(IndexingJob, IndexedFile.job_id == IndexingJob.id)
@@ -340,9 +349,46 @@ def retrieve(db: Session, repository_id: int, commit_sha: str, query: str) -> li
             IndexingJob.status == "completed",
         )
     ).all()
+    return retrieve_from_files(files, query)
+
+
+def retrieve_from_files(
+    files: list[object], query: str, is_issue_query: bool = False
+) -> list[Evidence]:
+    """Rank bounded line windows from a list of file objects with .path and .content attributes."""
+    terms = set(_search_tokens(query)) - STOP_WORDS
+    if not terms or not files:
+        return []
+    issue_intent = is_issue_query or bool(
+        terms.intersection(
+            {
+                "bug",
+                "issue",
+                "fail",
+                "failed",
+                "failing",
+                "failure",
+                "error",
+                "broken",
+                "fix",
+                "fixed",
+                "incorrect",
+                "incorrectly",
+                "crash",
+                "crashes",
+                "crashed",
+                "rejects",
+                "rejected",
+                "drops",
+                "ignored",
+                "ignores",
+                "missing",
+            }
+        )
+    )
     entities = _query_entities(query)
     requested_operations = _requested_operations(query)
-    if entities:
+    if entities and not issue_intent:
         missing_entities = []
         for entity in entities:
             forms = {entity}
@@ -1716,14 +1762,109 @@ def clean_diff_text(diff_str: str) -> str:
     return clean
 
 
-def normalize_patch_diff(diff: str, file_path: str) -> str:
-    """Ensure unified diff has standard --- a/path and +++ b/path headers."""
+def recount_and_align_hunks(diff_text: str, file_content: str | None = None) -> str:
+    """Recount hunk header line counts and align start lines if file content is provided.
+
+    LLMs frequently miscalculate line numbers in unified diff headers (e.g. @@ -X,Y +A,B @@)
+    even when the diff lines themselves are correct. This reconciles declared counts with
+    actual hunk lines (similar to git apply --recount) and aligns the hunk starting line
+    if the context lines match at a slight line offset.
+    """
+    hunk_header_re = re.compile(r"^@@\s*-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s*@@(.*)$")
+    lines = diff_text.splitlines()
+    file_lines = file_content.splitlines() if file_content is not None else None
+
+    out_lines: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        match = hunk_header_re.match(line)
+        if not match:
+            out_lines.append(line)
+            i += 1
+            continue
+
+        old_start = int(match.group(1))
+        new_start = int(match.group(3))
+        heading = match.group(5) or ""
+
+        hunk_lines: list[str] = []
+        i += 1
+        while (
+            i < len(lines)
+            and not hunk_header_re.match(lines[i])
+            and not lines[i].startswith(("--- ", "+++ "))
+        ):
+            hunk_lines.append(lines[i])
+            i += 1
+
+        actual_old = sum(
+            1 for item in hunk_lines if item.startswith((" ", "-")) or item == ""
+        )
+        actual_new = sum(
+            1 for item in hunk_lines if item.startswith((" ", "+")) or item == ""
+        )
+
+        if file_lines is not None:
+            old_content_items = [
+                (idx, item[1:] if item.startswith((" ", "-")) else item)
+                for idx, item in enumerate(hunk_lines)
+                if item.startswith((" ", "-")) or item == ""
+            ]
+            if old_content_items:
+                curr_idx = max(0, old_start - 1)
+                matches_at_curr = (
+                    curr_idx + len(old_content_items) <= len(file_lines)
+                    and all(
+                        file_lines[curr_idx + k].strip() == item[1].strip()
+                        for k, item in enumerate(old_content_items)
+                    )
+                )
+                matched = matches_at_curr
+                if not matches_at_curr:
+                    candidates = []
+                    for s_idx in range(len(file_lines) - len(old_content_items) + 1):
+                        if all(
+                            file_lines[s_idx + k].strip() == item[1].strip()
+                            for k, item in enumerate(old_content_items)
+                        ):
+                            candidates.append(s_idx)
+                    if candidates:
+                        best_idx = min(candidates, key=lambda c: abs(c - curr_idx))
+                        if abs(best_idx - curr_idx) <= 25:
+                            delta = best_idx - curr_idx
+                            old_start = best_idx + 1
+                            new_start = max(1, new_start + delta)
+                            curr_idx = best_idx
+                            matched = True
+
+                # Harmonize exact whitespace with file lines for context and deletions ONLY if matched
+                if matched and curr_idx + len(old_content_items) <= len(file_lines):
+                    for k, (hunk_idx, _) in enumerate(old_content_items):
+                        orig_file_line = file_lines[curr_idx + k]
+                        h_line = hunk_lines[hunk_idx]
+                        if h_line.startswith(" ") or h_line == "":
+                            hunk_lines[hunk_idx] = " " + orig_file_line
+                        elif h_line.startswith("-"):
+                            hunk_lines[hunk_idx] = "-" + orig_file_line
+
+        out_lines.append(f"@@ -{old_start},{actual_old} +{new_start},{actual_new} @@{heading}")
+        out_lines.extend(hunk_lines)
+
+    res = "\n".join(out_lines)
+    if diff_text.endswith("\n") and not res.endswith("\n"):
+        res += "\n"
+    return res
+
+
+def normalize_patch_diff(diff: str, file_path: str, file_content: str | None = None) -> str:
+    """Ensure unified diff has standard headers, valid counts and alignment."""
     clean = clean_diff_text(diff)
     if not clean.startswith("---"):
         clean = f"--- a/{file_path}\n+++ b/{file_path}\n{clean}\n"
     elif not clean.endswith("\n"):
         clean += "\n"
-    return clean
+    return recount_and_align_hunks(clean, file_content=file_content)
 
 
 def validate_server_side_analysis(
@@ -1763,7 +1904,9 @@ def validate_server_side_analysis(
     for patch in analysis.proposed_fix.patches:
         if patch.file_path not in indexed_files:
             raise ValueError(f"Unknown file in patch proposal: {patch.file_path}")
-        patch.diff = normalize_patch_diff(patch.diff, patch.file_path)
+        patch.diff = normalize_patch_diff(
+            patch.diff, patch.file_path, file_content=indexed_files.get(patch.file_path)
+        )
         validate_patch_diff(patch.diff, indexed_files[patch.file_path])
         from repopilot_api.patcher import PatchError, apply_unified_diff
 
@@ -1817,7 +1960,9 @@ def parse_and_validate_analysis(
         if isinstance(patches, list):
             for p in patches:
                 if isinstance(p, dict) and "diff" in p and "file_path" in p:
-                    p["diff"] = normalize_patch_diff(str(p["diff"]), str(p["file_path"]))
+                    fpath = str(p["file_path"])
+                    fcontent = indexed_files.get(fpath) if indexed_files else None
+                    p["diff"] = normalize_patch_diff(str(p["diff"]), fpath, file_content=fcontent)
 
     if provider_name is not None:
         data.setdefault("provider", provider_name)
