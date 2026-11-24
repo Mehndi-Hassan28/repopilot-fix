@@ -3,8 +3,8 @@
     "id": "BM-01",
     "repo_name": "pallets/click",
     "repo_url": "https://github.com/pallets/click",
-    "commit_sha": "b5c2a10df8e76543210fedcba9876543210fedcb",
-    "issue_id": "#1234",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "BSD-3-Clause",
     "category": "boundary_condition",
     "title": "IntRange rejects upper bound when clamp=False",
@@ -21,14 +21,15 @@
     "reproduction_methodology": "Instantiate IntRange(1, 10) and pass 10. Raises BadParameter unexpectedly.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "click-intrange-upperbound"
   },
   {
     "id": "BM-02",
     "repo_name": "bottlepy/bottle",
     "repo_url": "https://github.com/bottlepy/bottle",
-    "commit_sha": "5ba83c10a9b8c7d6e5f43210fedcba9876543210",
-    "issue_id": "#614",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "MIT",
     "category": "logic_error",
     "title": "Route path normalization collapses internal multiple slashes incorrectly",
@@ -45,14 +46,15 @@
     "reproduction_methodology": "Pass 'users/list/' without leading slash. Output '/users/list'.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "bottle-router-normalize-path"
   },
   {
     "id": "BM-03",
     "repo_name": "marshmallow-code/marshmallow",
     "repo_url": "https://github.com/marshmallow-code/marshmallow",
-    "commit_sha": "d97e2f10b8a7c6d5e4f3210fedcba9876543210f",
-    "issue_id": "#1588",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "MIT",
     "category": "exception_handling",
     "title": "Dict field raises unhandled KeyError instead of ValidationError on missing keys",
@@ -69,14 +71,15 @@
     "reproduction_methodology": "Deserialize dict with missing required key. Throws KeyError instead of ValidationError.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "marshmallow-dictfield-keyerror"
   },
   {
     "id": "BM-04",
     "repo_name": "urllib3/urllib3",
     "repo_url": "https://github.com/urllib3/urllib3",
-    "commit_sha": "4f8b9120a8c7e6d5b4a3210fedcba9876543210f",
-    "issue_id": "#1456",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "MIT",
     "category": "input_validation",
     "title": "parse_url fails to strip brackets from IPv6 host when port is specified",
@@ -93,14 +96,15 @@
     "reproduction_methodology": "parse_url('http://[::1]:8080/path') keeps bracket '[::1]'.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "urllib3-ipv6-bracket-port"
   },
   {
     "id": "BM-05",
     "repo_name": "psf/requests",
     "repo_url": "https://github.com/psf/requests",
-    "commit_sha": "a2b1c3d0e9f8a7b6c5d43210fedcba9876543210",
-    "issue_id": "#4120",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "Apache-2.0",
     "category": "logic_error",
     "title": "CaseInsensitiveDict.pop ignores default when key is missing",
@@ -117,14 +121,15 @@
     "reproduction_methodology": "d.pop('missing', 'fallback') raises KeyError.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "requests-case-insensitive-dict-pop"
   },
   {
     "id": "BM-06",
     "repo_name": "samuelcolvin/pydantic",
     "repo_url": "https://github.com/samuelcolvin/pydantic",
-    "commit_sha": "3e1a8f90a7b6c5d4e3f210fedcba9876543210fe",
-    "issue_id": "#764",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "MIT",
     "category": "boundary_condition",
     "title": "Negative zero -0.0 validation fails gt=0 float check incorrectly",
@@ -141,14 +146,15 @@
     "reproduction_methodology": "validate_positive_float(-0.0, strict_positive=False) returns -0.0.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "pydantic-float-negative-zero"
   },
   {
     "id": "BM-07",
     "repo_name": "pytest-dev/iniconfig",
     "repo_url": "https://github.com/pytest-dev/iniconfig",
-    "commit_sha": "9e2b1040a8c7e6f5d4e3210fedcba9876543210e",
-    "issue_id": "#21",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "MIT",
     "category": "logic_error",
     "title": "IniConfig retains inline comment markers inside unquoted values",
@@ -165,14 +171,15 @@
     "reproduction_methodology": "IniConfig.parse_value('color = #ffffff') strips #ffffff.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "iniconfig-hash-comment-parse"
   },
   {
     "id": "BM-08",
     "repo_name": "pallets/jinja",
     "repo_url": "https://github.com/pallets/jinja",
-    "commit_sha": "8e1a4f00b9a8c7d6e5f43210fedcba9876543210",
-    "issue_id": "#1085",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "BSD-3-Clause",
     "category": "exception_handling",
     "title": "selectattr filter raises AttributeError on objects missing the attribute",
@@ -189,14 +196,15 @@
     "reproduction_methodology": "Pass Guest object without is_active to selectattr. Raises AttributeError.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "jinja-selectattr-missing-attr"
   },
   {
     "id": "BM-09",
     "repo_name": "encode/httpx",
     "repo_url": "https://github.com/encode/httpx",
-    "commit_sha": "6b1c2a00a9b8c7d6e5f43210fedcba9876543210",
-    "issue_id": "#982",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "BSD-3-Clause",
     "category": "cross_file_dependency",
     "title": "Headers get_list collapses Set-Cookie into single comma-joined header",
@@ -214,14 +222,15 @@
     "reproduction_methodology": "Multiple Set-Cookie headers joined with comma into single string.",
     "is_multi_file": true,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "httpx-multiple-set-cookie"
   },
   {
     "id": "BM-10",
     "repo_name": "pallets/werkzeug",
     "repo_url": "https://github.com/pallets/werkzeug",
-    "commit_sha": "5a2b3c40a8b9c0d1e2f3210fedcba9876543210a",
-    "issue_id": "#1940",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "BSD-3-Clause",
     "category": "input_validation",
     "title": "MultiDict getlist with type callable fails to catch conversion exceptions",
@@ -238,14 +247,15 @@
     "reproduction_methodology": "getlist('ids', type_fn=int) with malformed item crashes with ValueError.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "werkzeug-multidict-type-fn"
   },
   {
     "id": "BM-11",
     "repo_name": "tornadoweb/tornado",
     "repo_url": "https://github.com/tornadoweb/tornado",
-    "commit_sha": "2c4e6a80b9a8c7d6e5f43210fedcba9876543210",
-    "issue_id": "#2651",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "Apache-2.0",
     "category": "input_validation",
     "title": "HTTPHeaders folded header line does not replace CRLF with single space",
@@ -262,14 +272,15 @@
     "reproduction_methodology": "Folded header line concatenates raw indentation spaces.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "tornado-folded-header-whitespace"
   },
   {
     "id": "BM-12",
     "repo_name": "kennethreitz/envparse",
     "repo_url": "https://github.com/kennethreitz/envparse",
-    "commit_sha": "4b6a8e00b8a7c6d5e4f3210fedcba9876543210e",
-    "issue_id": "#35",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "MIT",
     "category": "logic_error",
     "title": "parse_bool treats 'False' and 'No' as truthy due to case-sensitivity",
@@ -286,14 +297,15 @@
     "reproduction_methodology": "parse_bool('False') raises ValueError instead of returning False.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "envparse-bool-case-sensitivity"
   },
   {
     "id": "BM-13",
     "repo_name": "marshmallow-code/apispec",
     "repo_url": "https://github.com/marshmallow-code/apispec",
-    "commit_sha": "7a3c5e10b9a8c7d6e5f43210fedcba9876543210",
-    "issue_id": "#412",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "MIT",
     "category": "logic_error",
     "title": "extract_path_params fails on hyphenated parameter names like {user-id}",
@@ -310,14 +322,15 @@
     "reproduction_methodology": "extract_path_params('/users/{user-id}') returns empty list.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "apispec-path-param-hyphen"
   },
   {
     "id": "BM-14",
     "repo_name": "joke2k/faker",
     "repo_url": "https://github.com/joke2k/faker",
-    "commit_sha": "9c8a7b60a8b9c0d1e2f3210fedcba9876543210f",
-    "issue_id": "#1102",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "MIT",
     "category": "input_validation",
     "title": "calculate_luhn crashes on formatted card numbers containing hyphens or spaces",
@@ -334,14 +347,15 @@
     "reproduction_methodology": "calculate_luhn('4992-7398-716') throws ValueError on hyphen.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "faker-luhn-hyphen-strip"
   },
   {
     "id": "BM-15",
     "repo_name": "pallets/flask",
     "repo_url": "https://github.com/pallets/flask",
-    "commit_sha": "6e5d4c30b8a7c6d5e4f3210fedcba9876543210d",
-    "issue_id": "#3289",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "BSD-3-Clause",
     "category": "multi_file_repair",
     "title": "Config from_mapping silently drops lowercase keys without warning or conversion",
@@ -359,14 +373,15 @@
     "reproduction_methodology": "app.configure({'debug': True}) leaves 'DEBUG' unset.",
     "is_multi_file": true,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "flask-config-convert-case"
   },
   {
     "id": "BM-16",
     "repo_name": "encode/databases",
     "repo_url": "https://github.com/encode/databases",
-    "commit_sha": "1d2e3f40a8b9c0d1e2f3210fedcba9876543210c",
-    "issue_id": "#145",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "BSD-3-Clause",
     "category": "input_validation",
     "title": "DatabaseURL treats query string as part of sqlite file path",
@@ -383,14 +398,15 @@
     "reproduction_methodology": "DatabaseURL('sqlite:///test.db?cache=shared') stores query string in database path.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "databases-sqlite-url-query"
   },
   {
     "id": "BM-17",
     "repo_name": "dateutil/dateutil",
     "repo_url": "https://github.com/dateutil/dateutil",
-    "commit_sha": "7c3f81e0a9b8c7d6e5f43210fedcba9876543210",
-    "issue_id": "#892",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "Apache-2.0",
     "category": "boundary_condition",
     "title": "parse_time raises IndexError on whitespace or empty input",
@@ -407,14 +423,15 @@
     "reproduction_methodology": "parse_time('   ') crashes with IndexError.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "dateutil-parse-time-whitespace"
   },
   {
     "id": "BM-18",
     "repo_name": "samuelcolvin/watchfiles",
     "repo_url": "https://github.com/samuelcolvin/watchfiles",
-    "commit_sha": "5f4e3d20a8b9c0d1e2f3210fedcba9876543210b",
-    "issue_id": "#82",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "MIT",
     "category": "boundary_condition",
     "title": "DefaultFilter fails matching when directory ends with trailing slash",
@@ -431,14 +448,15 @@
     "reproduction_methodology": "f.is_ignored('project/.git/') returns False.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "watchfiles-trailing-slash-ignored"
   },
   {
     "id": "BM-19",
     "repo_name": "tiangolo/fastapi",
     "repo_url": "https://github.com/tiangolo/fastapi",
-    "commit_sha": "8a7b6c50b8a7c6d5e4f3210fedcba9876543210a",
-    "issue_id": "#1502",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "MIT",
     "category": "cross_file_dependency",
     "title": "serialize_response omits overridden fields when exclude_unset is True",
@@ -456,14 +474,15 @@
     "reproduction_methodology": "jsonable_encoder(item, exclude_unset=True) always outputs unset fields.",
     "is_multi_file": true,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "fastapi-jsonable-exclude-unset"
   },
   {
     "id": "BM-20",
     "repo_name": "pygments/pygments",
     "repo_url": "https://github.com/pygments/pygments",
-    "commit_sha": "3a1f8b20a9b8c7d6e5f43210fedcba9876543210",
-    "issue_id": "#1620",
+    "commit_sha": null,
+    "issue_id": null,
     "license": "BSD-2-Clause",
     "category": "regression_sensitive",
     "title": "F-string lexer crashes on double braces escaping {{ and }}",
@@ -480,6 +499,7 @@
     "reproduction_methodology": "scan_fstring('literal {{escaped}}') misidentifies escaped brace as expression.",
     "is_multi_file": false,
     "is_synthetic": false,
-    "provenance": "minimized_reproduction"
+    "provenance": "defect_pattern_fixture",
+    "pattern_ref": "pygments-fstring-escaped-braces"
   }
 ]

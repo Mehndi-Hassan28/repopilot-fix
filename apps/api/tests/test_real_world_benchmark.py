@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -14,7 +15,11 @@ from repopilot_api.benchmarks.dataset import (
     BENCHMARK_ISSUES,
     REQUIRED_CATEGORIES,
 )
-from repopilot_api.benchmarks.evaluator import BenchmarkCaseResult, BenchmarkEvaluator
+from repopilot_api.benchmarks.evaluator import (
+    BenchmarkCaseResult,
+    BenchmarkEvaluator,
+    BenchmarkSecurityError,
+)
 from repopilot_api.benchmarks.run_benchmark import aggregate_metrics
 from repopilot_api.chat import (
     Evidence,
@@ -47,19 +52,23 @@ def test_benchmark_dataset_integrity():
     for issue in BENCHMARK_ISSUES:
         assert issue.repo_name and "/" in issue.repo_name
         assert issue.repo_url.startswith("https://github.com/")
-        assert len(issue.commit_sha) in (7, 40)
+        assert issue.pattern_ref and len(issue.pattern_ref) > 3
+        # Fake upstream commit SHAs and misleading issue IDs have been removed
+        assert issue.commit_sha is None
+        assert issue.issue_id is None
         assert issue.license in ("MIT", "Apache-2.0", "BSD-3-Clause", "BSD-2-Clause", "PSF-2.0")
         assert issue.target_file in issue.files
         assert issue.test_command
         assert issue.expected_baseline_error
         assert issue.reference_patch
         assert issue.provenance in (
+            "defect_pattern_fixture",
             "minimized_reproduction",
             "synthetic_fixture",
             "original_historical",
         )
-        # All 20 cases in this benchmark are accurately classified as minimized reproductions
-        assert issue.provenance == "minimized_reproduction"
+        # All 20 cases in this benchmark are accurately classified as defect_pattern_fixture
+        assert issue.provenance == "defect_pattern_fixture"
 
 
 def test_benchmark_baseline_and_reference_patches():
@@ -142,7 +151,13 @@ def test_evaluator_pipeline_with_mock_provider():
     """Verify full evaluation harness end-to-end execution with MockProvider."""
     issue = BENCHMARK_BY_ID["BM-01"]
     mock_provider = MockProvider()
-    evaluator = BenchmarkEvaluator(provider=mock_provider, rate_limit_delay_seconds=0.0)
+    evaluator = BenchmarkEvaluator(
+        provider=mock_provider,
+        rate_limit_delay_seconds=0.0,
+        use_docker=False,
+        human_approved=True,
+        allow_insecure_host_execution=True,  # Explicit opt-in for unit test execution
+    )
 
     result = evaluator.evaluate_issue(issue)
     assert isinstance(result, BenchmarkCaseResult)
@@ -158,6 +173,36 @@ def test_evaluator_pipeline_with_mock_provider():
         "PATCH_APPLICATION_ERROR",
         "REGRESSION_DETECTED",
     )
+
+
+def test_evaluator_rejects_host_execution_by_default():
+    """Verify that arbitrary host subprocess execution of AI patches is strictly blocked."""
+    issue = BENCHMARK_BY_ID["BM-01"]
+    mock_provider = MockProvider()
+    evaluator = BenchmarkEvaluator(
+        provider=mock_provider,
+        rate_limit_delay_seconds=0.0,
+        use_docker=False,
+        allow_insecure_host_execution=False,
+    )
+    with pytest.raises(BenchmarkSecurityError) as exc_info:
+        evaluator.evaluate_issue(issue)
+    assert "Host subprocess execution of AI-generated patches is disabled" in str(exc_info.value)
+
+
+def test_evaluator_rejects_unapproved_execution():
+    """Verify that benchmark verification rejects unapproved patch execution."""
+    issue = BENCHMARK_BY_ID["BM-01"]
+    mock_provider = MockProvider()
+    evaluator = BenchmarkEvaluator(
+        provider=mock_provider,
+        rate_limit_delay_seconds=0.0,
+        use_docker=True,
+        human_approved=False,
+    )
+    with pytest.raises(BenchmarkSecurityError) as exc_info:
+        evaluator.evaluate_issue(issue)
+    assert "requires explicit human approval" in str(exc_info.value)
 
 
 def test_aggregate_metrics_calculation():
@@ -185,8 +230,8 @@ def test_aggregate_metrics_calculation():
             generated_diff="--- a/file\n+++ b/file",
             citation_boundary_valid=True,
             semantic_citation_correct=True,
-            execution_backend="host_subprocess",
-            provenance="minimized_reproduction",
+            execution_backend="docker",
+            provenance="defect_pattern_fixture",
         ),
         BenchmarkCaseResult(
             issue_id="BM-02",
@@ -210,14 +255,15 @@ def test_aggregate_metrics_calculation():
             generated_diff="",
             citation_boundary_valid=False,
             semantic_citation_correct=False,
-            execution_backend="host_subprocess",
-            provenance="minimized_reproduction",
+            execution_backend="docker",
+            provenance="defect_pattern_fixture",
         ),
     ]
 
     metrics = aggregate_metrics(cases)
     assert metrics["total_evaluated"] == 2
     assert metrics["counts"]["verified_fixes"] == 1
+    assert metrics["counts"]["patches_applicable"] == 1
     assert metrics["rates"]["verified_repair_rate"] == 0.5
     assert metrics["rates"]["patch_applicability_rate"] == 0.5
     assert metrics["rates"]["baseline_reproduction_rate"] == 1.0
@@ -225,9 +271,68 @@ def test_aggregate_metrics_calculation():
     assert metrics["rates"]["citation_boundary_validity_rate"] == 0.5
     assert metrics["rates"]["semantic_citation_accuracy"] == 0.5
     assert metrics["rates"]["observed_regression_incidence"] == 0.0
-    assert metrics["provenance"]["minimized_reproductions"] == 2
+    assert metrics["rates"]["observed_regression_denominator"] == "applicable_patches"
+    assert metrics["provenance"]["defect_pattern_fixtures"] == 2
     assert metrics["performance"]["total_tokens"] == 1450
     assert metrics["performance"]["avg_tokens_per_issue"] == 725.0
+
+    # Test regression denominator calculation:
+    # regression incidence must be regressions / applicable_patches
+    cases_with_reg = [
+        BenchmarkCaseResult(
+            issue_id="BM-01",
+            repo_name="pallets/click",
+            category="boundary_condition",
+            provider_mode="live_ai",
+            model="test-model",
+            root_cause_identified=True,
+            citation_correctness=True,
+            retrieval_recall_at_5=1.0,
+            retrieval_mrr=1.0,
+            patch_applicable=True,
+            baseline_reproduced=True,
+            verdict="REGRESSION_DETECTED",
+            latency_ms=1200,
+            prompt_tokens=500,
+            completion_tokens=150,
+            total_tokens=650,
+            execution_duration_s=2.5,
+            is_multi_file=False,
+            generated_diff="--- a/file\n+++ b/file",
+            citation_boundary_valid=True,
+            semantic_citation_correct=True,
+            execution_backend="docker",
+            provenance="defect_pattern_fixture",
+        ),
+        BenchmarkCaseResult(
+            issue_id="BM-02",
+            repo_name="bottlepy/bottle",
+            category="logic_error",
+            provider_mode="live_ai",
+            model="test-model",
+            root_cause_identified=True,
+            citation_correctness=False,
+            retrieval_recall_at_5=1.0,
+            retrieval_mrr=0.5,
+            patch_applicable=False,
+            baseline_reproduced=True,
+            verdict="PATCH_APPLICATION_ERROR",
+            latency_ms=1800,
+            prompt_tokens=600,
+            completion_tokens=200,
+            total_tokens=800,
+            execution_duration_s=3.0,
+            is_multi_file=True,
+            generated_diff="",
+            citation_boundary_valid=False,
+            semantic_citation_correct=False,
+            execution_backend="docker",
+            provenance="defect_pattern_fixture",
+        ),
+    ]
+    metrics_reg = aggregate_metrics(cases_with_reg)
+    # 1 regression out of 1 applicable patch = 1.0 (100%), NOT 0.5 (1/2)
+    assert metrics_reg["rates"]["observed_regression_incidence"] == 1.0
 
 
 def test_manifest_sequestration_and_sanitization():
@@ -246,16 +351,18 @@ def test_manifest_sequestration_and_sanitization():
     raw_manifest = json.dumps(data)
     assert "AI_GATEWAY_API_KEY" not in raw_manifest
     assert "GEMINI_API_KEY" not in raw_manifest
-    assert "sk-" not in raw_manifest
+    assert not re.search(r"\bsk-[a-zA-Z0-9]{10,}", raw_manifest)
 
     # Verify metrics transparency and terminology
     rates = data["metrics"]["rates"]
     assert "observed_regression_incidence" in rates
+    assert rates["observed_regression_denominator"] == "applicable_executed_patches"
     assert "citation_boundary_validity_rate" in rates
     assert "semantic_citation_accuracy" in rates
     assert "regression_detection_effectiveness" in rates
-    assert data["metrics"]["dataset_provenance"]["minimized_reproductions"] == 20
+    assert data["metrics"]["dataset_provenance"]["defect_pattern_fixtures"] == 20
     assert data["metrics"]["dataset_provenance"]["original_historical_checkouts"] == 0
+    assert "historical_baseline_disclosure" in data
 
 
 def test_regression_detection_effectiveness_with_known_regressions():

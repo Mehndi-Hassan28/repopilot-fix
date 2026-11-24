@@ -4,11 +4,14 @@
 **Evaluated Model:** `models/gemini-flash-lite-latest`  
 **Provider Mode:** `live_ai`  
 **Total Issues Evaluated:** 20  
-**Execution Backend:** Host Subprocess (Isolated Workspaces) [Docker verified in dedicated suite]  
+**Execution Backend:** Docker Sandbox (with historical exploratory host-execution baseline preserved)  
 
 ## 1. Executive Summary
 
-This report provides an empirical, reproducible evaluation of RepoPilot Fix's autonomous software repair capabilities across 20 curated open-source defect benchmarks. The cases represent minimized reproductions distilled from defect patterns observed in mature Python projects (including Click, Bottle, Marshmallow, Requests, Pydantic, Jinja, HTTPX, Werkzeug, Tornado, Faker, FastAPI, and Pygments). The defects span logic errors, boundary conditions, input validation, exception handling, cross-file dependencies, multi-file repairs, and regression-sensitive bugs.
+This report provides an empirical, reproducible evaluation of RepoPilot Fix's autonomous software repair capabilities across 20 curated open-source defect benchmarks. The cases represent standalone defect-pattern fixtures distilled from known bug patterns in mature Python projects (including Click, Bottle, Marshmallow, Requests, Pydantic, Jinja, HTTPX, Werkzeug, Tornado, Faker, FastAPI, and Pygments). The defects span logic errors, boundary conditions, input validation, exception handling, cross-file dependencies, multi-file repairs, and regression-sensitive bugs.
+
+> [!IMPORTANT]
+> **Preservation of Historical Host-Execution Baseline:** The 85.0% (17/20) verified repair success rate reported herein reflects a historical exploratory study evaluated via isolated host-subprocess execution. It is **not** a Docker-verified benchmark result. To protect against un-sandboxed execution of arbitrary AI-generated code, host subprocess execution has been disabled in the evaluation harness; benchmark verification requires the trusted Docker sandbox with resource quotas and explicit human approval.
 
 ### Key Performance Indicators
 
@@ -22,7 +25,7 @@ This report provides an empirical, reproducible evaluation of RepoPilot Fix's au
 | **Semantic Citation Accuracy** | **90.0%** (18/20) | Total Evaluated Issues | Ground-truth defect file & symbol cited in valid bounds |
 | **Retrieval Recall@5** | **100.0%** | Total Evaluated Issues | Target file present in top-5 retrieved context |
 | **Retrieval MRR** | **0.925** | Total Evaluated Issues | Mean Reciprocal Rank of target file |
-| **Observed Regression Incidence** | **0.0%** (0/20) | Total Evaluated Issues | Proportion of AI fixes that induced unexpected test regressions |
+| **Observed Regression Incidence** | **0.0%** (0/18) | Applicable Executed Patches | Proportion of executed AI patches that induced unexpected test regressions |
 | **Regression Detection Effectiveness** | **100.0%** | Known Regressions | Rate at which injected regressive patches were caught |
 | **Multi-File Repair Rate** | **100.0%** (3/3) | Multi-File Issues | Coordinated fixes across multiple files verified |
 | **Average AI Latency** | **10906 ms** | Completed Requests | Mean time to analyze & generate diff |
@@ -31,30 +34,30 @@ This report provides an empirical, reproducible evaluation of RepoPilot Fix's au
 
 ## 2. Benchmark Dataset
 
-The dataset contains 20 curated minimized reproductions distilled from real-world open-source defect patterns. Target files and reproduction tests are self-contained modules; pinned commit SHAs in the dataset are deterministic test identifiers rather than raw upstream git checkouts. Predefined solution patches were sequestered and never exposed to the AI prompt.
+The dataset contains 20 curated standalone defect-pattern fixtures distilled from real-world open-source defect patterns. Target files and reproduction tests are self-contained modules; cases are identified by defect pattern reference rather than raw upstream git checkouts. Predefined solution patches were sequestered and never exposed to the AI prompt.
 
-| ID | Repository | Category | Provenance | Issue / PR | Target File | Multi-File |
+| ID | Repository | Category | Provenance | Defect Pattern | Target File | Multi-File |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `BM-01` | `pallets/click` | `boundary_condition` | `minimized_reproduction` | [#1234](https://github.com/pallets/click) | `src/click_types.py` | No |
-| `BM-02` | `bottlepy/bottle` | `logic_error` | `minimized_reproduction` | [#614](https://github.com/bottlepy/bottle) | `src/bottle_router.py` | No |
-| `BM-03` | `marshmallow-code/marshmallow` | `exception_handling` | `minimized_reproduction` | [#1588](https://github.com/marshmallow-code/marshmallow) | `src/marshmallow_fields.py` | No |
-| `BM-04` | `urllib3/urllib3` | `input_validation` | `minimized_reproduction` | [#1456](https://github.com/urllib3/urllib3) | `src/urllib3_url.py` | No |
-| `BM-05` | `psf/requests` | `logic_error` | `minimized_reproduction` | [#4120](https://github.com/psf/requests) | `src/requests_structures.py` | No |
-| `BM-06` | `samuelcolvin/pydantic` | `boundary_condition` | `minimized_reproduction` | [#764](https://github.com/samuelcolvin/pydantic) | `src/pydantic_validators.py` | No |
-| `BM-07` | `pytest-dev/iniconfig` | `logic_error` | `minimized_reproduction` | [#21](https://github.com/pytest-dev/iniconfig) | `src/iniconfig_parser.py` | No |
-| `BM-08` | `pallets/jinja` | `exception_handling` | `minimized_reproduction` | [#1085](https://github.com/pallets/jinja) | `src/jinja_filters.py` | No |
-| `BM-09` | `encode/httpx` | `cross_file_dependency` | `minimized_reproduction` | [#982](https://github.com/encode/httpx) | `src/httpx_response.py` | Yes |
-| `BM-10` | `pallets/werkzeug` | `input_validation` | `minimized_reproduction` | [#1940](https://github.com/pallets/werkzeug) | `src/werkzeug_datastructures.py` | No |
-| `BM-11` | `tornadoweb/tornado` | `input_validation` | `minimized_reproduction` | [#2651](https://github.com/tornadoweb/tornado) | `src/tornado_headers.py` | No |
-| `BM-12` | `kennethreitz/envparse` | `logic_error` | `minimized_reproduction` | [#35](https://github.com/kennethreitz/envparse) | `src/envparse_types.py` | No |
-| `BM-13` | `marshmallow-code/apispec` | `logic_error` | `minimized_reproduction` | [#412](https://github.com/marshmallow-code/apispec) | `src/apispec_path.py` | No |
-| `BM-14` | `joke2k/faker` | `input_validation` | `minimized_reproduction` | [#1102](https://github.com/joke2k/faker) | `src/faker_luhn.py` | No |
-| `BM-15` | `pallets/flask` | `multi_file_repair` | `minimized_reproduction` | [#3289](https://github.com/pallets/flask) | `src/flask_config.py` | Yes |
-| `BM-16` | `encode/databases` | `input_validation` | `minimized_reproduction` | [#145](https://github.com/encode/databases) | `src/databases_url.py` | No |
-| `BM-17` | `dateutil/dateutil` | `boundary_condition` | `minimized_reproduction` | [#892](https://github.com/dateutil/dateutil) | `src/dateutil_parser.py` | No |
-| `BM-18` | `samuelcolvin/watchfiles` | `boundary_condition` | `minimized_reproduction` | [#82](https://github.com/samuelcolvin/watchfiles) | `src/watchfiles_filter.py` | No |
-| `BM-19` | `tiangolo/fastapi` | `cross_file_dependency` | `minimized_reproduction` | [#1502](https://github.com/tiangolo/fastapi) | `src/fastapi_encoders.py` | Yes |
-| `BM-20` | `pygments/pygments` | `regression_sensitive` | `minimized_reproduction` | [#1620](https://github.com/pygments/pygments) | `src/pygments_lexer.py` | No |
+| `BM-01` | `pallets/click` | `boundary_condition` | `defect_pattern_fixture` | [click-intrange-upperbound](https://github.com/pallets/click) | `src/click_types.py` | No |
+| `BM-02` | `bottlepy/bottle` | `logic_error` | `defect_pattern_fixture` | [bottle-router-normalize-path](https://github.com/bottlepy/bottle) | `src/bottle_router.py` | No |
+| `BM-03` | `marshmallow-code/marshmallow` | `exception_handling` | `defect_pattern_fixture` | [marshmallow-dictfield-keyerror](https://github.com/marshmallow-code/marshmallow) | `src/marshmallow_fields.py` | No |
+| `BM-04` | `urllib3/urllib3` | `input_validation` | `defect_pattern_fixture` | [urllib3-ipv6-bracket-port](https://github.com/urllib3/urllib3) | `src/urllib3_url.py` | No |
+| `BM-05` | `psf/requests` | `logic_error` | `defect_pattern_fixture` | [requests-case-insensitive-dict-pop](https://github.com/psf/requests) | `src/requests_structures.py` | No |
+| `BM-06` | `samuelcolvin/pydantic` | `boundary_condition` | `defect_pattern_fixture` | [pydantic-float-negative-zero](https://github.com/samuelcolvin/pydantic) | `src/pydantic_validators.py` | No |
+| `BM-07` | `pytest-dev/iniconfig` | `logic_error` | `defect_pattern_fixture` | [iniconfig-hash-comment-parse](https://github.com/pytest-dev/iniconfig) | `src/iniconfig_parser.py` | No |
+| `BM-08` | `pallets/jinja` | `exception_handling` | `defect_pattern_fixture` | [jinja-selectattr-missing-attr](https://github.com/pallets/jinja) | `src/jinja_filters.py` | No |
+| `BM-09` | `encode/httpx` | `cross_file_dependency` | `defect_pattern_fixture` | [httpx-multiple-set-cookie](https://github.com/encode/httpx) | `src/httpx_response.py` | Yes |
+| `BM-10` | `pallets/werkzeug` | `input_validation` | `defect_pattern_fixture` | [werkzeug-multidict-type-fn](https://github.com/pallets/werkzeug) | `src/werkzeug_datastructures.py` | No |
+| `BM-11` | `tornadoweb/tornado` | `input_validation` | `defect_pattern_fixture` | [tornado-folded-header-whitespace](https://github.com/tornadoweb/tornado) | `src/tornado_headers.py` | No |
+| `BM-12` | `kennethreitz/envparse` | `logic_error` | `defect_pattern_fixture` | [envparse-bool-case-sensitivity](https://github.com/kennethreitz/envparse) | `src/envparse_types.py` | No |
+| `BM-13` | `marshmallow-code/apispec` | `logic_error` | `defect_pattern_fixture` | [apispec-path-param-hyphen](https://github.com/marshmallow-code/apispec) | `src/apispec_path.py` | No |
+| `BM-14` | `joke2k/faker` | `input_validation` | `defect_pattern_fixture` | [faker-luhn-hyphen-strip](https://github.com/joke2k/faker) | `src/faker_luhn.py` | No |
+| `BM-15` | `pallets/flask` | `multi_file_repair` | `defect_pattern_fixture` | [flask-config-convert-case](https://github.com/pallets/flask) | `src/flask_config.py` | Yes |
+| `BM-16` | `encode/databases` | `input_validation` | `defect_pattern_fixture` | [databases-sqlite-url-query](https://github.com/encode/databases) | `src/databases_url.py` | No |
+| `BM-17` | `dateutil/dateutil` | `boundary_condition` | `defect_pattern_fixture` | [dateutil-parse-time-whitespace](https://github.com/dateutil/dateutil) | `src/dateutil_parser.py` | No |
+| `BM-18` | `samuelcolvin/watchfiles` | `boundary_condition` | `defect_pattern_fixture` | [watchfiles-trailing-slash-ignored](https://github.com/samuelcolvin/watchfiles) | `src/watchfiles_filter.py` | No |
+| `BM-19` | `tiangolo/fastapi` | `cross_file_dependency` | `defect_pattern_fixture` | [fastapi-jsonable-exclude-unset](https://github.com/tiangolo/fastapi) | `src/fastapi_encoders.py` | Yes |
+| `BM-20` | `pygments/pygments` | `regression_sensitive` | `defect_pattern_fixture` | [pygments-fstring-escaped-braces](https://github.com/pygments/pygments) | `src/pygments_lexer.py` | No |
 
 
 ## 3. Empirical Case-by-Case Results
@@ -92,8 +95,8 @@ The dataset contains 20 curated minimized reproductions distilled from real-worl
 
 ## 5. Limitations & Authenticity Disclosures
 
-- **Dataset Provenance:** All 20 cases are minimized reproductions and synthetic test fixtures distilled from defect patterns, not raw full-repository checkouts at upstream git commit SHAs.
-- **Execution Backend:** Benchmark runs were performed in isolated temporary directories using host subprocess execution (`host_subprocess`). Containerized Docker execution is verified in dedicated integration tests.
+- **Dataset Provenance:** All 20 cases are standalone defect-pattern fixtures distilled from defect patterns observed in open-source projects, not raw full-repository checkouts at upstream git commit SHAs.
+- **Host Execution Disablement:** Host subprocess execution of AI-generated patches is strictly disabled. Benchmark verification mandates the trusted Docker sandbox, explicit human approval, and container resource limits.
+- **Preserved Historical Baseline:** The 85.0% repair result represents a historical exploratory host-execution baseline, not a Docker-verified benchmark.
 - **External Dependencies:** Heavy C-extensions and proprietary services requiring non-free services are excluded.
 - **LLM Non-Determinism:** LLM generation is non-deterministic; slight temperature variations can alter diffs.
-

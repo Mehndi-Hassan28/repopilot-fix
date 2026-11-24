@@ -1,15 +1,16 @@
 """Benchmark dataset curating 20 open-source software defect benchmarks.
 
 Each benchmark case records:
-- Upstream repository name, reference URL, and license provenance.
+- Upstream project context and license provenance.
 - Defect classification: logic_error, boundary_condition, input_validation,
   exception_handling, cross_file_dependency, multi_file_repair, regression_sensitive.
 - Provenance classification:
+  * defect_pattern_fixture: engineered standalone reproduction distilled from
+    known open-source defect patterns.
   * original_historical: full upstream repository checkout at historical commit.
-  * minimized_reproduction: standalone reproduction distilled from upstream defect pattern.
   * synthetic_fixture: engineered fixture designed for benchmark stress testing.
-  (All 20 cases in this suite are minimized reproductions modeling real defect patterns).
-- Deterministic commit SHA identifier for test isolation.
+  (All 20 cases in this suite are defect-pattern fixtures modeling real bug patterns).
+- Deterministic pattern reference identifier (pattern_ref).
 - Reproducible codebase files and baseline test failure command.
 - Sequestered reference fix patch for ground-truth verification (never exposed to AI prompt).
 """
@@ -20,8 +21,9 @@ from pathlib import Path
 from typing import Literal
 
 BenchmarkProvenance = Literal[
-    "original_historical",
+    "defect_pattern_fixture",
     "minimized_reproduction",
+    "original_historical",
     "synthetic_fixture",
 ]
 
@@ -51,8 +53,7 @@ class BenchmarkIssue:
     id: str
     repo_name: str
     repo_url: str
-    commit_sha: str
-    issue_id: str
+    pattern_ref: str
     license: str
     category: BenchmarkCategory
     title: str
@@ -66,7 +67,9 @@ class BenchmarkIssue:
     reproduction_methodology: str
     is_multi_file: bool = False
     is_synthetic: bool = False
-    provenance: BenchmarkProvenance = "minimized_reproduction"
+    provenance: BenchmarkProvenance = "defect_pattern_fixture"
+    commit_sha: str | None = None
+    issue_id: str | None = None
 
 
 _DATASET_FILE = Path(__file__).parent / "dataset.json"

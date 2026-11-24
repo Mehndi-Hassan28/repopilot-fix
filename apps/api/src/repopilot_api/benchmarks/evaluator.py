@@ -25,6 +25,13 @@ from repopilot_api.patcher import apply_unified_diff
 
 logger = logging.getLogger(__name__)
 
+
+class BenchmarkSecurityError(PermissionError):
+    """Raised when benchmark execution violates RepoPilot Fix security boundaries."""
+
+    pass
+
+
 BenchmarkVerdict = Literal[
     "VERIFIED_FIX",
     "FIX_FAILED",
@@ -59,8 +66,8 @@ class BenchmarkCaseResult:
     error_message: str | None = None
     citation_boundary_valid: bool = True
     semantic_citation_correct: bool = True
-    execution_backend: str = "host_subprocess"  # "host_subprocess" | "docker"
-    provenance: str = "minimized_reproduction"
+    execution_backend: str = "docker"  # "docker" | "host_subprocess_historical"
+    provenance: str = "defect_pattern_fixture"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -71,11 +78,23 @@ class BenchmarkEvaluator:
         self,
         provider: Provider,
         rate_limit_delay_seconds: float = 4.5,
-        use_docker: bool = False,
+        use_docker: bool = True,
+        human_approved: bool = True,
+        cpu_limit: str = "1.0",
+        memory_limit: str = "512m",
+        pids_limit: int = 64,
+        timeout_seconds: int = 30,
+        allow_insecure_host_execution: bool = False,
     ):
         self.provider = provider
         self.rate_limit_delay_seconds = rate_limit_delay_seconds
         self.use_docker = use_docker
+        self.human_approved = human_approved
+        self.cpu_limit = cpu_limit
+        self.memory_limit = memory_limit
+        self.pids_limit = pids_limit
+        self.timeout_seconds = timeout_seconds
+        self.allow_insecure_host_execution = allow_insecure_host_execution
 
     def evaluate_issue(self, issue: BenchmarkIssue) -> BenchmarkCaseResult:
         """Evaluate a single benchmark issue through the full pipeline."""
@@ -203,7 +222,7 @@ class BenchmarkEvaluator:
             latency_ms = int((time.monotonic() - ai_start) * 1000)
             error_msg = str(exc)
             if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                exec_backend = "docker" if self.use_docker else "host_subprocess"
+                exec_backend = "docker" if self.use_docker else "host_subprocess_historical"
                 return BenchmarkCaseResult(
                     issue_id=issue.id,
                     repo_name=issue.repo_name,
@@ -228,7 +247,7 @@ class BenchmarkEvaluator:
                     citation_boundary_valid=False,
                     semantic_citation_correct=False,
                     execution_backend=exec_backend,
-                    provenance=getattr(issue, "provenance", "minimized_reproduction"),
+                    provenance=getattr(issue, "provenance", "defect_pattern_fixture"),
                 )
             logger.warning("AI analysis failed for %s: %s", issue.id, exc)
 
@@ -267,6 +286,22 @@ class BenchmarkEvaluator:
         if not patch_applicable:
             verdict = "PATCH_SYNTHESIS_FAILED" if not ai_patch else "PATCH_APPLICATION_ERROR"
 
+        # Security Enforcement:
+        # Arbitrary host execution of AI-generated patches is disabled.
+        # Benchmark verification requires the trusted Docker sandbox, explicit human approval,
+        # and container resource restrictions (network none, non-root user, memory/cpu limits).
+        if not self.use_docker and not self.allow_insecure_host_execution:
+            raise BenchmarkSecurityError(
+                "Host subprocess execution of AI-generated patches is disabled for security. "
+                "Benchmark verification requires the trusted Docker sandbox, human approval, "
+                "and container resource restrictions."
+            )
+
+        if not self.human_approved:
+            raise BenchmarkSecurityError(
+                "Execution of AI-generated patches requires explicit human approval."
+            )
+
         exec_start = time.monotonic()
         with (
             tempfile.TemporaryDirectory() as tmp_baseline,
@@ -292,10 +327,24 @@ class BenchmarkEvaluator:
                         "docker",
                         "run",
                         "--rm",
-                        "-e",
-                        "PYTHONDONTWRITEBYTECODE=1",
+                        "--network",
+                        "none",
+                        "--cap-drop",
+                        "ALL",
+                        "--security-opt",
+                        "no-new-privileges",
                         "-u",
                         f"{os.getuid()}:{os.getgid()}",
+                        "--memory",
+                        self.memory_limit,
+                        "--memory-swap",
+                        self.memory_limit,
+                        "--cpus",
+                        self.cpu_limit,
+                        "--pids-limit",
+                        str(self.pids_limit),
+                        "-e",
+                        "PYTHONDONTWRITEBYTECODE=1",
                         "-v",
                         f"{cwd}:/workspace",
                         "-w",
@@ -305,13 +354,19 @@ class BenchmarkEvaluator:
                         "-c",
                         issue.test_command,
                     ]
-                    return subprocess.run(docker_cmd, capture_output=True, text=True)
+                    return subprocess.run(
+                        docker_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=self.timeout_seconds,
+                    )
                 return subprocess.run(
                     issue.test_command,
                     shell=True,
                     cwd=cwd,
                     capture_output=True,
                     text=True,
+                    timeout=self.timeout_seconds,
                 )
 
             # Baseline execution
@@ -332,7 +387,7 @@ class BenchmarkEvaluator:
 
         exec_duration = time.monotonic() - exec_start
         total_duration = time.monotonic() - start_total
-        exec_backend = "docker" if self.use_docker else "host_subprocess"
+        exec_backend = "docker" if self.use_docker else "host_subprocess_historical"
 
         # Respect rate limits between calls
         if self.rate_limit_delay_seconds > 0 and provider_mode == "live_ai":
@@ -362,7 +417,7 @@ class BenchmarkEvaluator:
             citation_boundary_valid=citation_boundary_valid,
             semantic_citation_correct=semantic_citation_correct,
             execution_backend=exec_backend,
-            provenance=getattr(issue, "provenance", "minimized_reproduction"),
+            provenance=getattr(issue, "provenance", "defect_pattern_fixture"),
         )
 
     def evaluate_batch(

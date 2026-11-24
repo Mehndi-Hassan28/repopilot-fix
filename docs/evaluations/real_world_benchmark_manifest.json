@@ -32,7 +32,8 @@
       "retrieval_mrr": 0.925,
       "citation_boundary_validity_rate": 0.9,
       "observed_regression_incidence": 0.0,
-      "regression_detection_effectiveness": 1.0
+      "regression_detection_effectiveness": 1.0,
+      "observed_regression_denominator": "applicable_executed_patches"
     },
     "performance": {
       "total_prompt_tokens": 12654,
@@ -46,9 +47,10 @@
     "dataset_provenance": {
       "minimized_reproductions": 20,
       "original_historical_checkouts": 0,
-      "synthetic_fixtures": 0
+      "synthetic_fixtures": 0,
+      "defect_pattern_fixtures": 20
     },
-    "execution_backend": "host_subprocess"
+    "execution_backend": "host_subprocess_historical_baseline"
   },
   "cases": [
     {
@@ -72,10 +74,11 @@
       "is_multi_file": false,
       "generated_diff": "--- src/click_types.py\n+++ src/click_types.py\n@@ -11,6 +11,6 @@\n         if self.min_val is not None and value < self.min_val:\n             raise BadParameter(f'{value} is smaller than minimum {self.min_val}')\n         # Bug: strictly less-than rejects the upper bound itself\n-        if self.max_val is not None and value >= self.max_val:\n+        if self.max_val is not None and value > self.max_val:\n             raise BadParameter(f'{value} is not smaller than maximum {self.max_val}')\n         return value\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "click-intrange-upperbound"
     },
     {
       "issue_id": "BM-02",
@@ -98,10 +101,11 @@
       "is_multi_file": false,
       "generated_diff": "--- src/bottle_router.py\n+++ src/bottle_router.py\n@@ -5,5 +5,6 @@\n         if not path:\n             return '/'\n-        # Bug: strip('/') strips both leading and trailing slashes unconditionally\n-        cleaned = path.strip('/')\n-        return f'/{cleaned}' if cleaned else '/'\n+        parts = [p for p in path.split('/') if p]\n+        if not parts:\n+            return '/'\n+        return '/' + '/'.join(parts)\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "bottle-router-normalize-path"
     },
     {
       "issue_id": "BM-03",
@@ -124,10 +128,11 @@
       "is_multi_file": false,
       "generated_diff": "--- a/src/marshmallow_fields.py\n+++ b/src/marshmallow_fields.py\n@@ -14,4 +14,7 @@\n         # Bug: directly indexing value[key] raises raw KeyError on missing key\n         for key in self.required_keys:\n-            _ = value[key]\n+            try:\n+                _ = value[key]\n+            except KeyError:\n+                raise ValidationError(f'Missing required key: {key}')\n         return dict(value)\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "marshmallow-dictfield-keyerror"
     },
     {
       "issue_id": "BM-04",
@@ -150,10 +155,11 @@
       "is_multi_file": false,
       "generated_diff": "--- a/src/urllib3_url.py\n+++ b/src/urllib3_url.py\n@@ -14,5 +14,10 @@\n     # Bug: splits authority on ':' without checking for IPv6 brackets '[...]'\n-    if ':' in authority:\n-        host, port_str = authority.rsplit(':', 1)\n-        port = int(port_str) if port_str.isdigit() else None\n+    if authority.startswith('['):\n+        host_end = authority.index(']')\n+        host = authority[1:host_end]\n+        port_str = authority[host_end + 2:] if len(authority) > host_end + 1 and authority[host_end + 1] == ':' else ''\n+        port = int(port_str) if port_str.isdigit() else None\n+    elif ':' in authority:\n+        host, port_str = authority.rsplit(':', 1)\n+        port = int(port_str) if port_str.isdigit() else None\n     else:\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "urllib3-ipv6-bracket-port"
     },
     {
       "issue_id": "BM-05",
@@ -176,10 +182,11 @@
       "is_multi_file": false,
       "generated_diff": "--- a/src/requests_structures.py\n+++ b/src/requests_structures.py\n@@ -18,5 +18,8 @@\n     def pop(self, key, *args):\n-        # Bug: KeyError raised unconditionally on missing key without checking args\n-        if key.lower() not in self._store:\n-            raise KeyError(key)\n-        return self._store.pop(key.lower())[1]\n+        if len(args) > 1:\n+            raise TypeError(f\"pop expected at most 2 arguments, got {1 + len(args)}\")\n+        if key.lower() not in self._store:\n+            if args:\n+                return args[0]\n+            raise KeyError(key)\n+        return self._store.pop(key.lower())[1]\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "requests-case-insensitive-dict-pop"
     },
     {
       "issue_id": "BM-06",
@@ -202,10 +209,11 @@
       "is_multi_file": false,
       "generated_diff": "--- a/src/pydantic_validators.py\n+++ b/src/pydantic_validators.py\n@@ -7,4 +7,4 @@\n     if val == 0.0 and math.copysign(1.0, val) < 0:\n         if strict_positive:\n             raise ValueError('Value must be strictly positive')\n-        return val  # Bug: returns -0.0 instead of normalized 0.0\n+        return 0.0\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "pydantic-float-negative-zero"
     },
     {
       "issue_id": "BM-07",
@@ -228,10 +236,11 @@
       "is_multi_file": false,
       "generated_diff": "--- a/src/iniconfig_parser.py\n+++ b/src/iniconfig_parser.py\n@@ -5,5 +5,5 @@\n-        # Bug: finds any '#' even if not preceded by whitespace or at start\n-        idx = raw.find('#')\n+        # Find '#' preceded by whitespace\n+        idx = raw.find(' #')\n         if idx != -1:\n             raw = raw[:idx]\n         return raw.strip()\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "iniconfig-hash-comment-parse"
     },
     {
       "issue_id": "BM-08",
@@ -254,10 +263,11 @@
       "is_multi_file": false,
       "generated_diff": "--- a/src/jinja_filters.py\n+++ b/src/jinja_filters.py\n@@ -5,3 +5,3 @@\n         # Bug: getattr without default raises AttributeError if item lacks attr_name\n-        val = getattr(item, attr_name)\n+        val = getattr(item, attr_name, None)\n         if val:\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "jinja-selectattr-missing-attr"
     },
     {
       "issue_id": "BM-09",
@@ -280,10 +290,11 @@
       "is_multi_file": true,
       "generated_diff": "--- a/src/httpx_response.py\n+++ b/src/httpx_response.py\n@@ -8,4 +8,2 @@\n     def cookies(self) -> list[str]:\n-        # Bug: calls get_joined which joins multiple cookies with comma\n-        val = self.headers.get_joined('set-cookie')\n-        return [val] if val else []\n+        return self.headers.get_list('set-cookie')\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "httpx-multiple-set-cookie"
     },
     {
       "issue_id": "BM-10",
@@ -306,10 +317,11 @@
       "is_multi_file": false,
       "generated_diff": "--- a/src/werkzeug_datastructures.py\n+++ b/src/werkzeug_datastructures.py\n@@ -5,6 +5,11 @@\n     def getlist(self, key: str, type_fn=None) -> list:\n         vals = self._data.get(key, [])\n         if type_fn is None:\n             return list(vals)\n-        # Bug: no try-except around type_fn(v) causes unhandled exception\n-        return [type_fn(v) for v in vals]\n+        result = []\n+        for v in vals:\n+            try:\n+                result.append(type_fn(v))\n+            except (ValueError, TypeError):\n+                pass\n+        return result\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "werkzeug-multidict-type-fn"
     },
     {
       "issue_id": "BM-11",
@@ -332,10 +344,11 @@
       "is_multi_file": false,
       "generated_diff": "--- a/src/tornado_headers.py\n+++ b/src/tornado_headers.py\n@@ -6,5 +6,4 @@\n         for line in header_lines:\n             if line.startswith((' ', '\\t')) and last_key:\n-                # Bug: directly appends line without stripping leading indent\n-                headers[last_key] += line\n+                headers[last_key] += \" \" + line.strip()\n             elif ':' in line:\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "tornado-folded-header-whitespace"
     },
     {
       "issue_id": "BM-12",
@@ -358,10 +371,11 @@
       "is_multi_file": false,
       "generated_diff": "--- a/src/envparse_types.py\n+++ b/src/envparse_types.py\n@@ -2,6 +2,7 @@\n     \"\"\"Parse common boolean representations into a Python bool.\"\"\"\n     # Bug: case-sensitive membership check\n-    if val in ('0', 'false', 'no', 'off'):\n+    val_lower = val.lower()\n+    if val_lower in ('0', 'false', 'no', 'off'):\n         return False\n-    if val in ('1', 'true', 'yes', 'on'):\n+    if val_lower in ('1', 'true', 'yes', 'on'):\n         return True\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "envparse-bool-case-sensitivity"
     },
     {
       "issue_id": "BM-13",
@@ -384,10 +398,11 @@
       "is_multi_file": false,
       "generated_diff": "--- src/apispec_path.py\n+++ src/apispec_path.py\n@@ -6,2 +6,2 @@\n     # Bug: \\w+ does not match hyphenated parameter names like {user-id}\n-    return re.findall(r'\\{(\\w+)\\}', path)\n+    return re.findall(r'\\{([\\w-]+)\\}', path)\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "apispec-path-param-hyphen"
     },
     {
       "issue_id": "BM-14",
@@ -410,10 +425,11 @@
       "is_multi_file": false,
       "generated_diff": "--- a/src/faker_luhn.py\n+++ b/src/faker_luhn.py\n@@ -4,2 +4,2 @@\n-    digits = [int(c) for c in card_number]\n+    digits = [int(c) for c in card_number if c.isdigit()]\n     checksum = 0\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "faker-luhn-hyphen-strip"
     },
     {
       "issue_id": "BM-15",
@@ -436,10 +452,11 @@
       "is_multi_file": true,
       "generated_diff": "--- a/src/flask_config.py\n+++ b/src/flask_config.py\n@@ -4,5 +4,5 @@\n-            # Bug: if convert_case is True, it does not actually uppercase key\n-            if not key.isupper():\n-                if not convert_case:\n-                    continue\n+            if not key.isupper():\n+                if not convert_case:\n+                    continue\n+                key = key.upper()\n             self[key] = value\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "flask-config-convert-case"
     },
     {
       "issue_id": "BM-16",
@@ -462,10 +479,11 @@
       "is_multi_file": false,
       "generated_diff": "--- a/src/databases_url.py\n+++ b/src/databases_url.py\n@@ -4,5 +4,8 @@\n         self.scheme, rest = url.split('://', 1)\n-        # Bug: directly assigning path without stripping query params '?'\n-        path_part = rest.lstrip('/')\n-        self.database = path_part\n-        self.options = {}\n+        if '?' in rest:\n+            path_part, query_part = rest.split('?', 1)\n+            self.database = path_part.lstrip('/')\n+            self.options = dict(param.split('=', 1) for param in query_part.split('&') if '=' in param)\n+        else:\n+            self.database = rest.lstrip('/')\n+            self.options = {}\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "databases-sqlite-url-query"
     },
     {
       "issue_id": "BM-17",
@@ -488,10 +506,11 @@
       "is_multi_file": false,
       "generated_diff": "",
       "error_message": "The configured answer provider failed: The AI service is temporarily overloaded or unavailable (HTTP 503). Please try again in a few moments.",
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": false,
-      "semantic_citation_correct": false
+      "semantic_citation_correct": false,
+      "pattern_ref": "dateutil-parse-time-whitespace"
     },
     {
       "issue_id": "BM-18",
@@ -514,10 +533,11 @@
       "is_multi_file": false,
       "generated_diff": "",
       "error_message": "The configured answer provider failed: The AI service is temporarily overloaded or unavailable (HTTP 503). Please try again in a few moments.",
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": false,
-      "semantic_citation_correct": false
+      "semantic_citation_correct": false,
+      "pattern_ref": "watchfiles-trailing-slash-ignored"
     },
     {
       "issue_id": "BM-19",
@@ -540,10 +560,11 @@
       "is_multi_file": true,
       "generated_diff": "--- src/fastapi_encoders.py\n+++ src/fastapi_encoders.py\n@@ -4,3 +4,2 @@\n def jsonable_encoder(obj: BaseModel, exclude_unset: bool = False) -> dict:\n-    # Bug: calls dict() without passing exclude_unset flag\n-    return obj.dict(exclude_unset=False)\n+    return obj.dict(exclude_unset=exclude_unset)\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "fastapi-jsonable-exclude-unset"
     },
     {
       "issue_id": "BM-20",
@@ -566,11 +587,13 @@
       "is_multi_file": false,
       "generated_diff": "--- a/src/pygments_lexer.py\n+++ b/src/pygments_lexer.py\n@@ -8,1 +8,7 @@\n-        if text[i] == '{':\n+        if i + 1 < n and text[i:i+2] == '{{':\n+            tokens.append('LIT:{')\n+            i += 2\n+        elif i + 1 < n and text[i:i+2] == '}}':\n+            tokens.append('LIT:}')\n+            i += 2\n+        elif text[i] == '{':\n",
       "error_message": null,
-      "provenance": "minimized_reproduction",
-      "execution_backend": "host_subprocess",
+      "provenance": "defect_pattern_fixture",
+      "execution_backend": "host_subprocess_historical",
       "citation_boundary_valid": true,
-      "semantic_citation_correct": true
+      "semantic_citation_correct": true,
+      "pattern_ref": "pygments-fstring-escaped-braces"
     }
   ],
-  "execution_backend": "host_subprocess"
+  "execution_backend": "host_subprocess",
+  "historical_baseline_disclosure": "The 85.0% (17/20) verified repair rate recorded in this exploratory benchmark reflects historical un-sandboxed host-subprocess execution. It is NOT a Docker-verified benchmark result. Host subprocess execution of AI-generated patches has been strictly disabled; all automated benchmark patch verification now mandates the trusted Docker sandbox, container resource restrictions (network none, non-root UID/GID, memory/cpu limits), and explicit human approval."
 }
