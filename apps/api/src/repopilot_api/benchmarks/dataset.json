@@ -20,7 +20,8 @@
     "target_symbol": "IntRange.convert",
     "reproduction_methodology": "Instantiate IntRange(1, 10) and pass 10. Raises BadParameter unexpectedly.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-02",
@@ -43,7 +44,8 @@
     "target_symbol": "Router.normalize_path",
     "reproduction_methodology": "Pass 'users/list/' without leading slash. Output '/users/list'.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-03",
@@ -66,7 +68,8 @@
     "target_symbol": "DictField.deserialize",
     "reproduction_methodology": "Deserialize dict with missing required key. Throws KeyError instead of ValidationError.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-04",
@@ -89,7 +92,8 @@
     "target_symbol": "parse_url",
     "reproduction_methodology": "parse_url('http://[::1]:8080/path') keeps bracket '[::1]'.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-05",
@@ -112,7 +116,8 @@
     "target_symbol": "CaseInsensitiveDict.pop",
     "reproduction_methodology": "d.pop('missing', 'fallback') raises KeyError.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-06",
@@ -135,7 +140,8 @@
     "target_symbol": "validate_positive_float",
     "reproduction_methodology": "validate_positive_float(-0.0, strict_positive=False) returns -0.0.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-07",
@@ -158,7 +164,8 @@
     "target_symbol": "IniConfig.parse_value",
     "reproduction_methodology": "IniConfig.parse_value('color = #ffffff') strips #ffffff.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-08",
@@ -181,7 +188,8 @@
     "target_symbol": "selectattr",
     "reproduction_methodology": "Pass Guest object without is_active to selectattr. Raises AttributeError.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-09",
@@ -205,7 +213,8 @@
     "target_symbol": "Response.cookies",
     "reproduction_methodology": "Multiple Set-Cookie headers joined with comma into single string.",
     "is_multi_file": true,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-10",
@@ -228,7 +237,8 @@
     "target_symbol": "MultiDict.getlist",
     "reproduction_methodology": "getlist('ids', type_fn=int) with malformed item crashes with ValueError.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-11",
@@ -251,7 +261,8 @@
     "target_symbol": "HTTPHeaders.parse",
     "reproduction_methodology": "Folded header line concatenates raw indentation spaces.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-12",
@@ -274,7 +285,8 @@
     "target_symbol": "parse_bool",
     "reproduction_methodology": "parse_bool('False') raises ValueError instead of returning False.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-13",
@@ -297,7 +309,8 @@
     "target_symbol": "extract_path_params",
     "reproduction_methodology": "extract_path_params('/users/{user-id}') returns empty list.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-14",
@@ -320,7 +333,8 @@
     "target_symbol": "calculate_luhn",
     "reproduction_methodology": "calculate_luhn('4992-7398-716') throws ValueError on hyphen.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-15",
@@ -344,7 +358,8 @@
     "target_symbol": "Config.from_mapping",
     "reproduction_methodology": "app.configure({'debug': True}) leaves 'DEBUG' unset.",
     "is_multi_file": true,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-16",
@@ -367,7 +382,8 @@
     "target_symbol": "DatabaseURL.__init__",
     "reproduction_methodology": "DatabaseURL('sqlite:///test.db?cache=shared') stores query string in database path.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-17",
@@ -390,7 +406,8 @@
     "target_symbol": "parse_time",
     "reproduction_methodology": "parse_time('   ') crashes with IndexError.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-18",
@@ -413,7 +430,8 @@
     "target_symbol": "DefaultFilter.is_ignored",
     "reproduction_methodology": "f.is_ignored('project/.git/') returns False.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-19",
@@ -437,7 +455,8 @@
     "target_symbol": "jsonable_encoder",
     "reproduction_methodology": "jsonable_encoder(item, exclude_unset=True) always outputs unset fields.",
     "is_multi_file": true,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   },
   {
     "id": "BM-20",
@@ -460,6 +479,7 @@
     "target_symbol": "scan_fstring",
     "reproduction_methodology": "scan_fstring('literal {{escaped}}') misidentifies escaped brace as expression.",
     "is_multi_file": false,
-    "is_synthetic": false
+    "is_synthetic": false,
+    "provenance": "minimized_reproduction"
   }
 ]

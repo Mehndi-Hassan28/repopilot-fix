@@ -43,7 +43,7 @@ class BenchmarkCaseResult:
     provider_mode: str  # "live_ai" | "mock_ai"
     model: str
     root_cause_identified: bool
-    citation_correctness: bool
+    citation_correctness: bool  # Semantic citation correctness (target file/symbol cited in bounds)
     retrieval_recall_at_5: float
     retrieval_mrr: float
     patch_applicable: bool
@@ -57,6 +57,10 @@ class BenchmarkCaseResult:
     is_multi_file: bool
     generated_diff: str
     error_message: str | None = None
+    citation_boundary_valid: bool = True
+    semantic_citation_correct: bool = True
+    execution_backend: str = "host_subprocess"  # "host_subprocess" | "docker"
+    provenance: str = "minimized_reproduction"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -108,6 +112,8 @@ class BenchmarkEvaluator:
         ai_patch = ""
         root_cause_identified = False
         citation_correctness = False
+        citation_boundary_valid = False
+        semantic_citation_correct = False
         latency_ms = 0
         prompt_tokens = 0
         completion_tokens = 0
@@ -136,6 +142,7 @@ class BenchmarkEvaluator:
             # Attempt raw patch extraction before validation
             try:
                 import json
+
                 raw_json = json.loads(raw_analysis) if isinstance(raw_analysis, str) else {}
                 pfix = raw_json.get("proposed_fix") or {}
                 raw_patches = pfix.get("patches") or []
@@ -158,6 +165,8 @@ class BenchmarkEvaluator:
             # Check citations and root cause
             hypothesis = parsed_analysis.root_cause_hypothesis or ""
             relevant_files = parsed_analysis.relevant_files or []
+            citation_boundary_valid = False
+            semantic_citation_correct = False
             if relevant_files:
                 valid_bounds = True
                 for c in relevant_files:
@@ -166,18 +175,21 @@ class BenchmarkEvaluator:
                         break
                     file_len = len(files[c.path].splitlines())
                     in_range = (
-                        1 <= c.start_line <= file_len
-                        and c.start_line <= c.end_line <= file_len
+                        1 <= c.start_line <= file_len and c.start_line <= c.end_line <= file_len
                     )
                     if not in_range:
                         valid_bounds = False
                         break
+                citation_boundary_valid = valid_bounds
                 cited_target = any(c.path == issue.target_file for c in relevant_files)
-                citation_correctness = valid_bounds and cited_target
+                semantic_citation_correct = valid_bounds and cited_target
                 root_cause_identified = cited_target or (issue.target_file in hypothesis)
             else:
                 root_cause_identified = issue.target_file in hypothesis
-                citation_correctness = False
+                citation_boundary_valid = False
+                semantic_citation_correct = False
+
+            citation_correctness = semantic_citation_correct
 
             # Extract validated patches
             applied_patches = []
@@ -191,6 +203,7 @@ class BenchmarkEvaluator:
             latency_ms = int((time.monotonic() - ai_start) * 1000)
             error_msg = str(exc)
             if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                exec_backend = "docker" if self.use_docker else "host_subprocess"
                 return BenchmarkCaseResult(
                     issue_id=issue.id,
                     repo_name=issue.repo_name,
@@ -212,6 +225,10 @@ class BenchmarkEvaluator:
                     is_multi_file=issue.is_multi_file,
                     generated_diff=ai_patch,
                     error_message=f"Live provider quota exhausted: {error_msg}",
+                    citation_boundary_valid=False,
+                    semantic_citation_correct=False,
+                    execution_backend=exec_backend,
+                    provenance=getattr(issue, "provenance", "minimized_reproduction"),
                 )
             logger.warning("AI analysis failed for %s: %s", issue.id, exc)
 
@@ -269,35 +286,53 @@ class BenchmarkEvaluator:
                 with open(p, "w") as f:
                     f.write(content)
 
+            def _run_test(cwd: str) -> subprocess.CompletedProcess:
+                if self.use_docker:
+                    docker_cmd = [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "-e",
+                        "PYTHONDONTWRITEBYTECODE=1",
+                        "-u",
+                        f"{os.getuid()}:{os.getgid()}",
+                        "-v",
+                        f"{cwd}:/workspace",
+                        "-w",
+                        "/workspace",
+                        "python:3.11-slim",
+                        "sh",
+                        "-c",
+                        issue.test_command,
+                    ]
+                    return subprocess.run(docker_cmd, capture_output=True, text=True)
+                return subprocess.run(
+                    issue.test_command,
+                    shell=True,
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                )
+
             # Baseline execution
-            r_base = subprocess.run(
-                issue.test_command,
-                shell=True,
-                cwd=tmp_baseline,
-                capture_output=True,
-                text=True,
-            )
+            r_base = _run_test(tmp_baseline)
             baseline_reproduced = r_base.returncode != 0
 
             # Patched execution
             if patch_applicable:
-                r_patch = subprocess.run(
-                    issue.test_command,
-                    shell=True,
-                    cwd=tmp_patched,
-                    capture_output=True,
-                    text=True,
-                )
+                r_patch = _run_test(tmp_patched)
                 if r_patch.returncode == 0:
                     verdict = "VERIFIED_FIX"
                 else:
-                    if issue.expected_baseline_error in r_patch.stderr:
+                    combined_err = (r_patch.stderr or "") + (r_patch.stdout or "")
+                    if issue.expected_baseline_error in combined_err:
                         verdict = "FIX_FAILED"
                     else:
                         verdict = "REGRESSION_DETECTED"
 
         exec_duration = time.monotonic() - exec_start
         total_duration = time.monotonic() - start_total
+        exec_backend = "docker" if self.use_docker else "host_subprocess"
 
         # Respect rate limits between calls
         if self.rate_limit_delay_seconds > 0 and provider_mode == "live_ai":
@@ -324,6 +359,10 @@ class BenchmarkEvaluator:
             is_multi_file=issue.is_multi_file,
             generated_diff=ai_patch,
             error_message=error_msg,
+            citation_boundary_valid=citation_boundary_valid,
+            semantic_citation_correct=semantic_citation_correct,
+            execution_backend=exec_backend,
+            provenance=getattr(issue, "provenance", "minimized_reproduction"),
         )
 
     def evaluate_batch(

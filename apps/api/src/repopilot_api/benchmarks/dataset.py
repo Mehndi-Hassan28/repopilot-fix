@@ -1,17 +1,29 @@
-"""Benchmark dataset curating 20 genuine historical open-source software defects.
+"""Benchmark dataset curating 20 open-source software defect benchmarks.
 
 Each benchmark case records:
-- Original repository URL, issue reference, pinned commit SHA, and license.
-- Reproducible codebase files and baseline test failure.
-- Reference fix patch for ground-truth verification (never exposed to AI prompt).
-- Classification: logic_error, boundary_condition, input_validation, exception_handling,
-  cross_file_dependency, multi_file_repair, regression_sensitive.
+- Upstream repository name, reference URL, and license provenance.
+- Defect classification: logic_error, boundary_condition, input_validation,
+  exception_handling, cross_file_dependency, multi_file_repair, regression_sensitive.
+- Provenance classification:
+  * original_historical: full upstream repository checkout at historical commit.
+  * minimized_reproduction: standalone reproduction distilled from upstream defect pattern.
+  * synthetic_fixture: engineered fixture designed for benchmark stress testing.
+  (All 20 cases in this suite are minimized reproductions modeling real defect patterns).
+- Deterministic commit SHA identifier for test isolation.
+- Reproducible codebase files and baseline test failure command.
+- Sequestered reference fix patch for ground-truth verification (never exposed to AI prompt).
 """
 
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+BenchmarkProvenance = Literal[
+    "original_historical",
+    "minimized_reproduction",
+    "synthetic_fixture",
+]
 
 BenchmarkCategory = Literal[
     "logic_error",
@@ -54,6 +66,7 @@ class BenchmarkIssue:
     reproduction_methodology: str
     is_multi_file: bool = False
     is_synthetic: bool = False
+    provenance: BenchmarkProvenance = "minimized_reproduction"
 
 
 _DATASET_FILE = Path(__file__).parent / "dataset.json"
