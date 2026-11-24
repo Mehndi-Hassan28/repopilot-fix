@@ -98,6 +98,7 @@ class ChatSessionRead(BaseModel):
 
 class IssueAnalyzeRequest(BaseModel):
     issue_number: int
+    mode: Literal["auto", "live_ai", "mock_ai", "deterministic_fixture"] = "auto"
 
     @field_validator("issue_number")
     @classmethod
@@ -173,6 +174,10 @@ class IssueAnalysisResult(BaseModel):
     limitations: list[str] = []
     provider: str = "mock"
     is_mock: bool = True
+    model: str | None = None
+    latency_ms: int | None = None
+    token_usage: dict[str, int] | None = None
+    generation_mode: Literal["live_ai", "mock_ai", "deterministic_fixture"] = "mock_ai"
 
     @field_validator("root_cause_hypothesis")
     @classmethod
@@ -201,6 +206,10 @@ class IssueAnalysisRead(BaseModel):
     analysis: IssueAnalysisResult
     provider: str = "mock"
     is_mock: bool = True
+    model: str | None = None
+    latency_ms: int | None = None
+    token_usage: dict[str, int] | None = None
+    generation_mode: Literal["live_ai", "mock_ai", "deterministic_fixture"] = "mock_ai"
 
 
 class SandboxExecutionState(StrEnum):

@@ -120,9 +120,7 @@ def is_internal_demo_repository(
         )
         if job is None:
             return False
-        files = db.scalars(
-            select(IndexedFile).where(IndexedFile.job_id == job.id)
-        ).all()
+        files = db.scalars(select(IndexedFile).where(IndexedFile.job_id == job.id)).all()
         file_map = {f.path: f.content for f in files}
         if set(file_map.keys()) != set(DEMO_CALC_FILES.keys()):
             return False
@@ -253,6 +251,10 @@ def _build_demo_init_response(
         "file_count": job.file_count if job else len(DEMO_CALC_FILES),
         "commit_sha": DEMO_CALC_COMMIT_SHA,
     }
+    import os
+
+    chat_prov = os.getenv("CHAT_PROVIDER", "mock").lower()
+    is_mock = chat_prov == "mock"
     return DemoInitializeResponse(
         repository=RepositoryRead.from_model(repo),
         indexing_job=job_data,
@@ -261,7 +263,7 @@ def _build_demo_init_response(
         sandbox_image=DEFAULT_SANDBOX_IMAGE,
         docker_available=docker_ok,
         docker_status_message=docker_msg,
-        is_mock_ai=True,
+        is_mock_ai=is_mock,
     )
 
 
@@ -380,9 +382,7 @@ def initialize_demo(
                         VerificationAuditEvent.verification_run_id.in_(vrun_ids)
                     )
                 )
-                db.execute(
-                    delete(ProofReport).where(ProofReport.verification_run_id.in_(vrun_ids))
-                )
+                db.execute(delete(ProofReport).where(ProofReport.verification_run_id.in_(vrun_ids)))
                 db.execute(
                     delete(VerificationRun).where(VerificationRun.repository_id == existing_repo.id)
                 )

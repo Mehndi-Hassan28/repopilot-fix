@@ -70,9 +70,7 @@ class GitHubVerificationPrerequisiteError(GitHubPRError):
 class GitHubRateLimitError(GitHubPRError):
     """GitHub API rate limit exceeded."""
 
-    def __init__(
-        self, message: str = "GitHub API rate limit exceeded. Please try again later."
-    ):
+    def __init__(self, message: str = "GitHub API rate limit exceeded. Please try again later."):
         super().__init__(message, status_code=429)
 
 
@@ -107,9 +105,7 @@ class GitHubPRClient:
 
     def _handle_error(self, response: httpx.Response, action_description: str) -> None:
         if response.status_code in (401,):
-            raise GitHubAuthError(
-                "GitHub authentication failed. Token may be expired or revoked."
-            )
+            raise GitHubAuthError("GitHub authentication failed. Token may be expired or revoked.")
         if response.status_code in (403, 429) and (
             response.status_code == 429
             or response.headers.get("X-RateLimit-Remaining") == "0"
@@ -117,9 +113,7 @@ class GitHubPRClient:
         ):
             raise GitHubRateLimitError()
         if response.status_code in (403, 404):
-            raise GitHubPermissionError(
-                f"Insufficient GitHub permissions to {action_description}."
-            )
+            raise GitHubPermissionError(f"Insufficient GitHub permissions to {action_description}.")
         if response.status_code >= 500:
             raise GitHubUpstreamError(
                 f"GitHub service error (HTTP {response.status_code}) while attempting to "
@@ -188,9 +182,7 @@ class GitHubPRClient:
         obj = data.get("object", {})
         return str(obj.get("sha", base_sha))
 
-    def get_file_content(
-        self, owner: str, repo: str, path: str, ref: str
-    ) -> tuple[str, bool]:
+    def get_file_content(self, owner: str, repo: str, path: str, ref: str) -> tuple[str, bool]:
         encoded_path = quote(path, safe="/")
         url = f"https://api.github.com/repos/{owner}/{repo}/contents/{encoded_path}?ref={ref}"
         try:
@@ -266,9 +258,7 @@ class GitHubPRClient:
             raise GitHubPRError("GitHub did not return commit SHA.")
         return str(sha)
 
-    def update_branch_ref(
-        self, owner: str, repo: str, branch: str, commit_sha: str
-    ) -> None:
+    def update_branch_ref(self, owner: str, repo: str, branch: str, commit_sha: str) -> None:
         url = f"https://api.github.com/repos/{owner}/{repo}/git/refs/heads/{quote(branch, safe='')}"
         payload = {"sha": commit_sha, "force": False}
         try:
@@ -371,9 +361,7 @@ class GitHubPullRequestService:
                 "PR creation blocked."
             )
 
-        report = db.scalar(
-            select(ProofReport).where(ProofReport.verification_run_id == run.id)
-        )
+        report = db.scalar(select(ProofReport).where(ProofReport.verification_run_id == run.id))
         if report is None:
             raise GitHubVerificationPrerequisiteError(
                 "Cannot create PR: no ProofReport found for this verification run."
@@ -421,6 +409,8 @@ class GitHubPullRequestService:
 
         return run, report, repo
 
+    validate_pr_prerequisites = _validate_run_for_pr
+
     @classmethod
     def _resolve_token(
         cls, payload: PullRequestCreateRequest, auth_token_header: str | None = None
@@ -448,10 +438,12 @@ class GitHubPullRequestService:
                 if isinstance(parsed, list):
                     for item in parsed:
                         if isinstance(item, dict) and item.get("file_path") and item.get("diff"):
-                            patches.append({
-                                "file_path": item["file_path"].strip(),
-                                "diff": item["diff"],
-                            })
+                            patches.append(
+                                {
+                                    "file_path": item["file_path"].strip(),
+                                    "diff": item["diff"],
+                                }
+                            )
             except Exception:
                 pass
 
@@ -482,9 +474,7 @@ class GitHubPullRequestService:
 
         # Idempotency Check: Existing DB record
         existing_pr = db.scalar(
-            select(GitHubPullRequest).where(
-                GitHubPullRequest.verification_run_id == run.id
-            )
+            select(GitHubPullRequest).where(GitHubPullRequest.verification_run_id == run.id)
         )
         if existing_pr is not None:
             return PullRequestCreateResponse(
@@ -508,8 +498,7 @@ class GitHubPullRequestService:
                 payload.custom_branch_name or f"repopilot/fix-issue-{run.issue_number}-{run.id}"
             ).strip()
             title = (
-                payload.custom_title
-                or "fix(calculator): resolve power operator multiplication bug"
+                payload.custom_title or "fix(calculator): resolve power operator multiplication bug"
             )
             body = payload.custom_body or (
                 f"## Automated Fix by RepoPilot Dual-Sandbox Engine\n\n"
@@ -551,9 +540,7 @@ class GitHubPullRequestService:
         try:
             owner = repo.owner
             repo_name = repo.name
-            base_branch = (
-                payload.target_base_branch or repo.default_branch or "main"
-            ).strip()
+            base_branch = (payload.target_base_branch or repo.default_branch or "main").strip()
 
             safe_issue = run.issue_number
             default_branch = f"repopilot/fix-issue-{safe_issue}-{run.id}"
@@ -618,12 +605,14 @@ class GitHubPullRequestService:
                     ) from patch_err
 
                 blob_sha = gh_client.create_blob(owner, repo_name, patched_content)
-                tree_items.append({
-                    "path": p["file_path"],
-                    "mode": "100644",
-                    "type": "blob",
-                    "sha": blob_sha,
-                })
+                tree_items.append(
+                    {
+                        "path": p["file_path"],
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": blob_sha,
+                    }
+                )
 
             tree_sha = gh_client.create_tree(owner, repo_name, branch_head_sha, tree_items)
 
@@ -645,8 +634,7 @@ class GitHubPullRequestService:
 
             # 6. Open Pull Request
             pr_title = (
-                payload.custom_title
-                or f"fix: resolve issue #{run.issue_number} (Verified Fix)"
+                payload.custom_title or f"fix: resolve issue #{run.issue_number} (Verified Fix)"
             ).strip()
             pr_body = (
                 payload.custom_body
@@ -727,9 +715,7 @@ class GitHubPullRequestService:
         if not run.patch_diff or not run.patch_diff.strip():
             raise GitHubPRError("Verification run contains no patch content to export.")
 
-        report = db.scalar(
-            select(ProofReport).where(ProofReport.verification_run_id == run.id)
-        )
+        report = db.scalar(select(ProofReport).where(ProofReport.verification_run_id == run.id))
         verdict = report.verdict if report else "unreproduced"
 
         filename = f"repopilot-fix-issue-{run.issue_number}.patch"

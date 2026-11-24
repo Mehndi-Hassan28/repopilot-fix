@@ -149,13 +149,29 @@ export function IssueWorkspace({
                   title={
                     analysisResult.is_mock ?? analysisResult.analysis.is_mock
                       ? "Generated via deterministic mock provider"
-                      : "Generated via live LLM provider"
+                      : `Generated via live LLM: ${analysisResult.model || analysisResult.analysis.model || "cloud"}`
                   }
                 >
                   {analysisResult.is_mock ?? analysisResult.analysis.is_mock
                     ? "Mock AI Execution"
-                    : "Live AI Model"}
+                    : `Live AI (${(analysisResult.model || analysisResult.analysis.model || "LLM").replace("models/", "")})`}
                 </span>
+                {(analysisResult.latency_ms || analysisResult.analysis.latency_ms) && (
+                  <span
+                    className="rounded-full px-2 py-0.5 text-[10px] font-mono border bg-zinc-900 border-zinc-700 text-zinc-300"
+                    title="Model generation latency"
+                  >
+                    {((analysisResult.latency_ms || analysisResult.analysis.latency_ms || 0) / 1000).toFixed(1)}s
+                  </span>
+                )}
+                {(analysisResult.token_usage?.total_tokens || analysisResult.analysis.token_usage?.total_tokens) && (
+                  <span
+                    className="rounded-full px-2 py-0.5 text-[10px] font-mono border bg-zinc-900 border-zinc-700 text-zinc-300"
+                    title={`Prompt: ${(analysisResult.token_usage || analysisResult.analysis.token_usage)?.prompt_tokens || 0}, Completion: ${(analysisResult.token_usage || analysisResult.analysis.token_usage)?.completion_tokens || 0}`}
+                  >
+                    {(analysisResult.token_usage || analysisResult.analysis.token_usage)?.total_tokens} tokens
+                  </span>
+                )}
                 <span
                   className={`rounded-full px-2.5 py-0.5 text-[11px] font-mono uppercase font-bold border ${
                     analysisResult.analysis.confidence === "high"
