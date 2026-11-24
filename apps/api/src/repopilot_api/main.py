@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from repopilot_api.chat import ProviderError, ask
 from repopilot_api.code_intelligence import SUPPORTED, GitHubSource, limits, parse_symbols
 from repopilot_api.database import SessionLocal
+from repopilot_api.demo import router as demo_router
 from repopilot_api.dependencies import get_db
 from repopilot_api.models import (
     ChatMessage,
@@ -57,6 +58,7 @@ app.add_middleware(
 )
 app.include_router(auth_router)
 app.include_router(verification_router)
+app.include_router(demo_router)
 
 
 @app.get("/health", tags=["system"])
@@ -90,6 +92,23 @@ def import_repository(
     auth: AuthContext = Depends(require_csrf),
 ):
     owner, name = payload.url.removeprefix("https://github.com/").split("/")
+    owner_clean = owner.strip().lower()
+    name_clean = name.strip().lower()
+
+    # Disallow importing internal demo fixtures or impersonating the demo namespace
+    if (
+        owner_clean == "repopilot"
+        or "demo-calc" in name_clean
+        or "demo-calculator" in name_clean
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "External repository import cannot acquire internal demo fixture provenance. "
+                "Demo repositories must be initialized via the demo workspace."
+            ),
+        )
+
     try:
         with Client(timeout=httpx.Timeout(8.0), follow_redirects=False) as client:
             response = client.get(
@@ -134,6 +153,31 @@ def import_repository(
         raise HTTPException(502, "GitHub returned invalid repository visibility metadata.")
     if data["private"]:
         raise HTTPException(403, "Only public GitHub repositories can be imported.")
+
+    if (
+        repo_owner.lower() == "repopilot"
+        or "demo-calc" in repo_name.lower()
+        or "demo-calculator" in repo_name.lower()
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="External repository import cannot acquire internal demo fixture provenance.",
+        )
+    from repopilot_api.demo import DEMO_GITHUB_BASE_ID
+
+    if github_id >= DEMO_GITHUB_BASE_ID:
+        raise HTTPException(
+            status_code=400,
+            detail="Repository ID collides with reserved internal demo fixture IDs.",
+        )
+
+    raw_desc = data.get("description")
+    clean_desc = (
+        raw_desc.replace("[provenance:internal_fixture:", "[external_ref:")
+        if raw_desc
+        else None
+    )
+
     existing = db.scalar(select(Repository).where(Repository.github_id == github_id))
     if existing:
         repo = existing
@@ -144,7 +188,7 @@ def import_repository(
             name=repo_name,
             full_name=full_name,
             url=html_url,
-            description=data.get("description"),
+            description=clean_desc,
             default_branch=default_branch,
             stars=stars,
         )
@@ -244,13 +288,22 @@ def start_index(
     repo = db.get(Repository, repository_id)
     if repo is None:
         raise HTTPException(404, "Repository not found.")
-    source = GitHubSource()
-    try:
-        sha = source.resolve_commit(repo.owner, repo.name, repo.default_branch)
-    except RuntimeError as exc:
-        raise HTTPException(429 if "rate limit" in str(exc).lower() else 502, str(exc)) from exc
-    finally:
-        source.close()
+
+    from repopilot_api.demo import is_internal_demo_repository
+
+    is_demo = is_internal_demo_repository(db, repo, auth.user.id)
+    if is_demo:
+        from repopilot_api.fixture_registry import DEMO_CALC_COMMIT_SHA
+
+        sha = DEMO_CALC_COMMIT_SHA
+    else:
+        source = GitHubSource()
+        try:
+            sha = source.resolve_commit(repo.owner, repo.name, repo.default_branch)
+        except RuntimeError as exc:
+            raise HTTPException(429 if "rate limit" in str(exc).lower() else 502, str(exc)) from exc
+        finally:
+            source.close()
     job = db.scalar(
         select(IndexingJob).where(
             IndexingJob.repository_id == repository_id, IndexingJob.commit_sha == sha
@@ -552,22 +605,42 @@ def analyze_issue(
     if job is None:
         raise HTTPException(409, "Index this repository before analyzing issues.")
 
-    source = GitHubSource()
-    try:
-        issue = source.fetch_issue(repo.owner, repo.name, payload.issue_number)
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    except RuntimeError as exc:
-        msg = str(exc)
-        if "not found" in msg.lower() or "404" in msg:
-            raise HTTPException(
-                404, f"Issue #{payload.issue_number} was not found on GitHub."
-            ) from exc
-        if "rate limit" in msg.lower():
-            raise HTTPException(429, "GitHub rate limit reached. Please try again later.") from exc
-        raise HTTPException(502, f"Could not fetch issue from GitHub: {msg}") from exc
-    finally:
-        source.close()
+    from repopilot_api.demo import is_internal_demo_repository
+
+    is_demo = is_internal_demo_repository(db, repo, auth.user.id)
+    if is_demo:
+        issue = {
+            "number": payload.issue_number,
+            "title": "Bug in power calculation: multiplication returned instead of exponentiation",
+            "body": (
+                "When calling power(2, 3), result is 6 instead of 8. "
+                "Suspect operator defect in src/calculator.py where power() uses "
+                "multiplication instead of exponentiation."
+            ),
+            "state": "open",
+            "html_url": f"https://github.com/{repo.owner}/{repo.name}/issues/{payload.issue_number}",
+            "author": "demo-reporter",
+            "labels": ["bug", "math", "deterministic-demo"],
+        }
+    else:
+        source = GitHubSource()
+        try:
+            issue = source.fetch_issue(repo.owner, repo.name, payload.issue_number)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "not found" in msg.lower() or "404" in msg:
+                raise HTTPException(
+                    404, f"Issue #{payload.issue_number} was not found on GitHub."
+                ) from exc
+            if "rate limit" in msg.lower():
+                raise HTTPException(
+                    429, "GitHub rate limit reached. Please try again later."
+                ) from exc
+            raise HTTPException(502, f"Could not fetch issue from GitHub: {msg}") from exc
+        finally:
+            source.close()
 
     from repopilot_api.chat import (
         build_issue_query,

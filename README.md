@@ -58,6 +58,37 @@ pytest apps/api
 
 CI runs these web and API checks on pushes to `main` and pull requests.
 
+## One-Click Interactive Proof-of-Fix Demo
+
+RepoPilot Fix features an interactive, reproducible showcase that highlights our primary innovation: **Evidence-Driven Autonomous Software Repair**.
+
+### Launching the Demo
+
+1. Start both the frontend (`npm run dev`) and backend (`uvicorn repopilot_api.main:app --app-dir apps/api/src --reload --port 8000`).
+2. Navigate to `http://localhost:3000`.
+3. Click **"Launch Interactive Demo"** on the dashboard hero card or click the flask/beaker icon (**"Interactive Demo"**) in the navigation rail.
+4. Use **"Run Full Demo (1-Click)"** to watch the automated repair lifecycle, or step through the 9 guided stages manually:
+   - **Stage 1 (Repo Setup):** Initializes an isolated calculator fixture environment.
+   - **Stage 2 (AST Index):** Extracts syntax symbols and semantic graphs for `src/calculator.py` and `tests/test_calculator.py`.
+   - **Stage 3 (Investigation):** Analyzes reproducible Issue #1 (`Bug in power calculation`).
+   - **Stage 4 (Root Cause):** Grounded AST citation identifying the faulty operator at lines 18–21.
+   - **Stage 5 (Patch Review):** Unified/split diff review (`- return base * exponent` vs `+ return base ** exponent`).
+   - **Stage 6 (Human Approval):** Cryptographic specification hash gating; requires explicit operator authorization.
+   - **Stage 7 (Docker Sandbox):** Dual-sandbox container execution (baseline failing vs. patched passing).
+   - **Stage 8 (Evidence Report):** Cryptographic Proof-of-Fix report (2 resolved failures, 0 regressions, verdict `verified_fix`).
+   - **Stage 9 (PR Preview):** Safe patch file export or simulated GitHub Pull Request (#101) with zero external write side-effects.
+
+### Deterministic Demo Mode vs. Live AI Mode
+
+| Capability / Aspect | Deterministic Demo Mode | Live AI Mode |
+| --- | --- | --- |
+| **Codebase Target** | Trusted in-memory deterministic calculator fixture | Real public or connected user repositories |
+| **AI / LLM Execution** | Pinned mock AI response grounded in AST citations (no paid API calls, no network latency) | Live LLM provider (`openai_compatible`, `gemini`, etc.) |
+| **Sandbox Execution** | Allowlisted test command (`pytest -q`) in `python:3.11-slim` container | User-configured/approved test suite in isolated container |
+| **Evidence Authenticity** | Real execution results: requires real host Docker daemon; if Docker is offline, real unavailable state is surfaced | Real execution results from isolated Docker sandboxes |
+| **GitHub Write Side-Effects** | **Zero external writes**: PR #101 is simulated and persisted in local DB only | Real pull requests created via authorized GitHub OAuth credentials |
+| **Reproducibility** | 100% deterministic, idempotent, and resettable | Dynamic based on codebase state and model outputs |
+
 ## Layout
 
 - `apps/web`: Next.js App Router, TypeScript, Tailwind CSS

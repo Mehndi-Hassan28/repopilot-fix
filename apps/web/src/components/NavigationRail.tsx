@@ -12,6 +12,7 @@ import {
   ActivityIcon,
   SettingsIcon,
   GithubIcon,
+  FlaskConicalIcon,
 } from "./Icons";
 
 interface NavigationRailProps {
@@ -34,6 +35,11 @@ const NAV_ITEMS: NavItem[] = [
     id: "overview",
     label: "Overview",
     icon: () => <LayoutGridIcon className="size-5" />,
+  },
+  {
+    id: "demo",
+    label: "Interactive Demo",
+    icon: () => <FlaskConicalIcon className="size-5" />,
   },
   {
     id: "repos",

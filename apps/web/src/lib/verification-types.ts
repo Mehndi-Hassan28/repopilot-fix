@@ -157,6 +157,7 @@ export type PullRequestCreateResponse = {
   base_branch: string;
   status: "created" | "already_exists" | "fallback_available";
   message: string;
+  is_simulated?: boolean;
 };
 
 export type PatchExportResponse = {

@@ -554,6 +554,7 @@ class PullRequestCreateResponse(BaseModel):
     base_branch: str
     status: str
     message: str
+    is_simulated: bool = False
 
 
 class PatchExportResponse(BaseModel):
