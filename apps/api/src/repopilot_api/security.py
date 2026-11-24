@@ -92,6 +92,8 @@ def require_csrf(
     supplied = request.headers.get(CSRF_HEADER_NAME, "")
     if origin not in configured_origins() or not supplied:
         raise HTTPException(403, "CSRF validation failed.")
+    if not auth.session or not auth.session.csrf_hash:
+        raise HTTPException(403, "CSRF validation failed.")
     if not hmac.compare_digest(digest(supplied), auth.session.csrf_hash):
         raise HTTPException(403, "CSRF validation failed.")
     return auth

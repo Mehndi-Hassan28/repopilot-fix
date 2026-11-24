@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -246,20 +247,38 @@ class TrustedFixtureRegistry:
         self._trusted_repositories.add((owner.lower().strip(), name.lower().strip()))
 
     def is_repository_trusted(
-        self, owner: str, name: str, github_id: int | None = None
+        self,
+        owner: str,
+        name: str,
+        github_id: int | None = None,
+        repository: Any = None,
+        db: Any = None,
+        user_id: int | None = None,
     ) -> bool:
         o = owner.lower().strip()
         n = name.lower().strip()
         if (o, n) in self._trusted_repositories:
             return True
-        # Demo fixture repositories require server-controlled fixture identity
-        # (github_id >= 990_000_000) to prevent external GitHub repositories with spoofed
-        # owner/name strings from claiming trust.
-        is_demo_name = n in ("demo-calculator", "demo-repo") or n.startswith("demo-calc")
-        if o == "repopilot" and is_demo_name:
-            if github_id is not None:
-                return github_id >= DEMO_FIXTURE_GITHUB_ID_BASE
-            return False
+        # Demo fixture repositories require explicit server-controlled provenance,
+        # exact arithmetic identity, and authenticated ownership:
+        if o == "repopilot" and n.startswith("demo-calc-"):
+            if repository is not None and db is not None:
+                from repopilot_api.demo import is_internal_demo_repository
+
+                return is_internal_demo_repository(
+                    db=db,
+                    repository=repository,
+                    user_id=user_id,
+                    verify_content=False,
+                )
+            try:
+                suffix_id = int(n.removeprefix("demo-calc-"))
+                if user_id is not None and suffix_id != user_id:
+                    return False
+                if github_id is not None and github_id == DEMO_FIXTURE_GITHUB_ID_BASE + suffix_id:
+                    return True
+            except ValueError:
+                return False
         return False
 
     def register_fixture(self, fixture: TrustedFixture) -> None:
@@ -719,12 +738,19 @@ class ExecutionPolicyGuard:
         cls,
         repository: Repository | None,
         registry: TrustedFixtureRegistry,
+        db: Session | None = None,
+        user_id: int | None = None,
     ) -> None:
         """Verify repository belongs to server-controlled trusted repository allowlist."""
         if repository is None:
             raise PolicyMetadataError("Repository metadata is missing.")
         if not registry.is_repository_trusted(
-            repository.owner, repository.name, github_id=repository.github_id
+            repository.owner,
+            repository.name,
+            github_id=repository.github_id,
+            repository=repository,
+            db=db,
+            user_id=user_id,
         ):
             raise UntrustedRepositoryError(
                 f"Repository '{repository.owner}/{repository.name}' is not in the trusted "
@@ -854,7 +880,9 @@ class ExecutionPolicyGuard:
 
         # 4. Repository trust check
         repo = db.get(Repository, run.repository_id)
-        cls.validate_repository_trust(repo, active_registry)
+        cls.validate_repository_trust(
+            repo, active_registry, db=db, user_id=effective_user_id
+        )
 
         # 5. Resolve snapshot files if not provided
         resolved_files = files

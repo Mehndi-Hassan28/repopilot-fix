@@ -21,8 +21,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
-from repopilot_api.demo import check_docker_daemon_status
+from repopilot_api.demo import check_docker_daemon_status, is_internal_demo_repository
 from repopilot_api.dependencies import get_db
 from repopilot_api.fixture_registry import (
     DEMO_CALC_COMMIT_SHA,
@@ -63,6 +64,7 @@ from repopilot_api.schemas import (
 )
 from repopilot_api.security import (
     SESSION_COOKIE_NAME,
+    AuthContext,
     csrf_token_for_session,
     digest,
 )
@@ -258,12 +260,14 @@ def test_demo_approval_enforcement_and_unapproved_rejection(test_session):
     user, _ = create_authenticated_user(db)
 
     # Seed demo repo
+    provenance_tag = f"[provenance:internal_fixture:{user.id}:demo-calculator]"
     repo = Repository(
         github_id=990000000 + user.id,
         owner="repopilot",
         name=f"demo-calc-{user.id}",
         full_name=f"repopilot/demo-calc-{user.id}",
         url="https://github.com/repopilot/demo-calculator",
+        description=f"Deterministic Calculator Demo Fixture for RepoPilot Fix {provenance_tag}",
         default_branch="main",
     )
     db.add(repo)
@@ -344,12 +348,14 @@ async def test_demo_verification_execution_and_status(test_session, tmp_path):
     user, _ = create_authenticated_user(db)
     scratch = str(tmp_path / "demo_scratch")
 
+    provenance_tag = f"[provenance:internal_fixture:{user.id}:demo-calculator]"
     repo = Repository(
         github_id=990000000 + user.id,
         owner="repopilot",
         name=f"demo-calc-{user.id}",
         full_name=f"repopilot/demo-calc-{user.id}",
         url="https://github.com/repopilot/demo-calculator",
+        description=f"Deterministic Calculator Demo Fixture for RepoPilot Fix {provenance_tag}",
         default_branch="main",
     )
     db.add(repo)
@@ -442,12 +448,14 @@ def test_demo_prevention_of_external_github_writes(test_session):
     db = test_session()
     user, _ = create_authenticated_user(db)
 
+    provenance_tag = f"[provenance:internal_fixture:{user.id}:demo-calculator]"
     repo = Repository(
         github_id=990000000 + user.id,
         owner="repopilot",
         name=f"demo-calc-{user.id}",
         full_name=f"repopilot/demo-calc-{user.id}",
         url="https://github.com/repopilot/demo-calculator",
+        description=f"Deterministic Calculator Demo Fixture for RepoPilot Fix {provenance_tag}",
         default_branch="main",
     )
     db.add(repo)
@@ -631,12 +639,14 @@ def test_demo_content_tampering_rejected_by_policy(test_session):
     user, _ = create_authenticated_user(db)
     registry = get_default_fixture_registry()
 
+    provenance_tag = f"[provenance:internal_fixture:{user.id}:demo-calculator]"
     repo = Repository(
         github_id=990000000 + user.id,
         owner="repopilot",
         name=f"demo-calc-{user.id}",
         full_name=f"repopilot/demo-calc-{user.id}",
         url="https://github.com/repopilot/demo-calculator",
+        description=f"Deterministic Calculator Demo Fixture for RepoPilot Fix {provenance_tag}",
         default_branch="main",
         stars=42,
     )
@@ -681,7 +691,7 @@ def test_demo_content_tampering_rejected_by_policy(test_session):
 
 
 def test_demo_reset_cancels_active_runs_and_deletes_pull_requests(test_session, monkeypatch):
-    """Review Item 3: Reset cancels active runs and deletes linked PR records without error."""
+    """Review Item 2: Reset rejects active running runs (409) and cleanly deletes cancelled runs."""
     monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
     client = get_client(test_session)
     db = test_session()
@@ -733,7 +743,20 @@ def test_demo_reset_cancels_active_runs_and_deletes_pull_requests(test_session, 
     pr_id = pr_record.id
     vrun_id = vrun.id
 
-    # Perform Reset
+    # 1. Reset MUST be rejected while verification run is actively running in Docker
+    res_running = client.post("/api/demo/reset", headers=headers)
+    assert res_running.status_code == 409
+    assert "actively executing in Docker" in res_running.json()["detail"]
+
+    # Verify run and PR were NOT deleted
+    assert db.get(VerificationRun, vrun_id) is not None
+    assert db.get(GitHubPullRequest, pr_id) is not None
+
+    # 2. Cancel the run (simulating worker cancellation or user cancel)
+    vrun.status = "cancelled"
+    db.commit()
+
+    # 3. Reset now succeeds cleanly
     res_reset = client.post("/api/demo/reset", headers=headers)
     assert res_reset.status_code == 200
     assert res_reset.json()["initialized"] is True
@@ -742,6 +765,122 @@ def test_demo_reset_cancels_active_runs_and_deletes_pull_requests(test_session, 
     db.expire_all()
     assert db.get(GitHubPullRequest, pr_id) is None
     assert db.get(VerificationRun, vrun_id) is None
+
+
+def test_external_import_cannot_acquire_demo_provenance(test_session, monkeypatch):
+    """Review Item 1: External repository imports cannot acquire internal demo provenance."""
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+    client = get_client(test_session)
+    db = test_session()
+    user, headers = create_authenticated_user(db)
+
+    # 1. Reject import of exact demo fixture URL
+    res_1 = client.post(
+        "/api/repositories/import",
+        json={"url": "https://github.com/repopilot/demo-calculator"},
+        headers=headers,
+    )
+    assert res_1.status_code == 400
+    assert "cannot acquire internal demo fixture provenance" in res_1.json()["detail"]
+
+    # 2. Reject import of per-user demo name pattern
+    res_2 = client.post(
+        "/api/repositories/import",
+        json={"url": "https://github.com/repopilot/demo-calc-1"},
+        headers=headers,
+    )
+    assert res_2.status_code == 400
+    assert "cannot acquire internal demo fixture provenance" in res_2.json()["detail"]
+
+
+def test_demo_provenance_full_canonical_validation(test_session, monkeypatch):
+    """Review Item 1: Provenance requires exact identity, ownership, and canonical content."""
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+    client = get_client(test_session)
+    db = test_session()
+    user, headers = create_authenticated_user(db)
+
+    # Initialize demo
+    res = client.post("/api/demo/initialize", headers=headers)
+    assert res.status_code == 200
+    repo_id = res.json()["repository"]["id"]
+    repo = db.get(Repository, repo_id)
+    assert repo is not None
+
+    # Verify canonical content passes
+    assert is_internal_demo_repository(db, repo, user_id=user.id, verify_content=True) is True
+
+    # Other user cannot claim provenance
+    assert not is_internal_demo_repository(
+        db, repo, user_id=user.id + 999, verify_content=True
+    )
+
+    # Tamper with an indexed file in database
+    job = db.scalar(
+        select(IndexingJob)
+        .where(IndexingJob.repository_id == repo.id)
+        .order_by(IndexingJob.id.desc())
+    )
+    file_record = db.scalar(
+        select(IndexedFile).where(
+            IndexedFile.job_id == job.id,
+            IndexedFile.path == "src/calculator.py",
+        )
+    )
+    assert file_record is not None
+    file_record.content = "malicious_override = True\n"
+    db.commit()
+
+    # Tampered content fails canonical validation
+    assert is_internal_demo_repository(db, repo, user_id=user.id, verify_content=True) is False
+
+
+def test_concurrent_demo_initialization_thread_safe(test_session, monkeypatch):
+    """Review Item 3: Concurrent initialization is safe and creates no duplicate repos."""
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+    db = test_session()
+    user, headers = create_authenticated_user(db)
+    session_obj = db.scalar(select(AuthSession).where(AuthSession.user_id == user.id))
+    auth = AuthContext(user=user, session=session_obj)
+
+    from repopilot_api.demo import initialize_demo
+
+    # 1. Verify idempotency and lock safety across multiple initialize calls
+    res_1 = initialize_demo(reset=False, db=db, auth=auth)
+    res_2 = initialize_demo(reset=False, db=db, auth=auth)
+    assert res_1.repository.id == res_2.repository.id
+
+    # 2. Verify duplicate DB creation attempt triggers unique constraint and rolls back safely
+    duplicate_repo = Repository(
+        github_id=res_1.repository.github_id,
+        owner="repopilot",
+        name=f"demo-calc-{user.id}",
+        full_name=f"repopilot/demo-calc-{user.id}",
+        url="https://github.com/repopilot/demo-calculator",
+        default_branch="main",
+    )
+    db.add(duplicate_repo)
+    with pytest.raises(IntegrityError):
+        db.flush()
+    db.rollback()
+
+    # 3. Post-rollback recovery returns clean existing repository without creating duplicate
+    res_3 = initialize_demo(reset=False, db=db, auth=auth)
+    assert res_3.repository.id == res_1.repository.id
+
+    # 4. HTTP client entry point confirms idempotency
+    client = get_client(test_session)
+    res_client_1 = client.post("/api/demo/initialize", headers=headers)
+    assert res_client_1.status_code == 200
+    res_client_2 = client.post("/api/demo/initialize", headers=headers)
+    assert res_client_2.status_code == 200
+    assert res_client_1.json()["repository"]["id"] == res_client_2.json()["repository"]["id"]
+
+    # Exactly one repository exists for this user in DB
+    repos = db.scalars(
+        select(Repository).where(Repository.name == f"demo-calc-{user.id}")
+    ).all()
+    assert len(repos) == 1
 
 
 def test_demo_concurrent_users_isolated(test_session, monkeypatch):

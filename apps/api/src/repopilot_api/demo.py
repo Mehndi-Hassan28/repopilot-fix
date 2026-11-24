@@ -8,14 +8,18 @@ Provides an isolated, idempotent, deterministic demo environment:
 5. Prevents duplicate initialization and provides safe resets.
 """
 
+import hashlib
 import logging
 import shutil
 import subprocess
+import threading
+from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from repopilot_api.code_intelligence import parse_symbols
@@ -45,6 +49,93 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/demo", tags=["demo"])
 
 DEMO_GITHUB_BASE_ID = 990000000
+DEMO_PROVENANCE_TAG_PREFIX = "[provenance:internal_fixture:"
+DEMO_FIXTURE_DESCRIPTION_PREFIX = "Deterministic Calculator Demo Fixture for RepoPilot Fix"
+_DEMO_INIT_LOCK = threading.Lock()
+
+
+def is_internal_demo_repository(
+    db: Session,
+    repository: Repository | None,
+    user_id: int | None = None,
+    verify_content: bool = False,
+) -> bool:
+    """Verify explicit server-controlled fixture provenance, exact identity, ownership, and content.
+
+    Ensures external repository imports cannot acquire internal demo provenance.
+    """
+    if repository is None:
+        return False
+
+    # 1. Exact repository owner and name pattern
+    if repository.owner != "repopilot":
+        return False
+    if not repository.name.startswith("demo-calc-"):
+        return False
+
+    try:
+        repo_user_id = int(repository.name.removeprefix("demo-calc-"))
+    except ValueError:
+        return False
+
+    # If user_id is provided, verify matching authenticated user
+    if user_id is not None and user_id != repo_user_id:
+        return False
+
+    # 2. Exact server-calculated github_id (exact arithmetic identity, not open range)
+    if repository.github_id != DEMO_GITHUB_BASE_ID + repo_user_id:
+        return False
+
+    # 3. Server-controlled fixture provenance in description and URL
+    expected_tag = f"{DEMO_PROVENANCE_TAG_PREFIX}{repo_user_id}:demo-calculator]"
+    if not repository.description or expected_tag not in repository.description:
+        return False
+    if not repository.description.startswith(DEMO_FIXTURE_DESCRIPTION_PREFIX):
+        return False
+    if repository.url != "https://github.com/repopilot/demo-calculator":
+        return False
+    if repository.default_branch != "main":
+        return False
+
+    # 4. Authenticated ownership in repository_accesses
+    access = db.scalar(
+        select(RepositoryAccess).where(
+            RepositoryAccess.repository_id == repository.id,
+            RepositoryAccess.user_id == repo_user_id,
+            RepositoryAccess.role == "owner",
+        )
+    )
+    if access is None:
+        return False
+
+    # 5. Canonical content validation if requested
+    if verify_content:
+        job = db.scalar(
+            select(IndexingJob)
+            .where(
+                IndexingJob.repository_id == repository.id,
+                IndexingJob.status == "completed",
+            )
+            .order_by(IndexingJob.id.desc())
+        )
+        if job is None:
+            return False
+        files = db.scalars(
+            select(IndexedFile).where(IndexedFile.job_id == job.id)
+        ).all()
+        file_map = {f.path: f.content for f in files}
+        if set(file_map.keys()) != set(DEMO_CALC_FILES.keys()):
+            return False
+        for path, canonical_content in DEMO_CALC_FILES.items():
+            actual = file_map.get(path)
+            if actual is None:
+                return False
+            actual_hash = hashlib.sha256(actual.encode("utf-8")).hexdigest()
+            canonical_hash = hashlib.sha256(canonical_content.encode("utf-8")).hexdigest()
+            if actual_hash != canonical_hash:
+                return False
+
+    return True
 
 
 def check_docker_daemon_status() -> tuple[bool, str]:
@@ -129,12 +220,49 @@ def _get_user_demo_repository(db: Session, user_id: int) -> Repository | None:
         .join(Repository, Repository.id == RepositoryAccess.repository_id)
         .where(
             RepositoryAccess.user_id == user_id,
+            RepositoryAccess.role == "owner",
             Repository.github_id == expected_github_id,
+            Repository.owner == "repopilot",
+            Repository.name == f"demo-calc-{user_id}",
         )
     )
     if access is None:
         return None
-    return db.get(Repository, access.repository_id)
+    repo = db.get(Repository, access.repository_id)
+    if repo is None:
+        return None
+    if not is_internal_demo_repository(db, repo, user_id=user_id, verify_content=False):
+        return None
+    return repo
+
+
+def _build_demo_init_response(
+    db: Session, repo: Repository, docker_ok: bool, docker_msg: str
+) -> DemoInitializeResponse:
+    job = db.scalar(
+        select(IndexingJob)
+        .where(
+            IndexingJob.repository_id == repo.id,
+            IndexingJob.status == "completed",
+        )
+        .order_by(IndexingJob.id.desc())
+    )
+    job_data = {
+        "id": job.id if job else 0,
+        "status": job.status if job else "completed",
+        "file_count": job.file_count if job else len(DEMO_CALC_FILES),
+        "commit_sha": DEMO_CALC_COMMIT_SHA,
+    }
+    return DemoInitializeResponse(
+        repository=RepositoryRead.from_model(repo),
+        indexing_job=job_data,
+        issue=DemoIssue(),
+        test_command=DEMO_CALC_TEST_CMD,
+        sandbox_image=DEFAULT_SANDBOX_IMAGE,
+        docker_available=docker_ok,
+        docker_status_message=docker_msg,
+        is_mock_ai=True,
+    )
 
 
 @router.get("/status", response_model=DemoStatusResponse)
@@ -194,201 +322,201 @@ def initialize_demo(
     """Safely initialize or reset the deterministic calculator demo repository for current user."""
     docker_ok, docker_msg = check_docker_daemon_status()
     expected_github_id = DEMO_GITHUB_BASE_ID + auth.user.id
-    existing_repo = _get_user_demo_repository(db, auth.user.id)
 
-    if existing_repo and reset:
-        # Safe isolation: delete only demo verification runs, audit events, PRs, and index data
-        db.execute(
-            delete(GitHubPullRequest).where(GitHubPullRequest.repository_id == existing_repo.id)
-        )
-        active_runs = db.scalars(
-            select(VerificationRun).where(
-                VerificationRun.repository_id == existing_repo.id,
-                VerificationRun.status.in_(["queued", "running", "approved"]),
+    with _DEMO_INIT_LOCK:
+        # In PostgreSQL, acquire transaction advisory lock unique to user demo init
+        if db.bind and db.bind.dialect.name == "postgresql":
+            user_lock_key = (DEMO_GITHUB_BASE_ID + auth.user.id) & 0x7FFFFFFF
+            db.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": user_lock_key})
+
+        existing_repo = _get_user_demo_repository(db, auth.user.id)
+
+        if existing_repo and reset:
+            # 1. Safely handle active Docker workers: reject reset while execution is active
+            active_running = db.scalars(
+                select(VerificationRun).where(
+                    VerificationRun.repository_id == existing_repo.id,
+                    VerificationRun.status == "running",
+                )
+            ).all()
+            if active_running:
+                run_ids = ", ".join(f"#{r.id}" for r in active_running)
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Cannot reset demo repository while verification run ({run_ids}) is "
+                        "actively executing in Docker. Please cancel the run or wait for "
+                        "container execution to complete."
+                    ),
+                )
+
+            # Cancel queued/approved/pending_approval runs safely before deleting records
+            queued_runs = db.scalars(
+                select(VerificationRun).where(
+                    VerificationRun.repository_id == existing_repo.id,
+                    VerificationRun.status.in_(["queued", "approved", "pending_approval"]),
+                )
+            ).all()
+            for qrun in queued_runs:
+                qrun.status = "cancelled"
+                qrun.cancelled_at = datetime.now(UTC)
+                qrun.cancelled_by_user_id = auth.user.id
+                qrun.cancellation_reason = "Demo environment reset by user"
+                qrun.fencing_token = (qrun.fencing_token or 0) + 1
+            db.flush()
+
+            # Clean up pull requests
+            db.execute(
+                delete(GitHubPullRequest).where(GitHubPullRequest.repository_id == existing_repo.id)
             )
-        ).all()
-        for arun in active_runs:
-            arun.status = "cancelled"
-            arun.cancellation_reason = "Demo environment reset by user"
+
+            # Clean up verification runs and related records
+            vrun_ids = db.scalars(
+                select(VerificationRun.id).where(VerificationRun.repository_id == existing_repo.id)
+            ).all()
+            if vrun_ids:
+                db.execute(
+                    delete(VerificationAuditEvent).where(
+                        VerificationAuditEvent.verification_run_id.in_(vrun_ids)
+                    )
+                )
+                db.execute(
+                    delete(ProofReport).where(ProofReport.verification_run_id.in_(vrun_ids))
+                )
+                db.execute(
+                    delete(VerificationRun).where(VerificationRun.repository_id == existing_repo.id)
+                )
+
+            # Clean up indexing data
+            job_ids = db.scalars(
+                select(IndexingJob.id).where(IndexingJob.repository_id == existing_repo.id)
+            ).all()
+            if job_ids:
+                file_ids = db.scalars(
+                    select(IndexedFile.id).where(IndexedFile.job_id.in_(job_ids))
+                ).all()
+                if file_ids:
+                    db.execute(delete(CodeSymbol).where(CodeSymbol.file_id.in_(file_ids)))
+                    db.execute(delete(IndexedFile).where(IndexedFile.id.in_(file_ids)))
+                db.execute(delete(IndexingJob).where(IndexingJob.id.in_(job_ids)))
+
+            db.execute(
+                delete(RepositoryAccess).where(RepositoryAccess.repository_id == existing_repo.id)
+            )
+            db.delete(existing_repo)
+            db.commit()
+            existing_repo = None
+
+        if existing_repo is not None:
+            return _build_demo_init_response(db, existing_repo, docker_ok, docker_msg)
+
+        # 1. Create Repository with guaranteed per-user isolation
+        repo_name = f"demo-calc-{auth.user.id}"
+        repo_full_name = f"repopilot/{repo_name}"
+
+        # Clean up any orphan repo scoped strictly to this user's demo identity
+        orphan = db.scalar(
+            select(Repository).where(
+                (Repository.github_id == expected_github_id)
+                | (Repository.full_name == repo_full_name)
+            )
+        )
+        if orphan is not None:
+            db.execute(
+                delete(GitHubPullRequest).where(GitHubPullRequest.repository_id == orphan.id)
+            )
+            orphan_vrun_ids = db.scalars(
+                select(VerificationRun.id).where(VerificationRun.repository_id == orphan.id)
+            ).all()
+            if orphan_vrun_ids:
+                db.execute(
+                    delete(VerificationAuditEvent).where(
+                        VerificationAuditEvent.verification_run_id.in_(orphan_vrun_ids)
+                    )
+                )
+                db.execute(
+                    delete(ProofReport).where(ProofReport.verification_run_id.in_(orphan_vrun_ids))
+                )
+                db.execute(
+                    delete(VerificationRun).where(VerificationRun.repository_id == orphan.id)
+                )
+            orphan_job_ids = db.scalars(
+                select(IndexingJob.id).where(IndexingJob.repository_id == orphan.id)
+            ).all()
+            if orphan_job_ids:
+                orphan_file_ids = db.scalars(
+                    select(IndexedFile.id).where(IndexedFile.job_id.in_(orphan_job_ids))
+                ).all()
+                if orphan_file_ids:
+                    db.execute(delete(CodeSymbol).where(CodeSymbol.file_id.in_(orphan_file_ids)))
+                    db.execute(delete(IndexedFile).where(IndexedFile.id.in_(orphan_file_ids)))
+                db.execute(delete(IndexingJob).where(IndexingJob.id.in_(orphan_job_ids)))
+            db.execute(delete(RepositoryAccess).where(RepositoryAccess.repository_id == orphan.id))
+            db.delete(orphan)
+            db.commit()
+
+        provenance_tag = f"{DEMO_PROVENANCE_TAG_PREFIX}{auth.user.id}:demo-calculator]"
+        repo = Repository(
+            github_id=expected_github_id,
+            owner="repopilot",
+            name=repo_name,
+            full_name=repo_full_name,
+            url="https://github.com/repopilot/demo-calculator",
+            description=f"{DEMO_FIXTURE_DESCRIPTION_PREFIX} {provenance_tag}",
+            default_branch="main",
+            stars=42,
+        )
+        db.add(repo)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            existing_repo = _get_user_demo_repository(db, auth.user.id)
+            if existing_repo is not None:
+                return _build_demo_init_response(db, existing_repo, docker_ok, docker_msg)
+            raise
+
+        # 2. Grant ownership access
+        access = RepositoryAccess(repository_id=repo.id, user_id=auth.user.id, role="owner")
+        db.add(access)
+
+        # 3. Create completed indexing job
+        job = IndexingJob(
+            repository_id=repo.id,
+            commit_sha=DEMO_CALC_COMMIT_SHA,
+            status="completed",
+            file_count=len(DEMO_CALC_FILES),
+        )
+        db.add(job)
         db.flush()
 
-        vrun_ids = db.scalars(
-            select(VerificationRun.id).where(VerificationRun.repository_id == existing_repo.id)
-        ).all()
-        if vrun_ids:
-            db.execute(
-                delete(VerificationAuditEvent).where(
-                    VerificationAuditEvent.verification_run_id.in_(vrun_ids)
+        # 4. Seed indexed files and AST code symbols
+        for path, content in DEMO_CALC_FILES.items():
+            indexed = IndexedFile(
+                job_id=job.id,
+                path=path,
+                language="python",
+                size_bytes=len(content.encode("utf-8")),
+                content=content,
+            )
+            db.add(indexed)
+            db.flush()
+
+            symbols = parse_symbols(content, "python")
+            for sym in symbols:
+                db.add(
+                    CodeSymbol(
+                        file_id=indexed.id,
+                        name=sym["name"],
+                        kind=sym["kind"],
+                        line=sym["line"],
+                    )
                 )
-            )
-            db.execute(
-                delete(ProofReport).where(ProofReport.verification_run_id.in_(vrun_ids))
-            )
-            db.execute(
-                delete(VerificationRun).where(VerificationRun.repository_id == existing_repo.id)
-            )
 
-        job_ids = db.scalars(
-            select(IndexingJob.id).where(IndexingJob.repository_id == existing_repo.id)
-        ).all()
-        if job_ids:
-            file_ids = db.scalars(
-                select(IndexedFile.id).where(IndexedFile.job_id.in_(job_ids))
-            ).all()
-            if file_ids:
-                db.execute(delete(CodeSymbol).where(CodeSymbol.file_id.in_(file_ids)))
-                db.execute(delete(IndexedFile).where(IndexedFile.id.in_(file_ids)))
-            db.execute(delete(IndexingJob).where(IndexingJob.id.in_(job_ids)))
-
-        db.execute(
-            delete(RepositoryAccess).where(RepositoryAccess.repository_id == existing_repo.id)
-        )
-        db.delete(existing_repo)
         db.commit()
-        existing_repo = None
+        db.refresh(repo)
 
-    if existing_repo is not None:
-        job = db.scalar(
-            select(IndexingJob)
-            .where(
-                IndexingJob.repository_id == existing_repo.id,
-                IndexingJob.status == "completed",
-            )
-            .order_by(IndexingJob.id.desc())
-        )
-        job_data = {
-            "id": job.id if job else 0,
-            "status": job.status if job else "completed",
-            "file_count": job.file_count if job else len(DEMO_CALC_FILES),
-            "commit_sha": DEMO_CALC_COMMIT_SHA,
-        }
-        return DemoInitializeResponse(
-            repository=RepositoryRead.from_model(existing_repo),
-            indexing_job=job_data,
-            issue=DemoIssue(),
-            test_command=DEMO_CALC_TEST_CMD,
-            sandbox_image=DEFAULT_SANDBOX_IMAGE,
-            docker_available=docker_ok,
-            docker_status_message=docker_msg,
-            is_mock_ai=True,
-        )
-
-    # 1. Create Repository with guaranteed per-user isolation
-    repo_name = f"demo-calc-{auth.user.id}"
-    repo_full_name = f"repopilot/{repo_name}"
-
-    # Clean up any orphan repo with the same github_id or full_name
-    orphan = db.scalar(
-        select(Repository).where(
-            (Repository.github_id == expected_github_id)
-            | (Repository.full_name == repo_full_name)
-        )
-    )
-    if orphan is not None:
-        db.execute(
-            delete(GitHubPullRequest).where(GitHubPullRequest.repository_id == orphan.id)
-        )
-        orphan_vrun_ids = db.scalars(
-            select(VerificationRun.id).where(VerificationRun.repository_id == orphan.id)
-        ).all()
-        if orphan_vrun_ids:
-            db.execute(
-                delete(VerificationAuditEvent).where(
-                    VerificationAuditEvent.verification_run_id.in_(orphan_vrun_ids)
-                )
-            )
-            db.execute(
-                delete(ProofReport).where(ProofReport.verification_run_id.in_(orphan_vrun_ids))
-            )
-            db.execute(
-                delete(VerificationRun).where(VerificationRun.repository_id == orphan.id)
-            )
-        orphan_job_ids = db.scalars(
-            select(IndexingJob.id).where(IndexingJob.repository_id == orphan.id)
-        ).all()
-        if orphan_job_ids:
-            orphan_file_ids = db.scalars(
-                select(IndexedFile.id).where(IndexedFile.job_id.in_(orphan_job_ids))
-            ).all()
-            if orphan_file_ids:
-                db.execute(delete(CodeSymbol).where(CodeSymbol.file_id.in_(orphan_file_ids)))
-                db.execute(delete(IndexedFile).where(IndexedFile.id.in_(orphan_file_ids)))
-            db.execute(delete(IndexingJob).where(IndexingJob.id.in_(orphan_job_ids)))
-        db.execute(delete(RepositoryAccess).where(RepositoryAccess.repository_id == orphan.id))
-        db.delete(orphan)
-        db.commit()
-
-    repo = Repository(
-        github_id=expected_github_id,
-        owner="repopilot",
-        name=repo_name,
-        full_name=repo_full_name,
-        url="https://github.com/repopilot/demo-calculator",
-        description="Deterministic Calculator Demo Fixture for RepoPilot Fix",
-        default_branch="main",
-        stars=42,
-    )
-    db.add(repo)
-    db.flush()
-
-    # 2. Grant ownership access
-    access = RepositoryAccess(repository_id=repo.id, user_id=auth.user.id, role="owner")
-    db.add(access)
-
-    # 3. Create completed indexing job
-    job = IndexingJob(
-        repository_id=repo.id,
-        commit_sha=DEMO_CALC_COMMIT_SHA,
-        status="completed",
-        file_count=len(DEMO_CALC_FILES),
-    )
-    db.add(job)
-    db.flush()
-
-    # 4. Seed indexed files and AST code symbols
-    for path, content in DEMO_CALC_FILES.items():
-        indexed = IndexedFile(
-            job_id=job.id,
-            path=path,
-            language="python",
-            size_bytes=len(content.encode("utf-8")),
-            content=content,
-        )
-        db.add(indexed)
-        db.flush()
-
-        symbols = parse_symbols(content, "python")
-        for sym in symbols:
-            db.add(
-                CodeSymbol(
-                    file_id=indexed.id,
-                    name=sym["name"],
-                    kind=sym["kind"],
-                    line=sym["line"],
-                )
-            )
-
-    db.commit()
-    db.refresh(repo)
-    db.refresh(job)
-
-    job_data = {
-        "id": job.id,
-        "status": job.status,
-        "file_count": job.file_count,
-        "commit_sha": job.commit_sha,
-    }
-
-    return DemoInitializeResponse(
-        repository=RepositoryRead.from_model(repo),
-        indexing_job=job_data,
-        issue=DemoIssue(),
-        test_command=DEMO_CALC_TEST_CMD,
-        sandbox_image=DEFAULT_SANDBOX_IMAGE,
-        docker_available=docker_ok,
-        docker_status_message=docker_msg,
-        is_mock_ai=True,
-    )
+        return _build_demo_init_response(db, repo, docker_ok, docker_msg)
 
 
 @router.post("/reset", response_model=DemoStatusResponse)

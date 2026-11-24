@@ -92,6 +92,23 @@ def import_repository(
     auth: AuthContext = Depends(require_csrf),
 ):
     owner, name = payload.url.removeprefix("https://github.com/").split("/")
+    owner_clean = owner.strip().lower()
+    name_clean = name.strip().lower()
+
+    # Disallow importing internal demo fixtures or impersonating the demo namespace
+    if (
+        owner_clean == "repopilot"
+        or "demo-calc" in name_clean
+        or "demo-calculator" in name_clean
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "External repository import cannot acquire internal demo fixture provenance. "
+                "Demo repositories must be initialized via the demo workspace."
+            ),
+        )
+
     try:
         with Client(timeout=httpx.Timeout(8.0), follow_redirects=False) as client:
             response = client.get(
@@ -136,6 +153,31 @@ def import_repository(
         raise HTTPException(502, "GitHub returned invalid repository visibility metadata.")
     if data["private"]:
         raise HTTPException(403, "Only public GitHub repositories can be imported.")
+
+    if (
+        repo_owner.lower() == "repopilot"
+        or "demo-calc" in repo_name.lower()
+        or "demo-calculator" in repo_name.lower()
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="External repository import cannot acquire internal demo fixture provenance.",
+        )
+    from repopilot_api.demo import DEMO_GITHUB_BASE_ID
+
+    if github_id >= DEMO_GITHUB_BASE_ID:
+        raise HTTPException(
+            status_code=400,
+            detail="Repository ID collides with reserved internal demo fixture IDs.",
+        )
+
+    raw_desc = data.get("description")
+    clean_desc = (
+        raw_desc.replace("[provenance:internal_fixture:", "[external_ref:")
+        if raw_desc
+        else None
+    )
+
     existing = db.scalar(select(Repository).where(Repository.github_id == github_id))
     if existing:
         repo = existing
@@ -146,7 +188,7 @@ def import_repository(
             name=repo_name,
             full_name=full_name,
             url=html_url,
-            description=data.get("description"),
+            description=clean_desc,
             default_branch=default_branch,
             stars=stars,
         )
@@ -247,11 +289,9 @@ def start_index(
     if repo is None:
         raise HTTPException(404, "Repository not found.")
 
-    is_demo = (
-        repo.github_id >= 990000000
-        and repo.owner == "repopilot"
-        and ("demo" in repo.name)
-    )
+    from repopilot_api.demo import is_internal_demo_repository
+
+    is_demo = is_internal_demo_repository(db, repo, auth.user.id)
     if is_demo:
         from repopilot_api.fixture_registry import DEMO_CALC_COMMIT_SHA
 
@@ -565,11 +605,9 @@ def analyze_issue(
     if job is None:
         raise HTTPException(409, "Index this repository before analyzing issues.")
 
-    is_demo = (
-        repo.github_id >= 990000000
-        and repo.owner == "repopilot"
-        and ("demo" in repo.name)
-    )
+    from repopilot_api.demo import is_internal_demo_repository
+
+    is_demo = is_internal_demo_repository(db, repo, auth.user.id)
     if is_demo:
         issue = {
             "number": payload.issue_number,

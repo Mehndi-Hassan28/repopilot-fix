@@ -498,11 +498,9 @@ class GitHubPullRequestService:
             )
 
         # Intercept deterministic demo repositories to prevent external GitHub write calls
-        is_demo_repo = (
-            repo.github_id >= 990000000
-            and repo.owner == "repopilot"
-            and ("demo" in repo.name)
-        )
+        from repopilot_api.demo import is_internal_demo_repository
+
+        is_demo_repo = is_internal_demo_repository(db, repo, user_id=user_id)
         if is_demo_repo:
             pr_number = 101
             pr_url = f"https://github.com/{repo.owner}/{repo.name}/pull/{pr_number}"
