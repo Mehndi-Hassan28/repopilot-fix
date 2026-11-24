@@ -589,13 +589,22 @@ def analyze_issue(
     }
 
     provider = get_provider(task="issue_analysis")
+    is_mock = getattr(provider, "__class__", None).__name__ == "MockProvider"
+    provider_name = "mock" if is_mock else "cloud"
+
     try:
         raw_analysis = provider.analyze_issue(issue, evidence)
     except ProviderError as exc:
         raise HTTPException(502, "The configured answer provider failed.") from exc
 
     try:
-        analysis_result = parse_and_validate_analysis(raw_analysis, evidence, indexed_files)
+        analysis_result = parse_and_validate_analysis(
+            raw_analysis,
+            evidence,
+            indexed_files,
+            provider_name=provider_name,
+            is_mock=is_mock,
+        )
     except ValueError as exc:
         msg = str(exc)
         if "not valid JSON" in msg or "JSON" in msg:
@@ -610,6 +619,8 @@ def analyze_issue(
         "issue_body": issue["body"],
         "issue_url": issue["html_url"],
         "query": query,
+        "provider": provider_name,
+        "is_mock": is_mock,
         "evidence": [
             {
                 "path": item.path,

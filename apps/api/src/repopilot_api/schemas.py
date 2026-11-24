@@ -171,6 +171,8 @@ class IssueAnalysisResult(BaseModel):
     confidence: Literal["low", "medium", "high"]
     confidence_reasoning: str = ""
     limitations: list[str] = []
+    provider: str = "mock"
+    is_mock: bool = True
 
     @field_validator("root_cause_hypothesis")
     @classmethod
@@ -197,6 +199,8 @@ class IssueAnalysisRead(BaseModel):
     query: str
     evidence: list[IssueEvidenceRead]
     analysis: IssueAnalysisResult
+    provider: str = "mock"
+    is_mock: bool = True
 
 
 class SandboxExecutionState(StrEnum):
@@ -304,6 +308,7 @@ class ProofEvidence(BaseModel):
     commit_sha: str
     issue_number: int
     patch_hash: str
+    approved_spec_hash: str | None = None
     sandbox_image: str
     test_command: list[str]
     baseline_exit_code: int | None = None
@@ -332,6 +337,7 @@ class ProofOfFixRequest(BaseModel):
     patches: list[PatchProposal] | ProposedFix
     hypothesis: str | None = None
     user_id: int | None = None
+    approved_spec_hash: str | None = None
     timeout_seconds: int = 30
     environment: dict[str, str] = {}
     files: dict[str, str] | None = None

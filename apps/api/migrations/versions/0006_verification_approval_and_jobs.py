@@ -15,6 +15,11 @@ depends_on = None
 
 
 def upgrade():
+    # Ensure alembic_version can store revisions longer than 32 characters
+    bind = op.get_bind()
+    if bind and bind.dialect.name == "postgresql":
+        op.execute("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(64)")
+
     # Additive columns to verification_runs
     op.add_column("verification_runs", sa.Column("spec_hash", sa.String(64), nullable=True))
     op.add_column(

@@ -11,6 +11,7 @@ Orchestrates deterministic dual-sandbox verification:
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 import time
@@ -23,6 +24,7 @@ from sqlalchemy.orm import Session
 from repopilot_api.models import IndexedFile, IndexingJob, ProofReport, VerificationRun
 from repopilot_api.patcher import PatchError, apply_patch_proposal
 from repopilot_api.sandbox import (
+    DEFAULT_SANDBOX_IMAGE,
     DEFAULT_SCRATCH_ROOT,
     CommandValidator,
     EnvironmentSanitizer,
@@ -250,15 +252,21 @@ class ProofOfFixEngine:
         vrun: VerificationRun | None = verification_run
         if vrun is None and db is not None:
             try:
+                test_cmd_val = (
+                    json.dumps(request.test_command)
+                    if isinstance(request.test_command, list)
+                    else (request.test_command or "[]")
+                )
                 vrun = VerificationRun(
                     repository_id=request.repository_id,
                     commit_sha=request.commit_sha,
                     issue_number=request.issue_number,
                     user_id=request.user_id,
                     status="running",
-                    sandbox_image=getattr(self.runner, "image", "default"),
+                    sandbox_image=getattr(self.runner, "image", DEFAULT_SANDBOX_IMAGE),
                     patch_diff=combined_diff,
                     patch_hash=patch_hash,
+                    test_command=test_cmd_val,
                 )
                 db.add(vrun)
                 db.commit()
@@ -269,7 +277,13 @@ class ProofOfFixEngine:
             vrun.patch_diff = combined_diff
             vrun.patch_hash = patch_hash
             if not vrun.sandbox_image:
-                vrun.sandbox_image = getattr(self.runner, "image", "default")
+                vrun.sandbox_image = getattr(self.runner, "image", DEFAULT_SANDBOX_IMAGE)
+            if not vrun.test_command and request.test_command:
+                vrun.test_command = (
+                    json.dumps(request.test_command)
+                    if isinstance(request.test_command, list)
+                    else request.test_command
+                )
 
         # Workspaces tracking for guaranteed cleanup
         effective_verification_id = (
@@ -516,6 +530,10 @@ class ProofOfFixEngine:
             commit_sha=request.commit_sha,
             issue_number=request.issue_number,
             patch_hash=patch_hash,
+            approved_spec_hash=(
+                request.approved_spec_hash
+                or (vrun.approved_spec_hash if vrun else None)
+            ),
             sandbox_image=getattr(self.runner, "image", "default"),
             test_command=request.test_command,
             baseline_exit_code=baseline_res.exit_code if baseline_res else None,

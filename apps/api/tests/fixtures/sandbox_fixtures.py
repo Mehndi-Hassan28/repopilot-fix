@@ -42,6 +42,104 @@ CALC_FIX_PATCH: str = (
     "+    return a + b\n"
 )
 
+# Deterministic demo fixture with regression tests and reproducible bug in power()
+DEMO_CALCULATOR_CODE: str = (
+    "def add(a: int, b: int) -> int:\n"
+    '    """Return sum of a and b."""\n'
+    "    return a + b\n\n\n"
+    "def multiply(a: int, b: int) -> int:\n"
+    '    """Return product of a and b."""\n'
+    "    return a * b\n\n\n"
+    "def divide(a: int, b: int) -> float:\n"
+    '    """Return quotient of a and b."""\n'
+    "    if b == 0:\n"
+    '        raise ValueError("Division by zero")\n'
+    "    return a / b\n\n\n"
+    "def power(base: int, exponent: int) -> int:\n"
+    '    """Return base raised to exponent."""\n'
+    "    # Bug: returns multiplication instead of exponentiation\n"
+    "    return base * exponent\n"
+)
+
+DEMO_TEST_CALCULATOR_CODE: str = (
+    "import unittest\n"
+    "from src.calculator import add, divide, multiply, power\n\n\n"
+    "class TestCalculator(unittest.TestCase):\n"
+    "    # Regression tests (must pass in baseline and continue passing)\n"
+    "    def test_add(self):\n"
+    "        self.assertEqual(add(2, 3), 5)\n"
+    "        self.assertEqual(add(-1, 1), 0)\n\n"
+    "    def test_multiply(self):\n"
+    "        self.assertEqual(multiply(3, 4), 12)\n"
+    "        self.assertEqual(multiply(0, 5), 0)\n\n"
+    "    def test_divide_normal(self):\n"
+    "        self.assertEqual(divide(10, 2), 5.0)\n\n"
+    "    def test_divide_by_zero(self):\n"
+    "        with self.assertRaises(ValueError):\n"
+    "            divide(10, 0)\n\n"
+    "    # Bug reproduction tests (fail in baseline, pass after fix)\n"
+    "    def test_power_positive(self):\n"
+    "        self.assertEqual(power(2, 3), 8)\n\n"
+    "    def test_power_zero(self):\n"
+    "        self.assertEqual(power(5, 0), 1)\n\n\n"
+    "if __name__ == '__main__':\n"
+    "    unittest.main()\n"
+)
+
+DEMO_FIXTURE_FILES: dict[str, str] = {
+    "src/calculator.py": DEMO_CALCULATOR_CODE,
+    "tests/test_calculator.py": DEMO_TEST_CALCULATOR_CODE,
+}
+
+DEMO_CALC_FIX_PATCH: str = (
+    "--- a/src/calculator.py\n"
+    "+++ b/src/calculator.py\n"
+    "@@ -18,4 +18,4 @@\n"
+    " def power(base: int, exponent: int) -> int:\n"
+    '     """Return base raised to exponent."""\n'
+    "     # Bug: returns multiplication instead of exponentiation\n"
+    "-    return base * exponent\n"
+    "+    return base ** exponent\n"
+)
+
+DEMO_CALC_REGRESSION_PATCH: str = (
+    "--- a/src/calculator.py\n"
+    "+++ b/src/calculator.py\n"
+    "@@ -6,3 +6,3 @@\n"
+    " def multiply(a: int, b: int) -> int:\n"
+    '     """Return product of a and b."""\n'
+    "-    return a * b\n"
+    "+    return a + b\n"
+    "@@ -18,4 +18,4 @@\n"
+    " def power(base: int, exponent: int) -> int:\n"
+    '     """Return base raised to exponent."""\n'
+    "     # Bug: returns multiplication instead of exponentiation\n"
+    "-    return base * exponent\n"
+    "+    return base ** exponent\n"
+)
+
+DEMO_CALC_FAILED_PATCH: str = (
+    "--- a/src/calculator.py\n"
+    "+++ b/src/calculator.py\n"
+    "@@ -18,4 +18,4 @@\n"
+    " def power(base: int, exponent: int) -> int:\n"
+    '     """Return base raised to exponent."""\n'
+    "     # Bug: returns multiplication instead of exponentiation\n"
+    "-    return base * exponent\n"
+    "+    return base + exponent\n"
+)
+
+DEMO_CALC_SYNTAX_ERROR_PATCH: str = (
+    "--- a/src/calculator.py\n"
+    "+++ b/src/calculator.py\n"
+    "@@ -18,4 +18,4 @@\n"
+    " def power(base: int, exponent: int) -> int:\n"
+    '     """Return base raised to exponent."""\n'
+    "     # Bug: returns multiplication instead of exponentiation\n"
+    "-    return base * exponent\n"
+    "+    return base **\n"
+)
+
 NETWORK_PROBE_FILES: dict[str, str] = {
     "test_network.py": (
         "import socket\n"

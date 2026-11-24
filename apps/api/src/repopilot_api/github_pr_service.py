@@ -386,6 +386,34 @@ class GitHubPullRequestService:
                 f"Only verified fixes ('{v_fix}') qualify for PR creation."
             )
 
+        # Cryptographic Evidence Binding: verify evidence matches exact revision, patch, and spec
+        try:
+            ev_data = json.loads(report.evidence_json or "{}")
+        except Exception:
+            ev_data = {}
+
+        ev_commit = ev_data.get("commit_sha")
+        if ev_commit and ev_commit.lower().strip() != run.commit_sha.lower().strip():
+            raise GitHubVerificationPrerequisiteError(
+                f"Evidence mismatch: report commit '{ev_commit}' does not match "
+                f"run commit '{run.commit_sha}'."
+            )
+
+        ev_patch = ev_data.get("patch_hash")
+        if ev_patch and ev_patch.lower().strip() != (run.patch_hash or "").lower().strip():
+            raise GitHubVerificationPrerequisiteError(
+                "Evidence mismatch: report patch hash does not match run patch hash."
+            )
+
+        ev_approved_spec = ev_data.get("approved_spec_hash")
+        if (
+            ev_approved_spec
+            and ev_approved_spec.lower().strip() != (run.approved_spec_hash or "").lower().strip()
+        ):
+            raise GitHubVerificationPrerequisiteError(
+                "Evidence mismatch: report approved specification hash does not match run."
+            )
+
         if not run.patch_diff or not run.patch_diff.strip():
             raise GitHubVerificationPrerequisiteError(
                 "Cannot create PR: verification run contains an empty patch diff."

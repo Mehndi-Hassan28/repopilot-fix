@@ -116,6 +116,8 @@ export type IssueAnalysis = {
   confidence: "low" | "medium" | "high";
   confidence_reasoning?: string;
   limitations: string[];
+  provider?: string;
+  is_mock?: boolean;
 };
 
 export type IssueAnalysisResponse = {
@@ -126,6 +128,8 @@ export type IssueAnalysisResponse = {
   issue_body: string;
   issue_url: string;
   query: string;
+  provider?: string;
+  is_mock?: boolean;
   evidence: Array<{
     path: string;
     start_line: number;
