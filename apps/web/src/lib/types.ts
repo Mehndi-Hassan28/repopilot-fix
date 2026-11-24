@@ -118,6 +118,10 @@ export type IssueAnalysis = {
   limitations: string[];
   provider?: string;
   is_mock?: boolean;
+  model?: string;
+  latency_ms?: number;
+  token_usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  generation_mode?: "live_ai" | "mock_ai" | "deterministic_fixture";
 };
 
 export type IssueAnalysisResponse = {
@@ -130,6 +134,10 @@ export type IssueAnalysisResponse = {
   query: string;
   provider?: string;
   is_mock?: boolean;
+  model?: string;
+  latency_ms?: number;
+  token_usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  generation_mode?: "live_ai" | "mock_ai" | "deterministic_fixture";
   evidence: Array<{
     path: string;
     start_line: number;

@@ -937,9 +937,27 @@ export function InteractiveDemoWorkspace({
                     <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-purple-300">
                       Stage 4 of 9
                     </span>
-                    <span className="rounded-md border border-purple-500/30 bg-purple-500/10 px-2 py-0.5 text-[9px] font-mono text-purple-300">
-                      Deterministic Mock AI Response
+                    <span
+                      className={`rounded-md border px-2 py-0.5 text-[9px] font-mono ${
+                        analysisResult?.is_mock ?? analysisResult?.analysis.is_mock
+                          ? "border-purple-500/30 bg-purple-500/10 text-purple-300"
+                          : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                      }`}
+                    >
+                      {analysisResult?.is_mock ?? analysisResult?.analysis.is_mock
+                        ? "Deterministic Mock AI Response"
+                        : `Live AI Model: ${(analysisResult?.model || analysisResult?.analysis.model || "gemini").replace("models/", "")}`}
                     </span>
+                    {(analysisResult?.latency_ms || analysisResult?.analysis.latency_ms) && (
+                      <span className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[9px] font-mono text-zinc-300">
+                        {((analysisResult?.latency_ms || analysisResult?.analysis.latency_ms || 0) / 1000).toFixed(1)}s
+                      </span>
+                    )}
+                    {(analysisResult?.token_usage?.total_tokens || analysisResult?.analysis.token_usage?.total_tokens) && (
+                      <span className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[9px] font-mono text-zinc-300">
+                        {(analysisResult?.token_usage || analysisResult?.analysis.token_usage)?.total_tokens} tokens
+                      </span>
+                    )}
                   </div>
                   <h2 className="mt-1 text-xl font-bold text-white">
                     Source-Grounded Root-Cause Explanation

@@ -96,11 +96,7 @@ def import_repository(
     name_clean = name.strip().lower()
 
     # Disallow importing internal demo fixtures or impersonating the demo namespace
-    if (
-        owner_clean == "repopilot"
-        or "demo-calc" in name_clean
-        or "demo-calculator" in name_clean
-    ):
+    if owner_clean == "repopilot" or "demo-calc" in name_clean or "demo-calculator" in name_clean:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -173,9 +169,7 @@ def import_repository(
 
     raw_desc = data.get("description")
     clean_desc = (
-        raw_desc.replace("[provenance:internal_fixture:", "[external_ref:")
-        if raw_desc
-        else None
+        raw_desc.replace("[provenance:internal_fixture:", "[external_ref:") if raw_desc else None
     )
 
     existing = db.scalar(select(Repository).where(Repository.github_id == github_id))
@@ -661,14 +655,21 @@ def analyze_issue(
         for f in db.scalars(select(IndexedFile).where(IndexedFile.job_id == job.id)).all()
     }
 
-    provider = get_provider(task="issue_analysis")
+    req_mode = getattr(payload, "mode", "auto")
+    if req_mode in ("mock_ai", "deterministic_fixture"):
+        from repopilot_api.chat import MockProvider
+
+        provider = MockProvider()
+    else:
+        provider = get_provider(task="issue_analysis")
+
     is_mock = getattr(provider, "__class__", None).__name__ == "MockProvider"
     provider_name = "mock" if is_mock else "cloud"
 
     try:
         raw_analysis = provider.analyze_issue(issue, evidence)
     except ProviderError as exc:
-        raise HTTPException(502, "The configured answer provider failed.") from exc
+        raise HTTPException(502, f"The configured answer provider failed: {exc}") from exc
 
     try:
         analysis_result = parse_and_validate_analysis(
@@ -684,6 +685,21 @@ def analyze_issue(
             raise HTTPException(502, f"The AI provider returned malformed JSON: {msg}") from exc
         raise HTTPException(502, f"Model analysis failed validation: {msg}") from exc
 
+    telemetry = getattr(provider, "last_telemetry", {}) or {}
+    model_name = (
+        telemetry.get("model")
+        or getattr(provider, "model", None)
+        or ("mock" if is_mock else "cloud")
+    )
+    latency_ms = telemetry.get("latency_ms")
+    token_usage = telemetry.get("token_usage")
+    generation_mode = telemetry.get("generation_mode") or ("mock_ai" if is_mock else "live_ai")
+
+    analysis_result.model = model_name
+    analysis_result.latency_ms = latency_ms
+    analysis_result.token_usage = token_usage
+    analysis_result.generation_mode = generation_mode
+
     return {
         "repository_id": repository_id,
         "commit_sha": job.commit_sha,
@@ -694,6 +710,10 @@ def analyze_issue(
         "query": query,
         "provider": provider_name,
         "is_mock": is_mock,
+        "model": model_name,
+        "latency_ms": latency_ms,
+        "token_usage": token_usage,
+        "generation_mode": generation_mode,
         "evidence": [
             {
                 "path": item.path,

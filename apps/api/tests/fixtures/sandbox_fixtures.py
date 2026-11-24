@@ -230,3 +230,57 @@ OUTPUT_FLOOD_PROBE_FILES: dict[str, str] = {
         "    unittest.main()\n"
     )
 }
+
+# Range validator fixture (Scenario 3)
+RANGE_VALIDATOR_FIXTURE_FILES: dict[str, str] = {
+    "src/validator.py": (
+        "def is_in_range(val: int, min_val: int, max_val: int) -> bool:\n"
+        '    """Check if val is within [min_val, max_val] inclusive."""\n'
+        "    # Bug: uses exclusive check instead of inclusive on upper bound\n"
+        "    return min_val <= val < max_val\n\n\n"
+        "def is_positive(val: int) -> bool:\n"
+        '    """Check if val is positive."""\n'
+        "    return val > 0\n"
+    ),
+    "tests/test_validator.py": (
+        "import unittest\n"
+        "from src.validator import is_in_range, is_positive\n\n\n"
+        "class TestValidator(unittest.TestCase):\n"
+        "    def test_positive(self):\n"
+        "        self.assertTrue(is_positive(5))\n"
+        "        self.assertFalse(is_positive(-1))\n\n"
+        "    def test_in_range_middle(self):\n"
+        "        self.assertTrue(is_in_range(5, 1, 10))\n\n"
+        "    def test_in_range_lower_bound(self):\n"
+        "        self.assertTrue(is_in_range(1, 1, 10))\n\n"
+        "    def test_out_of_range_above(self):\n"
+        "        self.assertFalse(is_in_range(11, 1, 10))\n\n"
+        "    def test_in_range_upper_bound(self):\n"
+        "        self.assertTrue(is_in_range(10, 1, 10))\n\n\n"
+        "if __name__ == '__main__':\n"
+        "    unittest.main()\n"
+    ),
+}
+
+RANGE_VALIDATOR_FIX_PATCH: str = (
+    "--- a/src/validator.py\n"
+    "+++ b/src/validator.py\n"
+    "@@ -3,2 +3,2 @@\n"
+    "     # Bug: uses exclusive check instead of inclusive on upper bound\n"
+    "-    return min_val <= val < max_val\n"
+    "+    return min_val <= val <= max_val\n"
+)
+
+RANGE_VALIDATOR_REGRESSION_PATCH: str = (
+    "--- a/src/validator.py\n"
+    "+++ b/src/validator.py\n"
+    "@@ -4,6 +4,6 @@\n"
+    "-    return min_val <= val < max_val\n"
+    "+    return min_val <= val <= max_val\n"
+    " \n"
+    " \n"
+    " def is_positive(val: int) -> bool:\n"
+    '     """Check if val is positive."""\n'
+    "-    return val > 0\n"
+    "+    return val < 0\n"
+)

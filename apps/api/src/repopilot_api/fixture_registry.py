@@ -131,6 +131,53 @@ DEMO_CALC_FIX_PATCH = (
     "+    return base ** exponent\n"
 )
 
+# ------------------------------------------------------------------------------
+# Range Validator Boundary Fixture (Scenario 3)
+# ------------------------------------------------------------------------------
+RANGE_VALIDATOR_SOURCE = (
+    "def is_in_range(val: int, min_val: int, max_val: int) -> bool:\n"
+    '    """Check if val is within [min_val, max_val] inclusive."""\n'
+    "    # Bug: uses exclusive check instead of inclusive on upper bound\n"
+    "    return min_val <= val < max_val\n\n\n"
+    "def is_positive(val: int) -> bool:\n"
+    '    """Check if val is positive."""\n'
+    "    return val > 0\n"
+)
+
+TEST_RANGE_VALIDATOR_SOURCE = (
+    "import unittest\n"
+    "from src.validator import is_in_range, is_positive\n\n\n"
+    "class TestValidator(unittest.TestCase):\n"
+    "    # Regression tests (must pass in baseline and continue passing)\n"
+    "    def test_positive(self):\n"
+    "        self.assertTrue(is_positive(5))\n"
+    "        self.assertFalse(is_positive(-1))\n\n"
+    "    def test_in_range_middle(self):\n"
+    "        self.assertTrue(is_in_range(5, 1, 10))\n\n"
+    "    def test_in_range_lower_bound(self):\n"
+    "        self.assertTrue(is_in_range(1, 1, 10))\n\n"
+    "    def test_out_of_range_above(self):\n"
+    "        self.assertFalse(is_in_range(11, 1, 10))\n\n"
+    "    # Bug reproduction test (fails in baseline, passes after fix)\n"
+    "    def test_in_range_upper_bound(self):\n"
+    "        self.assertTrue(is_in_range(10, 1, 10))\n\n\n"
+    "if __name__ == '__main__':\n"
+    "    unittest.main()\n"
+)
+
+RANGE_VALIDATOR_FILES: dict[str, str] = {
+    "src/validator.py": RANGE_VALIDATOR_SOURCE,
+    "tests/test_validator.py": TEST_RANGE_VALIDATOR_SOURCE,
+}
+RANGE_VALIDATOR_FIX_PATCH = (
+    "--- a/src/validator.py\n"
+    "+++ b/src/validator.py\n"
+    "@@ -3,2 +3,2 @@\n"
+    "     # Bug: uses exclusive check instead of inclusive on upper bound\n"
+    "-    return min_val <= val < max_val\n"
+    "+    return min_val <= val <= max_val\n"
+)
+
 
 # ==============================================================================
 # Snapshot Hash Computation
@@ -390,6 +437,8 @@ class TrustedFixtureRegistry:
                     ["python", "-m", "unittest", "tests/test_calculator.py"],
                     ["python", "-m", "unittest", "discover", "tests"],
                     ["pytest", "tests/test_calculator.py"],
+                    ["pytest", "-q", "tests/test_calculator.py"],
+                    ["pytest", "-q"],
                     ["pytest"],
                 ],
                 sandbox_image=DEFAULT_SANDBOX_IMAGE,
@@ -494,6 +543,29 @@ class TrustedFixtureRegistry:
                 approved_test_commands=[
                     ["python", "-m", "unittest", "test_calc.py"],
                     ["pytest", "test_calc.py"],
+                ],
+                sandbox_image=DEFAULT_SANDBOX_IMAGE,
+                allowed_commit_shas=common_shas,
+            )
+        )
+
+        # 3b. Range Validator Fixture (Scenario 3)
+        self.register_fixture(
+            TrustedFixture.create(
+                fixture_id="fixture_range_validator",
+                name="Range Validator Boundary Fixture",
+                description="Range validator with upper-bound inclusive bug in src/validator.py",
+                repository_owner="*",
+                repository_name="*",
+                commit_sha=sample_sha,
+                files=RANGE_VALIDATOR_FILES,
+                approved_test_commands=[
+                    ["python", "-m", "unittest", "tests/test_validator.py"],
+                    ["python", "-m", "unittest", "discover", "tests"],
+                    ["pytest", "tests/test_validator.py"],
+                    ["pytest", "-q", "tests/test_validator.py"],
+                    ["pytest", "-q"],
+                    ["pytest"],
                 ],
                 sandbox_image=DEFAULT_SANDBOX_IMAGE,
                 allowed_commit_shas=common_shas,
@@ -880,9 +952,7 @@ class ExecutionPolicyGuard:
 
         # 4. Repository trust check
         repo = db.get(Repository, run.repository_id)
-        cls.validate_repository_trust(
-            repo, active_registry, db=db, user_id=effective_user_id
-        )
+        cls.validate_repository_trust(repo, active_registry, db=db, user_id=effective_user_id)
 
         # 5. Resolve snapshot files if not provided
         resolved_files = files
