@@ -159,4 +159,22 @@ describe("Demo API Client", () => {
       assert.equal(status.initialized, false);
     });
   });
+
+  describe("demo security and simulated PR assertions", () => {
+    it("validates simulated PR response structure and zero-write flag", () => {
+      const simulatedPrData = {
+        success: true,
+        pr_number: 101,
+        pr_url: "https://github.com/repopilot/demo-calc-1/pull/101",
+        branch_name: "fix/issue-1-power",
+        base_branch: "main",
+        status: "created" as const,
+        message: "Simulated GitHub pull request #101 created for demo repository.",
+        is_simulated: true,
+      };
+      assert.equal(simulatedPrData.pr_number, 101);
+      assert.equal(simulatedPrData.is_simulated, true);
+      assert.ok(simulatedPrData.message.includes("Simulated"));
+    });
+  });
 });

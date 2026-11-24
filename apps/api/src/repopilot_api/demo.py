@@ -27,6 +27,7 @@ from repopilot_api.fixture_registry import (
 )
 from repopilot_api.models import (
     CodeSymbol,
+    GitHubPullRequest,
     IndexedFile,
     IndexingJob,
     ProofReport,
@@ -196,7 +197,21 @@ def initialize_demo(
     existing_repo = _get_user_demo_repository(db, auth.user.id)
 
     if existing_repo and reset:
-        # Safe isolation: delete only demo verification runs, audit events, and index data
+        # Safe isolation: delete only demo verification runs, audit events, PRs, and index data
+        db.execute(
+            delete(GitHubPullRequest).where(GitHubPullRequest.repository_id == existing_repo.id)
+        )
+        active_runs = db.scalars(
+            select(VerificationRun).where(
+                VerificationRun.repository_id == existing_repo.id,
+                VerificationRun.status.in_(["queued", "running", "approved"]),
+            )
+        ).all()
+        for arun in active_runs:
+            arun.status = "cancelled"
+            arun.cancellation_reason = "Demo environment reset by user"
+        db.flush()
+
         vrun_ids = db.scalars(
             select(VerificationRun.id).where(VerificationRun.repository_id == existing_repo.id)
         ).all()
@@ -270,6 +285,35 @@ def initialize_demo(
         )
     )
     if orphan is not None:
+        db.execute(
+            delete(GitHubPullRequest).where(GitHubPullRequest.repository_id == orphan.id)
+        )
+        orphan_vrun_ids = db.scalars(
+            select(VerificationRun.id).where(VerificationRun.repository_id == orphan.id)
+        ).all()
+        if orphan_vrun_ids:
+            db.execute(
+                delete(VerificationAuditEvent).where(
+                    VerificationAuditEvent.verification_run_id.in_(orphan_vrun_ids)
+                )
+            )
+            db.execute(
+                delete(ProofReport).where(ProofReport.verification_run_id.in_(orphan_vrun_ids))
+            )
+            db.execute(
+                delete(VerificationRun).where(VerificationRun.repository_id == orphan.id)
+            )
+        orphan_job_ids = db.scalars(
+            select(IndexingJob.id).where(IndexingJob.repository_id == orphan.id)
+        ).all()
+        if orphan_job_ids:
+            orphan_file_ids = db.scalars(
+                select(IndexedFile.id).where(IndexedFile.job_id.in_(orphan_job_ids))
+            ).all()
+            if orphan_file_ids:
+                db.execute(delete(CodeSymbol).where(CodeSymbol.file_id.in_(orphan_file_ids)))
+                db.execute(delete(IndexedFile).where(IndexedFile.id.in_(orphan_file_ids)))
+            db.execute(delete(IndexingJob).where(IndexingJob.id.in_(orphan_job_ids)))
         db.execute(delete(RepositoryAccess).where(RepositoryAccess.repository_id == orphan.id))
         db.delete(orphan)
         db.commit()

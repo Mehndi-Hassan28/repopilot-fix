@@ -116,6 +116,7 @@ DEMO_CALC_FILES: dict[str, str] = {
     "tests/test_calculator.py": DEMO_TEST_CALCULATOR_SOURCE,
 }
 
+DEMO_FIXTURE_GITHUB_ID_BASE = 990_000_000
 DEMO_CALC_COMMIT_SHA = "a" * 40
 DEMO_CALC_TEST_CMD = ["python", "-m", "unittest", "tests/test_calculator.py"]
 DEMO_CALC_FIX_PATCH = (
@@ -244,14 +245,21 @@ class TrustedFixtureRegistry:
     def register_trusted_repository(self, owner: str, name: str) -> None:
         self._trusted_repositories.add((owner.lower().strip(), name.lower().strip()))
 
-    def is_repository_trusted(self, owner: str, name: str) -> bool:
+    def is_repository_trusted(
+        self, owner: str, name: str, github_id: int | None = None
+    ) -> bool:
         o = owner.lower().strip()
         n = name.lower().strip()
         if (o, n) in self._trusted_repositories:
             return True
-        is_demo = n in ("demo-calculator", "demo-repo") or n.startswith("demo-calc")
-        if o == "repopilot" and is_demo:
-            return True
+        # Demo fixture repositories require server-controlled fixture identity
+        # (github_id >= 990_000_000) to prevent external GitHub repositories with spoofed
+        # owner/name strings from claiming trust.
+        is_demo_name = n in ("demo-calculator", "demo-repo") or n.startswith("demo-calc")
+        if o == "repopilot" and is_demo_name:
+            if github_id is not None:
+                return github_id >= DEMO_FIXTURE_GITHUB_ID_BASE
+            return False
         return False
 
     def register_fixture(self, fixture: TrustedFixture) -> None:
@@ -715,7 +723,9 @@ class ExecutionPolicyGuard:
         """Verify repository belongs to server-controlled trusted repository allowlist."""
         if repository is None:
             raise PolicyMetadataError("Repository metadata is missing.")
-        if not registry.is_repository_trusted(repository.owner, repository.name):
+        if not registry.is_repository_trusted(
+            repository.owner, repository.name, github_id=repository.github_id
+        ):
             raise UntrustedRepositoryError(
                 f"Repository '{repository.owner}/{repository.name}' is not in the trusted "
                 "repository allowlist. Arbitrary repositories cannot be executed in sandbox."

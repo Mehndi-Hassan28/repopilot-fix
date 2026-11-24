@@ -500,7 +500,8 @@ class GitHubPullRequestService:
         # Intercept deterministic demo repositories to prevent external GitHub write calls
         is_demo_repo = (
             repo.github_id >= 990000000
-            or (repo.owner == "repopilot" and "demo" in repo.name)
+            and repo.owner == "repopilot"
+            and ("demo" in repo.name)
         )
         if is_demo_repo:
             pr_number = 101
@@ -543,6 +544,7 @@ class GitHubPullRequestService:
                 base_branch=repo.default_branch or "main",
                 status="created",
                 message=f"Simulated GitHub pull request #{pr_number} created for demo repository.",
+                is_simulated=True,
             )
 
         token = cls._resolve_token(payload, auth_token_header)

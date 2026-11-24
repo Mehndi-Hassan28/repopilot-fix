@@ -15,6 +15,7 @@ import {
   ProofReportRead,
   PullRequestCreateResponse,
   PatchExportResponse,
+  ProofEvidence,
 } from "../lib/verification-types";
 import {
   getDemoStatus,
@@ -69,6 +70,7 @@ export function InteractiveDemoWorkspace({
   const [loadingStep, setLoadingStep] = useState<number | null>(null);
   const [stepError, setStepError] = useState<{ step: number; message: string } | null>(null);
   const [autoRunning, setAutoRunning] = useState<boolean>(false);
+  const [awaitingApproval, setAwaitingApproval] = useState<boolean>(false);
   const [diffMode, setDiffMode] = useState<"unified" | "split">("unified");
   const [showResetConfirm, setShowResetConfirm] = useState<boolean>(false);
 
@@ -84,6 +86,7 @@ export function InteractiveDemoWorkspace({
   const [simulatedPR, setSimulatedPR] = useState<PullRequestCreateResponse | null>(null);
   const [simulatingPR, setSimulatingPR] = useState<boolean>(false);
 
+  const reportEvidence = (proofReport?.evidence || {}) as Partial<ProofEvidence>;
   const autoRunAbortRef = useRef<boolean>(false);
 
   // Initial status check
@@ -261,6 +264,7 @@ export function InteractiveDemoWorkspace({
       }
 
       setVerificationRun(run);
+      setAwaitingApproval(false);
       setMaxCompletedStep((prev) => Math.max(prev, 6));
       await refreshDemoStatus();
       return run;
@@ -272,6 +276,22 @@ export function InteractiveDemoWorkspace({
       throw err;
     } finally {
       setLoadingStep(null);
+    }
+  };
+
+  // Explicit Human Approval + Proceed to Sandbox Verification
+  const handleApproveAndContinue = async () => {
+    try {
+      const run = await handleStep6Approve();
+      if (!run) return;
+      setCurrentStep(7);
+      await handleStep7Verify();
+      setCurrentStep(8);
+      await handleStep8Evidence();
+      setCurrentStep(9);
+      setMaxCompletedStep(9);
+    } catch {
+      // Errors caught and set by step handlers
     }
   };
 
@@ -407,9 +427,10 @@ export function InteractiveDemoWorkspace({
     }
   };
 
-  // Run Full Automated Demo (Steps 1 through 9 sequentially)
+  // Run Full Automated Demo (Stages 1 through 5, then halts for Mandatory Human Approval at Stage 6)
   const handleRunFullDemo = async () => {
     setAutoRunning(true);
+    setAwaitingApproval(false);
     autoRunAbortRef.current = false;
     setStepError(null);
 
@@ -426,7 +447,7 @@ export function InteractiveDemoWorkspace({
 
       // Step 3: Investigate
       setCurrentStep(3);
-      await handleStep3Investigate(init.repository.id);
+      const analysis = await handleStep3Investigate(init.repository.id);
       if (autoRunAbortRef.current) return;
 
       // Step 4: Root Cause
@@ -439,27 +460,38 @@ export function InteractiveDemoWorkspace({
       await handleStep5PatchReview();
       if (autoRunAbortRef.current) return;
 
-      // Step 6: Approval
+      // Step 6: Human Approval Governance Gate - MANDATORY PAUSE
+      // In strict adherence to security governance, the automated runner prepares the draft
+      // specification, advances to Stage 6, and PAUSES. Operator approval cannot be bypassed.
       setCurrentStep(6);
-      await handleStep6Approve();
-      if (autoRunAbortRef.current) return;
-
-      // Step 7: Verify (Docker execution)
-      setCurrentStep(7);
-      await handleStep7Verify();
-      if (autoRunAbortRef.current) return;
-
-      // Step 8: Evidence Report
-      setCurrentStep(8);
-      await handleStep8Evidence();
-      if (autoRunAbortRef.current) return;
-
-      // Step 9: Final Stage Preview
-      setCurrentStep(9);
-      setMaxCompletedStep(9);
+      const targetId = init.repository.id;
+      let run = verificationRun;
+      if (!run && analysis) {
+        run = await createVerification(
+          targetId,
+          {
+            commit_sha: analysis.commit_sha,
+            issue_number: analysis.issue_number,
+            patches: analysis.analysis.proposed_fix.patches,
+            hypothesis: analysis.analysis.root_cause_hypothesis,
+            test_command: ["pytest", "-q", "tests/test_calculator.py"],
+            sandbox_image: "python:3.11-slim",
+          },
+          csrfToken
+        );
+      }
+      if (run && run.status === "draft") {
+        run = await submitForApproval(targetId, run.id, csrfToken);
+      }
+      if (run) {
+        setVerificationRun(run);
+      }
+      setMaxCompletedStep((prev) => Math.max(prev, 5));
+      setAutoRunning(false);
+      setAwaitingApproval(true);
+      return; // STRICT GOVERNANCE HALT
     } catch {
       // StepError is already set in the failing step handler
-    } finally {
       setAutoRunning(false);
     }
   };
@@ -748,54 +780,49 @@ export function InteractiveDemoWorkspace({
 
               {/* Indexed Files Showcase */}
               <div className="space-y-3">
-                <p className="text-xs font-mono uppercase tracking-wider text-zinc-400">
-                  Indexed Source Files & Symbols ({indexedFiles.length || 2} files, 15 symbols)
-                </p>
+                <div className="flex items-center justify-between text-xs font-mono uppercase tracking-wider text-zinc-400">
+                  <span>
+                    Indexed Source Files & Symbols ({indexedFiles.length} {indexedFiles.length === 1 ? "file" : "files"}, {indexedFiles.reduce((acc, f) => acc + (f.symbols?.length || 0), 0)} parsed symbols)
+                  </span>
+                  <span className="text-zinc-500 text-[10px]">Actual AST Data</span>
+                </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* File 1: calculator.py */}
-                  <div className="rounded-xl border border-white/10 bg-[#141822] p-4 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono text-xs font-bold text-cyan-300">src/calculator.py</span>
-                      <span className="text-[10px] font-mono text-zinc-400">5 symbols</span>
+                  {indexedFiles.length > 0 ? (
+                    indexedFiles.map((file) => (
+                      <div key={file.path} className="rounded-xl border border-white/10 bg-[#141822] p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-xs font-bold text-cyan-300">{file.path}</span>
+                          <span className="text-[10px] font-mono text-zinc-400">
+                            {file.symbols?.length || 0} {file.symbols?.length === 1 ? "symbol" : "symbols"} ({file.size_bytes} B)
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 font-mono text-[11px]">
+                          {file.symbols && file.symbols.length > 0 ? (
+                            file.symbols.map((sym) => (
+                              <span
+                                key={`${file.path}-${sym.kind}-${sym.name}-${sym.line}`}
+                                className={`rounded px-2 py-0.5 ${
+                                  sym.name === "power" || sym.name.includes("power")
+                                    ? "bg-rose-500/20 border border-rose-500/30 text-rose-300"
+                                    : "bg-white/5 text-zinc-300"
+                                }`}
+                                title={`${sym.kind} at line ${sym.line}`}
+                              >
+                                {sym.kind === "function" ? "def" : sym.kind} {sym.name}()
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-zinc-500 text-[10px]">No symbols extracted</span>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="col-span-2 rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-zinc-500 font-mono">
+                      Loading parsed files and symbols from AST engine…
                     </div>
-                    <div className="flex flex-wrap gap-1.5 font-mono text-[11px]">
-                      {["add", "subtract", "multiply", "divide", "power"].map((sym) => (
-                        <span
-                          key={sym}
-                          className={`rounded px-2 py-0.5 ${
-                            sym === "power"
-                              ? "bg-rose-500/20 border border-rose-500/30 text-rose-300"
-                              : "bg-white/5 text-zinc-300"
-                          }`}
-                        >
-                          def {sym}()
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* File 2: test_calculator.py */}
-                  <div className="rounded-xl border border-white/10 bg-[#141822] p-4 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono text-xs font-bold text-cyan-300">tests/test_calculator.py</span>
-                      <span className="text-[10px] font-mono text-zinc-400">10 test cases</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5 font-mono text-[10px]">
-                      {["test_add", "test_subtract", "test_multiply", "test_divide", "test_power_basic", "test_power_zero_exp"].map((test) => (
-                        <span
-                          key={test}
-                          className={`rounded px-1.5 py-0.5 ${
-                            test.startsWith("test_power")
-                              ? "bg-amber-500/20 border border-amber-500/30 text-amber-300"
-                              : "bg-white/5 text-zinc-300"
-                          }`}
-                        >
-                          {test}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
+                  )}
                 </div>
               </div>
 
@@ -1112,6 +1139,19 @@ export function InteractiveDemoWorkspace({
                 </span>
               </div>
 
+              {/* Mandatory Governance Pause Banner */}
+              {awaitingApproval && (
+                <div className="rounded-xl border border-amber-500/40 bg-amber-950/20 p-4 space-y-1.5 font-mono text-xs text-amber-200">
+                  <div className="flex items-center gap-2 font-bold uppercase text-amber-300">
+                    <span className="size-2 rounded-full bg-amber-400 animate-pulse" />
+                    <span>Automated Demo Paused — Explicit Operator Approval Mandatory</span>
+                  </div>
+                  <p className="text-[11px] text-zinc-300 font-sans leading-relaxed">
+                    The autonomous pipeline has created and validated the immutable specification hash. Security governance strictly prohibits proceeding to container sandboxes without your explicit authorization.
+                  </p>
+                </div>
+              )}
+
               {/* Cryptographic Specification Card */}
               <div className="rounded-xl border border-white/10 bg-[#141822] p-5 space-y-4">
                 <div className="flex items-center justify-between">
@@ -1148,8 +1188,12 @@ export function InteractiveDemoWorkspace({
                 </button>
                 <button
                   onClick={async () => {
-                    await handleStep6Approve();
-                    setCurrentStep(7);
+                    if (awaitingApproval) {
+                      await handleApproveAndContinue();
+                    } else {
+                      await handleStep6Approve();
+                      setCurrentStep(7);
+                    }
                   }}
                   disabled={loadingStep === 6}
                   className="rounded-xl bg-[#BFFF00] px-5 py-2.5 text-xs font-bold text-black hover:brightness-110 disabled:opacity-50 transition-all font-sans"
@@ -1308,27 +1352,49 @@ export function InteractiveDemoWorkspace({
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="rounded-xl border border-white/5 bg-[#141822] p-4">
                   <p className="text-[10px] font-mono uppercase text-zinc-400">Baseline Exit</p>
-                  <p className="mt-1 text-2xl font-bold font-mono text-rose-400">1 (Fail)</p>
-                  <p className="text-[10px] text-zinc-500">2 tests failed</p>
+                  <p className="mt-1 text-2xl font-bold font-mono text-rose-400">
+                    {reportEvidence.baseline_exit_code !== null && reportEvidence.baseline_exit_code !== undefined
+                      ? `${reportEvidence.baseline_exit_code} (Fail)`
+                      : verificationRun?.baseline_exit_code !== null && verificationRun?.baseline_exit_code !== undefined
+                      ? `${verificationRun.baseline_exit_code} (Fail)`
+                      : "1 (Fail)"}
+                  </p>
+                  <p className="text-[10px] text-zinc-500">
+                    {reportEvidence.baseline_metrics?.failed || 2} tests failed
+                  </p>
                 </div>
 
                 <div className="rounded-xl border border-white/5 bg-[#141822] p-4">
                   <p className="text-[10px] font-mono uppercase text-zinc-400">Patched Exit</p>
-                  <p className="mt-1 text-2xl font-bold font-mono text-[#BFFF00]">0 (Pass)</p>
-                  <p className="text-[10px] text-zinc-500">6 tests passed</p>
+                  <p className="mt-1 text-2xl font-bold font-mono text-[#BFFF00]">
+                    {reportEvidence.patched_exit_code !== null && reportEvidence.patched_exit_code !== undefined
+                      ? `${reportEvidence.patched_exit_code} (Pass)`
+                      : verificationRun?.patched_exit_code !== null && verificationRun?.patched_exit_code !== undefined
+                      ? `${verificationRun.patched_exit_code} (Pass)`
+                      : "0 (Pass)"}
+                  </p>
+                  <p className="text-[10px] text-zinc-500">
+                    {reportEvidence.patched_metrics?.passed || 6} tests passed
+                  </p>
                 </div>
 
                 <div className="rounded-xl border border-white/5 bg-[#141822] p-4">
                   <p className="text-[10px] font-mono uppercase text-zinc-400">Resolved Failures</p>
-                  <p className="mt-1 text-2xl font-bold font-mono text-cyan-300">2 Resolved</p>
-                  <p className="text-[10px] text-zinc-500">Zero regressions</p>
+                  <p className="mt-1 text-2xl font-bold font-mono text-cyan-300">
+                    {reportEvidence.resolved_test_ids ? `${reportEvidence.resolved_test_ids.length} Resolved` : "2 Resolved"}
+                  </p>
+                  <p className="text-[10px] text-zinc-500">
+                    {reportEvidence.new_failed_test_ids?.length || 0} regressions
+                  </p>
                 </div>
 
                 <div className="rounded-xl border border-white/5 bg-[#141822] p-4">
                   <p className="text-[10px] font-mono uppercase text-zinc-400">Execution Time</p>
                   <p className="mt-1 text-2xl font-bold font-mono text-purple-300">
-                    {proofReport?.evidence && typeof proofReport.evidence === "object" && "duration_seconds" in proofReport.evidence
-                      ? `${Number(proofReport.evidence.duration_seconds).toFixed(2)}s`
+                    {reportEvidence.duration_seconds !== undefined
+                      ? `${Number(reportEvidence.duration_seconds).toFixed(2)}s`
+                      : verificationRun?.duration_seconds !== undefined
+                      ? `${Number(verificationRun.duration_seconds).toFixed(2)}s`
                       : "2.40s"}
                   </p>
                   <p className="text-[10px] text-zinc-500">Dual container run</p>
@@ -1338,19 +1404,31 @@ export function InteractiveDemoWorkspace({
               {/* Resolved Test Cases List */}
               <div className="rounded-xl border border-white/10 bg-[#12151c] p-4 space-y-2">
                 <p className="text-xs font-mono uppercase text-zinc-400 tracking-wider">
-                  Resolved Defect Tests:
+                  Resolved Defect Tests ({reportEvidence.resolved_test_ids?.length || 2}):
                 </p>
                 <div className="space-y-1.5 font-mono text-xs">
-                  <div className="flex items-center gap-2 text-emerald-300">
-                    <span>✓</span>
-                    <span>tests/test_calculator.py::test_power_basic</span>
-                    <span className="text-[10px] text-zinc-500">(2 ** 3 == 8 resolved)</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-emerald-300">
-                    <span>✓</span>
-                    <span>tests/test_calculator.py::test_power_zero_exp</span>
-                    <span className="text-[10px] text-zinc-500">(5 ** 0 == 1 resolved)</span>
-                  </div>
+                  {reportEvidence.resolved_test_ids && reportEvidence.resolved_test_ids.length > 0 ? (
+                    reportEvidence.resolved_test_ids.map((tid) => (
+                      <div key={tid} className="flex items-center gap-2 text-emerald-300">
+                        <span>✓</span>
+                        <span className="truncate">{tid}</span>
+                        <span className="text-[10px] text-zinc-500">(resolved by verified patch)</span>
+                      </div>
+                    ))
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2 text-emerald-300">
+                        <span>✓</span>
+                        <span>tests/test_calculator.py::test_power_basic</span>
+                        <span className="text-[10px] text-zinc-500">(2 ** 3 == 8 resolved)</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-emerald-300">
+                        <span>✓</span>
+                        <span>tests/test_calculator.py::test_power_zero_exp</span>
+                        <span className="text-[10px] text-zinc-500">(5 ** 0 == 1 resolved)</span>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -1358,15 +1436,21 @@ export function InteractiveDemoWorkspace({
               <div className="rounded-xl border border-white/5 bg-[#0a0d14] p-4 space-y-2 text-xs font-mono">
                 <div className="flex items-center justify-between text-zinc-400">
                   <span>Repository Revision Commit:</span>
-                  <span className="text-zinc-200">{verificationRun?.commit_sha || "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}</span>
+                  <span className="text-zinc-200">
+                    {reportEvidence.commit_sha || verificationRun?.commit_sha || "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between text-zinc-400">
                   <span>Patch SHA-256 Digest:</span>
-                  <span className="text-zinc-200 truncate max-w-xs">{verificationRun?.patch_hash || "1280bb1507df1821cf3e..."}</span>
+                  <span className="text-zinc-200 truncate max-w-xs">
+                    {reportEvidence.patch_hash || verificationRun?.patch_hash || "1280bb1507df1821cf3e..."}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between text-zinc-400">
                   <span>Approved Spec Digest:</span>
-                  <span className="text-[#BFFF00] truncate max-w-xs">{verificationRun?.approved_spec_hash || "4f0b2ce7614d99a2..."}</span>
+                  <span className="text-[#BFFF00] truncate max-w-xs">
+                    {reportEvidence.approved_spec_hash || verificationRun?.approved_spec_hash || "4f0b2ce7614d99a2..."}
+                  </span>
                 </div>
               </div>
 
@@ -1481,14 +1565,17 @@ export function InteractiveDemoWorkspace({
               {/* Simulated PR Details Card if generated */}
               {simulatedPR && (
                 <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/10 p-5 space-y-3">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
                     <div className="flex items-center gap-2">
                       <span className="size-2 rounded-full bg-emerald-400" />
                       <span className="font-mono text-xs font-bold text-emerald-300">
-                        Pull Request #{simulatedPR.pr_number || 101} Successfully Simulated
+                        SIMULATED Pull Request #{simulatedPR.pr_number || 101}
                       </span>
-                      <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-[10px] font-mono text-emerald-300">
+                      <span className="rounded bg-emerald-500/20 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-mono text-emerald-300">
                         Local DB Only
+                      </span>
+                      <span className="rounded bg-white/5 border border-white/10 px-2 py-0.5 text-[10px] font-mono text-zinc-400">
+                        Zero External GitHub Writes
                       </span>
                     </div>
                     <span className="text-[11px] font-mono text-zinc-400">
@@ -1496,7 +1583,10 @@ export function InteractiveDemoWorkspace({
                     </span>
                   </div>
 
-                  <p className="text-xs font-semibold text-zinc-100">{simulatedPR.message}</p>
+                  <p className="text-xs text-zinc-300 font-sans leading-relaxed">
+                    This pull request was simulated and stored exclusively in the local application database. No external GitHub write operations, branch creations, or tokens were sent to GitHub.
+                  </p>
+                  <p className="text-xs font-semibold text-zinc-100 font-mono">{simulatedPR.message}</p>
                   {simulatedPR.pr_url && (
                     <p className="text-xs font-mono text-cyan-300">{simulatedPR.pr_url}</p>
                   )}

@@ -29,6 +29,10 @@ from repopilot_api.fixture_registry import (
     DEMO_CALC_FILES,
     DEMO_CALC_FIX_PATCH,
     DEMO_CALC_TEST_CMD,
+    ExecutionPolicyGuard,
+    ModifiedFixtureError,
+    UntrustedRepositoryError,
+    get_default_fixture_registry,
 )
 from repopilot_api.github_pr_service import GitHubPullRequestService
 from repopilot_api.main import app
@@ -506,6 +510,7 @@ def test_demo_prevention_of_external_github_writes(test_session):
     assert pr_resp.pr_number == 101
     assert "https://github.com/repopilot/" in pr_resp.pr_url
     assert pr_resp.status == "created"
+    assert pr_resp.is_simulated is True
 
     # Verify PR record saved in database
     db_pr = db.scalar(
@@ -567,3 +572,204 @@ def test_demo_reset_flow(test_session, monkeypatch):
     assert data_reset["initialized"] is True
     assert data_reset["repository_id"] is not None
     assert data_reset["has_active_run"] is False
+
+
+def test_demo_trust_cannot_be_spoofed_with_matching_name(test_session):
+    """Review Item 1: Imported external repository cannot spoof demo trust via owner/name string."""
+    registry = get_default_fixture_registry()
+
+    # 1. Real server-controlled fixture repo (github_id >= 990_000_000)
+    server_fixture_repo = Repository(
+        id=101,
+        github_id=990000001,
+        owner="repopilot",
+        name="demo-calc-1",
+        full_name="repopilot/demo-calc-1",
+        url="https://github.com/repopilot/demo-calculator",
+        default_branch="main",
+        stars=10,
+    )
+    assert (
+        registry.is_repository_trusted(
+            server_fixture_repo.owner,
+            server_fixture_repo.name,
+            github_id=server_fixture_repo.github_id,
+        )
+        is True
+    )
+
+    # 2. External imported repository with matching owner/name but real external github_id
+    spoofed_imported_repo = Repository(
+        id=102,
+        github_id=12345678,  # Real external GitHub ID (< 990_000_000)
+        owner="repopilot",
+        name="demo-calculator",
+        full_name="repopilot/demo-calculator",
+        url="https://github.com/repopilot/demo-calculator",
+        default_branch="main",
+        stars=10,
+    )
+    # Must NOT be trusted as a demo fixture
+    assert (
+        registry.is_repository_trusted(
+            spoofed_imported_repo.owner,
+            spoofed_imported_repo.name,
+            github_id=spoofed_imported_repo.github_id,
+        )
+        is False
+    )
+
+    # Policy validator must fail closed with UntrustedRepositoryError
+    with pytest.raises(UntrustedRepositoryError) as exc_info:
+        ExecutionPolicyGuard.validate_repository_trust(spoofed_imported_repo, registry)
+    assert "not in the trusted repository allowlist" in str(exc_info.value)
+
+
+def test_demo_content_tampering_rejected_by_policy(test_session):
+    """Review Item 1: Fixture content tampering fails closed even with valid server identity."""
+    db = test_session()
+    user, _ = create_authenticated_user(db)
+    registry = get_default_fixture_registry()
+
+    repo = Repository(
+        github_id=990000000 + user.id,
+        owner="repopilot",
+        name=f"demo-calc-{user.id}",
+        full_name=f"repopilot/demo-calc-{user.id}",
+        url="https://github.com/repopilot/demo-calculator",
+        default_branch="main",
+        stars=42,
+    )
+    db.add(repo)
+    db.flush()
+    db.add(RepositoryAccess(repository_id=repo.id, user_id=user.id, role="owner"))
+
+    patch_hash = "70e3ac85ad38065f147bb8898b564ebec4b4e61d4efc8c9988f83bc8f5945269"
+    spec_hash = compute_spec_hash(
+        DEMO_CALC_COMMIT_SHA, patch_hash, DEMO_CALC_TEST_CMD, DEFAULT_SANDBOX_IMAGE
+    )
+
+    run = VerificationRun(
+        repository_id=repo.id,
+        commit_sha=DEMO_CALC_COMMIT_SHA,
+        issue_number=1,
+        user_id=user.id,
+        status=VerificationJobStatus.APPROVED.value,
+        patch_diff=DEMO_CALC_FIX_PATCH,
+        patch_hash=patch_hash,
+        test_command=json.dumps(DEMO_CALC_TEST_CMD),
+        sandbox_image=DEFAULT_SANDBOX_IMAGE,
+        approved_by_user_id=user.id,
+        approved_spec_hash=spec_hash,
+    )
+    db.add(run)
+    db.commit()
+
+    # Tampered file content (injected code)
+    tampered_files = dict(DEMO_CALC_FILES)
+    tampered_files["src/calculator.py"] = "import os; os.system('echo malicious')\n"
+
+    with pytest.raises(ModifiedFixtureError) as exc_info:
+        ExecutionPolicyGuard.validate_all(
+            db=db,
+            run=run,
+            files=tampered_files,
+            registry=registry,
+        )
+    err = str(exc_info.value)
+    assert "snapshot integrity check failed" in err or "mismatch" in err
+
+
+def test_demo_reset_cancels_active_runs_and_deletes_pull_requests(test_session, monkeypatch):
+    """Review Item 3: Reset cancels active runs and deletes linked PR records without error."""
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+    client = get_client(test_session)
+    db = test_session()
+    user, headers = create_authenticated_user(db)
+
+    # Initialize
+    res_init = client.post("/api/demo/initialize", headers=headers)
+    assert res_init.status_code == 200
+    repo_id = res_init.json()["repository"]["id"]
+
+    # Create active verification run (status: running)
+    patch_hash = "70e3ac85ad38065f147bb8898b564ebec4b4e61d4efc8c9988f83bc8f5945269"
+    spec_hash = compute_spec_hash(
+        DEMO_CALC_COMMIT_SHA, patch_hash, DEMO_CALC_TEST_CMD, DEFAULT_SANDBOX_IMAGE
+    )
+    vrun = VerificationRun(
+        repository_id=repo_id,
+        commit_sha=DEMO_CALC_COMMIT_SHA,
+        issue_number=1,
+        user_id=user.id,
+        status="running",
+        patch_diff=DEMO_CALC_FIX_PATCH,
+        patch_hash=patch_hash,
+        test_command=json.dumps(DEMO_CALC_TEST_CMD),
+        sandbox_image=DEFAULT_SANDBOX_IMAGE,
+        approved_by_user_id=user.id,
+        approved_spec_hash=spec_hash,
+    )
+    db.add(vrun)
+    db.flush()
+
+    # Add simulated pull request record
+    pr_record = GitHubPullRequest(
+        repository_id=repo_id,
+        verification_run_id=vrun.id,
+        created_by_user_id=user.id,
+        issue_number=1,
+        pr_number=101,
+        pr_url="https://github.com/repopilot/demo-calculator/pull/101",
+        branch_name="repopilot/fix-issue-1",
+        base_branch="main",
+        head_sha="mock_sha_" + "a" * 24,
+        patch_hash=patch_hash,
+        title="fix: resolve power bug",
+        body="Automated fix",
+    )
+    db.add(pr_record)
+    db.commit()
+    pr_id = pr_record.id
+    vrun_id = vrun.id
+
+    # Perform Reset
+    res_reset = client.post("/api/demo/reset", headers=headers)
+    assert res_reset.status_code == 200
+    assert res_reset.json()["initialized"] is True
+
+    # Verify old PR and run are deleted
+    db.expire_all()
+    assert db.get(GitHubPullRequest, pr_id) is None
+    assert db.get(VerificationRun, vrun_id) is None
+
+
+def test_demo_concurrent_users_isolated(test_session, monkeypatch):
+    """Review Item 3: Multiple users initializing and resetting demo cannot affect each other."""
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+    client = get_client(test_session)
+    db = test_session()
+
+    user_a, headers_a = create_authenticated_user(db)
+    user_b, headers_b = create_authenticated_user(db)
+
+    # User A initializes
+    res_a = client.post("/api/demo/initialize", headers=headers_a)
+    assert res_a.status_code == 200
+    repo_a_id = res_a.json()["repository"]["id"]
+
+    # User B initializes
+    res_b = client.post("/api/demo/initialize", headers=headers_b)
+    assert res_b.status_code == 200
+    repo_b_id = res_b.json()["repository"]["id"]
+
+    assert repo_a_id != repo_b_id
+
+    # User A resets demo
+    res_a_reset = client.post("/api/demo/reset", headers=headers_a)
+    assert res_a_reset.status_code == 200
+
+    # User B's repository is completely untouched
+    status_b = client.get("/api/demo/status", headers=headers_b)
+    assert status_b.status_code == 200
+    assert status_b.json()["repository_id"] == repo_b_id

@@ -247,7 +247,11 @@ def start_index(
     if repo is None:
         raise HTTPException(404, "Repository not found.")
 
-    is_demo = repo.github_id >= 990000000 or (repo.owner == "repopilot" and "demo" in repo.name)
+    is_demo = (
+        repo.github_id >= 990000000
+        and repo.owner == "repopilot"
+        and ("demo" in repo.name)
+    )
     if is_demo:
         from repopilot_api.fixture_registry import DEMO_CALC_COMMIT_SHA
 
@@ -561,7 +565,11 @@ def analyze_issue(
     if job is None:
         raise HTTPException(409, "Index this repository before analyzing issues.")
 
-    is_demo = repo.github_id >= 990000000 or (repo.owner == "repopilot" and "demo" in repo.name)
+    is_demo = (
+        repo.github_id >= 990000000
+        and repo.owner == "repopilot"
+        and ("demo" in repo.name)
+    )
     if is_demo:
         issue = {
             "number": payload.issue_number,
