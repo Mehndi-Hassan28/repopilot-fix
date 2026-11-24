@@ -177,8 +177,15 @@ def test_model_name_normalization():
     assert normalize_model_name("gpt-4o-mini", other_url) == "gpt-4o-mini"
 
 
+_has_live_gemini = bool(
+    os.getenv("CHAT_API_KEY")
+    and os.getenv("CHAT_BASE_URL")
+    and os.getenv("CHAT_PROVIDER") == "openai_compatible"
+)
+
+
 def test_mock_provider_telemetry_and_three_scenarios():
-    """Verify MockProvider sets telemetry and generates valid fixes for all 3 scenarios."""
+    """Verify MockProvider offline fallback telemetry and fix generation for all 3 scenarios."""
     provider = MockProvider()
 
     # Scenario 1: Calculator power bug
@@ -245,8 +252,8 @@ def test_mock_provider_telemetry_and_three_scenarios():
     assert "min_val <= val <= max_val" in res3.proposed_fix.patches[0].diff
 
 
-def test_line_citation_clamping_and_bounds_validation():
-    """Verify line citations are clamped when exceeding file length, and rejected if invalid."""
+def test_line_citation_strict_bounds_validation():
+    """Verify line citations are strictly validated against file bounds and not silently clamped."""
     indexed_files = {"src/calculator.py": DEMO_CALC_FILES["src/calculator.py"]}
     total_lines = len(indexed_files["src/calculator.py"].splitlines())
     assert total_lines == 21
@@ -264,14 +271,32 @@ def test_line_citation_clamping_and_bounds_validation():
     # Valid patch
     patch = PatchProposal(file_path="src/calculator.py", diff=DEMO_CALC_FIX_PATCH)
 
-    # 1. End line slightly exceeds file length (e.g. 25 on 21-line file) -> clamped to 21
+    # 1. Valid citation within bounds passes
+    citation_valid = FileCitation(
+        path="src/calculator.py",
+        start_line=18,
+        end_line=21,
+        explanation="power function",
+    )
+    analysis_valid = IssueAnalysisResult(
+        summary="Fix power",
+        root_cause_hypothesis="Hypothesis: power bug",
+        relevant_files=[citation_valid],
+        proposed_fix={"explanation": "Fix", "patches": [patch]},
+        confidence="high",
+        is_mock=True,
+    )
+    validate_server_side_analysis(analysis_valid, ev, indexed_files)
+    assert citation_valid.end_line == 21
+
+    # 2. End line exceeding file length (e.g. 25 on 21-line file) -> strictly rejected
     citation_exceed = FileCitation(
         path="src/calculator.py",
         start_line=18,
         end_line=25,
         explanation="power function",
     )
-    analysis = IssueAnalysisResult(
+    analysis_exceed = IssueAnalysisResult(
         summary="Fix power",
         root_cause_hypothesis="Hypothesis: power bug",
         relevant_files=[citation_exceed],
@@ -279,8 +304,8 @@ def test_line_citation_clamping_and_bounds_validation():
         confidence="high",
         is_mock=True,
     )
-    validate_server_side_analysis(analysis, ev, indexed_files)
-    assert citation_exceed.end_line == total_lines
+    with pytest.raises(ValueError, match="end line 25 exceeds file length 21"):
+        validate_server_side_analysis(analysis_exceed, ev, indexed_files)
 
     # 2. Start line exceeds file length -> raises ValueError
     citation_invalid_start = FileCitation(

@@ -87,6 +87,9 @@ def parse_diff_hunks(diff_text: str) -> list[Hunk]:
             # Inside a hunk
             if line.startswith(("+", "-", " ", "\\")):
                 current_hunk_lines.append(line)
+            elif line == "":
+                # Handle blank context lines represented without leading space
+                current_hunk_lines.append(" ")
             else:
                 # Malformed line inside hunk
                 raise PatchSyntaxError(f"Malformed diff line in hunk: {line!r}")
