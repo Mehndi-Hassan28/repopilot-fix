@@ -178,6 +178,127 @@ RANGE_VALIDATOR_FIX_PATCH = (
     "+    return min_val <= val <= max_val\n"
 )
 
+# Multi-File Cross-File Dependency Fixture (Shop Billing & Discounts)
+SHOP_MODELS_SOURCE = (
+    "class Item:\n"
+    "    def __init__(self, sku: str, name: str, price: float):\n"
+    "        self.sku = sku\n"
+    "        self.name = name\n"
+    "        self.price = price\n\n\n"
+    "class Cart:\n"
+    '    def __init__(self, items: list[Item], customer_tier: str = "standard"):\n'
+    "        self.items = items\n"
+    "        self.customer_tier = customer_tier\n"
+)
+
+SHOP_DISCOUNTS_SOURCE = (
+    "from src.shop.models import Cart\n\n"
+    "VIP_DISCOUNT_RATE = 0.20\n\n\n"
+    "def calculate_discount(cart: Cart, subtotal: float) -> float:\n"
+    '    """Calculate tier-based discount amount."""\n'
+    '    if cart.customer_tier == "vip":\n'
+    "        # Bug: returns discount rate instead of discount amount\n"
+    "        return VIP_DISCOUNT_RATE\n"
+    "    return 0.0\n"
+)
+
+SHOP_PRICING_SOURCE = (
+    "from src.shop.models import Cart\n"
+    "from src.shop.discounts import calculate_discount\n\n\n"
+    "def compute_subtotal(cart: Cart) -> float:\n"
+    "    return sum(item.price for item in cart.items)\n\n\n"
+    "def compute_final_price(cart: Cart, tax_rate: float = 0.05) -> float:\n"
+    "    subtotal = compute_subtotal(cart)\n"
+    "    discount = calculate_discount(cart, subtotal)\n"
+    "    taxable = max(0.0, subtotal - discount)\n"
+    "    tax = taxable * tax_rate\n"
+    "    return round(subtotal - discount + tax, 2)\n"
+)
+
+SHOP_RECEIPT_SOURCE = (
+    "from src.shop.models import Cart\n"
+    "from src.shop.pricing import compute_final_price\n\n\n"
+    "def render_receipt(cart: Cart) -> str:\n"
+    "    final = compute_final_price(cart)\n"
+    '    return f"Receipt: {len(cart.items)} items, Total: ${final:.2f}"\n'
+)
+
+SHOP_INVENTORY_SOURCE = (
+    "class InventoryTracker:\n"
+    "    def __init__(self):\n"
+    "        self.stock: dict[str, int] = {}\n\n"
+    "    def check_stock(self, sku: str) -> bool:\n"
+    "        return self.stock.get(sku, 0) > 0\n"
+)
+
+SHOP_SHIPPING_SOURCE = (
+    "def calculate_shipping(weight_kg: float) -> float:\n"
+    "    return max(5.0, weight_kg * 2.5)\n"
+)
+
+TEST_SHOP_PRICING_SOURCE = (
+    "import unittest\n"
+    "from src.shop.models import Item, Cart\n"
+    "from src.shop.pricing import compute_subtotal, compute_final_price\n\n\n"
+    "class TestPricing(unittest.TestCase):\n"
+    "    def test_subtotal(self):\n"
+    '        cart = Cart([Item("A", "Widget", 50.0), Item("B", "Gadget", 50.0)])\n'
+    "        self.assertEqual(compute_subtotal(cart), 100.0)\n\n"
+    "    def test_standard_customer(self):\n"
+    '        cart = Cart([Item("A", "Widget", 100.0)], customer_tier="standard")\n'
+    "        self.assertEqual(compute_final_price(cart), 105.00)\n\n"
+    "    # Bug reproduction test: fails in baseline, passes after fix\n"
+    "    def test_vip_customer_discount(self):\n"
+    '        cart = Cart([Item("A", "Widget", 100.0)], customer_tier="vip")\n'
+    "        self.assertEqual(compute_final_price(cart), 84.00)\n\n\n"
+    "if __name__ == '__main__':\n"
+    "    unittest.main()\n"
+)
+
+TEST_SHOP_SHIPPING_SOURCE = (
+    "import unittest\n"
+    "from src.shop.shipping import calculate_shipping\n\n\n"
+    "class TestShipping(unittest.TestCase):\n"
+    "    def test_minimum_shipping(self):\n"
+    "        self.assertEqual(calculate_shipping(1.0), 5.0)\n\n\n"
+    "if __name__ == '__main__':\n"
+    "    unittest.main()\n"
+)
+
+CROSS_FILE_SHOP_FILES: dict[str, str] = {
+    "src/__init__.py": "",
+    "src/shop/__init__.py": "",
+    "src/shop/models.py": SHOP_MODELS_SOURCE,
+    "src/shop/discounts.py": SHOP_DISCOUNTS_SOURCE,
+    "src/shop/pricing.py": SHOP_PRICING_SOURCE,
+    "src/shop/receipt.py": SHOP_RECEIPT_SOURCE,
+    "src/shop/inventory.py": SHOP_INVENTORY_SOURCE,
+    "src/shop/shipping.py": SHOP_SHIPPING_SOURCE,
+    "tests/test_pricing.py": TEST_SHOP_PRICING_SOURCE,
+    "tests/test_shipping.py": TEST_SHOP_SHIPPING_SOURCE,
+}
+
+CROSS_FILE_SHOP_FIX_PATCH: str = (
+    "--- a/src/shop/discounts.py\n"
+    "+++ b/src/shop/discounts.py\n"
+    "@@ -9,3 +9,3 @@\n"
+    "         # Bug: returns discount rate instead of discount amount\n"
+    "-        return VIP_DISCOUNT_RATE\n"
+    "+        return round(subtotal * VIP_DISCOUNT_RATE, 2)\n"
+    "     return 0.0\n"
+)
+
+CROSS_FILE_SHOP_REGRESSION_PATCH: str = (
+    "--- a/src/shop/discounts.py\n"
+    "+++ b/src/shop/discounts.py\n"
+    "@@ -9,3 +9,3 @@\n"
+    "         # Bug: returns discount rate instead of discount amount\n"
+    "-        return VIP_DISCOUNT_RATE\n"
+    "-    return 0.0\n"
+    "+        return round(subtotal * VIP_DISCOUNT_RATE, 2)\n"
+    "+    return 50.0\n"
+)
+
 
 # ==============================================================================
 # Snapshot Hash Computation
@@ -564,6 +685,29 @@ class TrustedFixtureRegistry:
                     ["python", "-m", "unittest", "discover", "tests"],
                     ["pytest", "tests/test_validator.py"],
                     ["pytest", "-q", "tests/test_validator.py"],
+                    ["pytest", "-q"],
+                    ["pytest"],
+                ],
+                sandbox_image=DEFAULT_SANDBOX_IMAGE,
+                allowed_commit_shas=common_shas,
+            )
+        )
+
+        # 3c. Cross-File Shop Fixture (Scenario 4 / Advanced Code Intelligence)
+        self.register_fixture(
+            TrustedFixture.create(
+                fixture_id="fixture_cross_file_shop",
+                name="Cross-File Shop Billing Fixture",
+                description="Cross-file pricing and discount bug across src/shop",
+                repository_owner="*",
+                repository_name="*",
+                commit_sha=sample_sha,
+                files=CROSS_FILE_SHOP_FILES,
+                approved_test_commands=[
+                    ["python", "-m", "unittest", "tests/test_pricing.py"],
+                    ["python", "-m", "unittest", "discover", "tests"],
+                    ["pytest", "tests/test_pricing.py"],
+                    ["pytest", "-q", "tests/test_pricing.py"],
                     ["pytest", "-q"],
                     ["pytest"],
                 ],

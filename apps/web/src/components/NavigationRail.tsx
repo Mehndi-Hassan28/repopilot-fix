@@ -13,6 +13,7 @@ import {
   SettingsIcon,
   GithubIcon,
   FlaskConicalIcon,
+  NetworkIcon,
 } from "./Icons";
 
 interface NavigationRailProps {
@@ -45,6 +46,11 @@ const NAV_ITEMS: NavItem[] = [
     id: "repos",
     label: "Repositories",
     icon: () => <FolderGitIcon className="size-5" />,
+  },
+  {
+    id: "graph",
+    label: "Code Intelligence",
+    icon: () => <NetworkIcon className="size-5" />,
   },
   {
     id: "chat",

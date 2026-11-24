@@ -152,12 +152,85 @@ export type WorkspaceView =
   | "overview"
   | "demo"
   | "repos"
+  | "graph"
   | "chat"
   | "issues"
   | "patch"
   | "verification"
   | "activity"
   | "settings";
+
+export type DependencyNode = {
+  path: string;
+  language: string;
+  functions: string[];
+  classes: string[];
+  imports: string[];
+  exports: string[];
+  calls: string[];
+  outgoing_files: string[];
+  incoming_files: string[];
+  has_circular_dependency: boolean;
+};
+
+export type DependencyEdge = {
+  source: string;
+  target: string;
+  kind: "import" | "call" | "symbol_reference" | string;
+  symbol: string;
+  status: "resolved" | "inferred" | "unresolved";
+  confidence: number;
+};
+
+export type DependencySummary = {
+  total_files: number;
+  total_symbols: number;
+  total_edges: number;
+  resolved_edges: number;
+  inferred_edges: number;
+  unresolved_edges: number;
+  has_circular_dependency: boolean;
+  circular_chains: string[][];
+};
+
+export type DependencyGraphData = {
+  repository_id: number;
+  commit_sha: string;
+  summary: DependencySummary;
+  nodes: DependencyNode[];
+  edges: DependencyEdge[];
+};
+
+export type SymbolItem = {
+  name: string;
+  qualified_name: string;
+  kind: "function" | "class" | "method";
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  docstring?: string | null;
+  incoming_calls: string[];
+  outgoing_calls: string[];
+};
+
+export type ImpactRelation = {
+  target: string;
+  relation: "depends_on" | "imported_by" | "calls" | "tested_by";
+  confidence: number;
+  status: "resolved" | "inferred";
+  evidence_lines: number[];
+  explanation: string;
+};
+
+export type ImpactAnalysisData = {
+  repository_id: number;
+  commit_sha: string;
+  likely_root_cause_files: string[];
+  affected_downstream_files: string[];
+  suggested_regression_tests: string[];
+  relations: ImpactRelation[];
+  disclaimer: string;
+};
 
 export type DemoIssue = {
   number: number;

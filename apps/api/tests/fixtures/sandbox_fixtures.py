@@ -1,5 +1,11 @@
 """Trusted, minimal Python test fixtures for sandbox execution verification."""
 
+from repopilot_api.fixture_registry import (
+    CROSS_FILE_SHOP_FILES,
+    CROSS_FILE_SHOP_FIX_PATCH,
+    CROSS_FILE_SHOP_REGRESSION_PATCH,
+)
+
 PASSING_FIXTURE_FILES: dict[str, str] = {
     "calc.py": ('def add(a: int, b: int) -> int:\n    """Add two numbers."""\n    return a + b\n'),
     "test_calc.py": (
@@ -231,7 +237,6 @@ OUTPUT_FLOOD_PROBE_FILES: dict[str, str] = {
     )
 }
 
-# Range validator fixture (Scenario 3)
 RANGE_VALIDATOR_FIXTURE_FILES: dict[str, str] = {
     "src/validator.py": (
         "def is_in_range(val: int, min_val: int, max_val: int) -> bool:\n"
@@ -284,3 +289,20 @@ RANGE_VALIDATOR_REGRESSION_PATCH: str = (
     "-    return val > 0\n"
     "+    return val < 0\n"
 )
+
+__all__ = [
+    "CROSS_FILE_SHOP_FILES",
+    "CROSS_FILE_SHOP_FIX_PATCH",
+    "CROSS_FILE_SHOP_REGRESSION_PATCH",
+    "PASSING_FIXTURE_FILES",
+    "FAILING_FIXTURE_FILES",
+    "CALC_FIX_PATCH",
+    "DEMO_FIXTURE_FILES",
+    "DEMO_CALC_FIX_PATCH",
+    "DEMO_CALC_REGRESSION_PATCH",
+    "DEMO_CALC_FAILED_PATCH",
+    "DEMO_CALC_SYNTAX_ERROR_PATCH",
+    "RANGE_VALIDATOR_FIXTURE_FILES",
+    "RANGE_VALIDATOR_FIX_PATCH",
+    "RANGE_VALIDATOR_REGRESSION_PATCH",
+]
