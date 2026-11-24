@@ -583,3 +583,94 @@ class PullRequestStatusResponse(BaseModel):
     branch_name: str | None = None
     base_branch: str | None = None
     created_at: str | None = None
+
+
+# ==============================================================================
+# Advanced Code Intelligence & Dependency Graph Schemas
+# ==============================================================================
+
+
+class DependencyNodeSchema(BaseModel):
+    path: str
+    language: str
+    functions: list[str] = []
+    classes: list[str] = []
+    imports: list[str] = []
+    exports: list[str] = []
+    calls: list[str] = []
+    outgoing_files: list[str] = []
+    incoming_files: list[str] = []
+    has_circular_dependency: bool = False
+
+
+class DependencyEdgeSchema(BaseModel):
+    source: str
+    target: str
+    kind: str  # "import" | "call" | "symbol_reference"
+    symbol: str = ""
+    status: str = "resolved"  # "resolved" | "inferred" | "unresolved"
+    confidence: float = 1.0
+
+
+class DependencySummarySchema(BaseModel):
+    total_files: int
+    total_symbols: int
+    total_edges: int
+    resolved_edges: int
+    inferred_edges: int
+    unresolved_edges: int
+    has_circular_dependency: bool
+    circular_chains: list[list[str]] = []
+
+
+class DependencyGraphResponse(BaseModel):
+    repository_id: int
+    commit_sha: str
+    summary: DependencySummarySchema
+    nodes: list[DependencyNodeSchema]
+    edges: list[DependencyEdgeSchema]
+
+
+class SymbolReferenceSchema(BaseModel):
+    name: str
+    qualified_name: str
+    kind: str  # "function" | "class" | "method"
+    file_path: str
+    start_line: int
+    end_line: int
+    docstring: str | None = None
+    incoming_calls: list[str] = []
+    outgoing_calls: list[str] = []
+
+
+class SymbolsListResponse(BaseModel):
+    repository_id: int
+    commit_sha: str
+    total_symbols: int
+    symbols: list[SymbolReferenceSchema]
+
+
+class ImpactAnalysisRequest(BaseModel):
+    issue_title: str
+    issue_body: str = ""
+    target_file: str | None = None
+    target_symbol: str | None = None
+
+
+class ImpactRelationSchema(BaseModel):
+    target: str
+    relation: str  # "depends_on" | "imported_by" | "calls" | "tested_by"
+    confidence: float
+    status: str  # "resolved" | "inferred"
+    evidence_lines: list[int] = []
+    explanation: str = ""
+
+
+class ImpactAnalysisResponse(BaseModel):
+    repository_id: int
+    commit_sha: str
+    likely_root_cause_files: list[str]
+    affected_downstream_files: list[str]
+    suggested_regression_tests: list[str]
+    relations: list[ImpactRelationSchema]
+    disclaimer: str

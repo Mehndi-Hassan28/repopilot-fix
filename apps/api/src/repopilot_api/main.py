@@ -28,10 +28,14 @@ from repopilot_api.oauth import router as auth_router
 from repopilot_api.schemas import (
     ChatQuestion,
     ChatSessionCreate,
+    DependencyGraphResponse,
+    ImpactAnalysisRequest,
+    ImpactAnalysisResponse,
     IssueAnalysisRead,
     IssueAnalyzeRequest,
     RepositoryImport,
     RepositoryRead,
+    SymbolsListResponse,
 )
 from repopilot_api.security import AuthContext, configured_origins, get_current_auth, require_csrf
 from repopilot_api.verification_router import router as verification_router
@@ -440,6 +444,230 @@ def search_index(
         .filter(IndexedFile.job_id == job.id, CodeSymbol.name.ilike(f"%{q}%"))
         .limit(100)
     ]
+
+
+@app.get(
+    "/api/repositories/{repository_id}/dependency-graph",
+    response_model=DependencyGraphResponse,
+)
+def get_repository_dependency_graph(
+    repository_id: int,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    _require_repository_access(db, repository_id, auth.user.id)
+    job = db.scalar(
+        select(IndexingJob)
+        .where(
+            IndexingJob.repository_id == repository_id,
+            IndexingJob.status == "completed",
+        )
+        .order_by(IndexingJob.id.desc())
+    )
+    if job is None:
+        raise HTTPException(404, "No completed indexing job found for this repository.")
+
+    files = db.scalars(select(IndexedFile).where(IndexedFile.job_id == job.id)).all()
+    file_dict = {f.path: f.content for f in files}
+
+    from repopilot_api.dependency_graph import DependencyGraphBuilder
+
+    builder = DependencyGraphBuilder(file_dict)
+    graph = builder.build()
+
+    nodes = []
+    for path, n in graph.nodes.items():
+        nodes.append(
+            {
+                "path": n["path"],
+                "language": n["language"],
+                "functions": [s["name"] for s in n["symbols"] if s["kind"] == "function"],
+                "classes": [s["name"] for s in n["symbols"] if s["kind"] == "class"],
+                "imports": [i["imported_name"] for i in n["imports"]],
+                "exports": [s["name"] for s in n["symbols"]],
+                "calls": n["outgoing_files"],
+                "outgoing_files": n.get("outgoing_files", []),
+                "incoming_files": n.get("incoming_files", []),
+                "has_circular_dependency": n.get("has_circular_dependency", False),
+            }
+        )
+
+    edges = []
+    for e in graph.edges:
+        rel = e.get("relationship", "resolved")
+        conf = 1.0 if rel == "resolved" else (0.8 if rel == "inferred" else 0.5)
+        edges.append(
+            {
+                "source": e["source"],
+                "target": e["target"],
+                "kind": e["kind"],
+                "symbol": e.get("target_symbol") or e.get("source_symbol") or "",
+                "status": rel,
+                "confidence": conf,
+            }
+        )
+
+    resolved_count = sum(1 for ed in edges if ed["status"] == "resolved")
+    inferred_count = sum(1 for ed in edges if ed["status"] == "inferred")
+    unresolved_count = sum(1 for ed in edges if ed["status"] == "unresolved")
+    total_symbols = sum(len(n["symbols"]) for n in graph.nodes.values())
+
+    return {
+        "repository_id": repository_id,
+        "commit_sha": job.commit_sha,
+        "summary": {
+            "total_files": graph.file_count,
+            "total_symbols": total_symbols,
+            "total_edges": graph.edge_count,
+            "resolved_edges": resolved_count,
+            "inferred_edges": inferred_count,
+            "unresolved_edges": unresolved_count,
+            "has_circular_dependency": graph.cycle_count > 0,
+            "circular_chains": graph.cycles,
+        },
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+@app.get(
+    "/api/repositories/{repository_id}/symbols",
+    response_model=SymbolsListResponse,
+)
+def get_repository_symbols(
+    repository_id: int,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(get_current_auth),
+):
+    _require_repository_access(db, repository_id, auth.user.id)
+    job = db.scalar(
+        select(IndexingJob)
+        .where(
+            IndexingJob.repository_id == repository_id,
+            IndexingJob.status == "completed",
+        )
+        .order_by(IndexingJob.id.desc())
+    )
+    if job is None:
+        raise HTTPException(404, "No completed indexing job found for this repository.")
+
+    files = db.scalars(select(IndexedFile).where(IndexedFile.job_id == job.id)).all()
+    file_dict = {f.path: f.content for f in files}
+
+    from repopilot_api.dependency_graph import DependencyGraphBuilder
+
+    builder = DependencyGraphBuilder(file_dict)
+    graph = builder.build()
+
+    symbols = []
+    for name, sym_list in graph.symbol_index.items():
+        for s in sym_list:
+            incoming = [
+                e["source"]
+                for e in graph.edges
+                if e.get("target_symbol") == name or e["target"] == s["file_path"]
+            ]
+            outgoing = [e["target"] for e in graph.edges if e["source"] == s["file_path"]]
+            symbols.append(
+                {
+                    "name": s["name"],
+                    "qualified_name": (
+                        f"{s['parent_class']}.{s['name']}" if s.get("parent_class") else s["name"]
+                    ),
+                    "kind": s["kind"],
+                    "file_path": s["file_path"],
+                    "start_line": s["line"],
+                    "end_line": s["end_line"],
+                    "docstring": s.get("docstring"),
+                    "incoming_calls": sorted(set(incoming)),
+                    "outgoing_calls": sorted(set(outgoing)),
+                }
+            )
+
+    symbols.sort(key=lambda item: (item["file_path"], item["start_line"]))
+    return {
+        "repository_id": repository_id,
+        "commit_sha": job.commit_sha,
+        "total_symbols": len(symbols),
+        "symbols": symbols,
+    }
+
+
+@app.post(
+    "/api/repositories/{repository_id}/impact-analysis",
+    response_model=ImpactAnalysisResponse,
+)
+def analyze_repository_bug_impact(
+    repository_id: int,
+    payload: ImpactAnalysisRequest,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(require_csrf),
+):
+    _require_repository_access(db, repository_id, auth.user.id)
+    job = db.scalar(
+        select(IndexingJob)
+        .where(
+            IndexingJob.repository_id == repository_id,
+            IndexingJob.status == "completed",
+        )
+        .order_by(IndexingJob.id.desc())
+    )
+    if job is None:
+        raise HTTPException(404, "No completed indexing job found for this repository.")
+
+    files = db.scalars(select(IndexedFile).where(IndexedFile.job_id == job.id)).all()
+    file_dict = {f.path: f.content for f in files}
+
+    from repopilot_api.dependency_graph import DependencyGraphBuilder
+
+    builder = DependencyGraphBuilder(file_dict)
+    query_text = f"{payload.issue_title} {payload.issue_body}".strip()
+    target_files = [payload.target_file] if payload.target_file else None
+    target_symbols = [payload.target_symbol] if payload.target_symbol else None
+
+    impact = builder.analyze_bug_impact(
+        query=query_text,
+        target_files=target_files,
+        target_symbols=target_symbols,
+    )
+
+    relations = []
+    for dep in impact.affected_dependencies:
+        relations.append(
+            {
+                "target": dep["file_path"],
+                "relation": "tested_by" if dep.get("is_test") else "imported_by",
+                "confidence": 0.9 if dep.get("relationship") == "resolved" else 0.7,
+                "status": dep.get("relationship", "inferred"),
+                "evidence_lines": [],
+                "explanation": dep.get("evidence")
+                or f"Directly affected by {dep.get('affected_by')}",
+            }
+        )
+
+    for test in impact.suggested_tests:
+        relations.append(
+            {
+                "target": test["test_file"],
+                "relation": "tested_by",
+                "confidence": 0.95 if test.get("relevance") == "high" else 0.75,
+                "status": "resolved",
+                "evidence_lines": [],
+                "explanation": test.get("reason", ""),
+            }
+        )
+
+    return {
+        "repository_id": repository_id,
+        "commit_sha": job.commit_sha,
+        "likely_root_cause_files": [c["file_path"] for c in impact.root_cause_candidates],
+        "affected_downstream_files": [
+            d["file_path"] for d in impact.affected_dependencies if not d.get("is_test")
+        ],
+        "suggested_regression_tests": [t["test_file"] for t in impact.suggested_tests],
+        "relations": relations,
+        "disclaimer": impact.disclaimer,
+    }
 
 
 def _session_read(session: ChatSession):

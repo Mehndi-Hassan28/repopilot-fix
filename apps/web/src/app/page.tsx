@@ -23,6 +23,7 @@ import { ExplorerPanel } from "../components/ExplorerPanel";
 import { CodeViewer } from "../components/CodeViewer";
 import { DashboardOverview } from "../components/DashboardOverview";
 import { InteractiveDemoWorkspace } from "../components/InteractiveDemoWorkspace";
+import { DependencyGraphWorkspace } from "../components/DependencyGraphWorkspace";
 import { IssueWorkspace } from "../components/IssueWorkspace";
 import { PatchReviewWorkspace } from "../components/PatchReviewWorkspace";
 import { VerificationWorkspace } from "../components/VerificationWorkspace";
@@ -656,6 +657,23 @@ function MainWorkspace() {
                   }}
                   onSelectView={setCurrentView}
                   onAnalysisLoaded={(result) => setAnalysisResult(result)}
+                />
+              )}
+
+              {currentView === "graph" && (
+                <DependencyGraphWorkspace
+                  repositories={repositories}
+                  activeRepo={activeRepo}
+                  onSelectRepo={setActiveRepo}
+                  csrfToken={csrfToken.current}
+                  onOpenFile={(path, line) => {
+                    if (line) {
+                      handleOpenCitation(path, line, line);
+                    } else {
+                      handleOpenFile(path);
+                    }
+                    setCurrentView("repos");
+                  }}
                 />
               )}
 

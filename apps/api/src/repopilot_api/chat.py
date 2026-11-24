@@ -327,7 +327,7 @@ def _chunk_supports_operations(content: str, operations: list[set[str]]) -> bool
 
 
 def retrieve(db: Session, repository_id: int, commit_sha: str, query: str) -> list[Evidence]:
-    """Rank bounded line windows by weighted word matches and source-path relevance."""
+    """Rank bounded line windows by weighted word matches, AST symbols, and dependency graph."""
     terms = set(_search_tokens(query)) - STOP_WORDS
     if not terms:
         return []
@@ -359,6 +359,13 @@ def retrieve(db: Session, repository_id: int, commit_sha: str, query: str) -> li
                 missing_entities.append(entity)
         if missing_entities:
             return []
+
+    from repopilot_api.dependency_graph import DependencyGraphBuilder
+
+    file_dict = {f.path: f.content for f in files}
+    builder = DependencyGraphBuilder(file_dict)
+    builder.build()
+
     documents = []
     document_frequency = {term: 0 for term in terms}
     total_tokens = 0
@@ -382,9 +389,20 @@ def retrieve(db: Session, repository_id: int, commit_sha: str, query: str) -> li
         for term in terms
     }
     average_length = total_tokens / len(files) if files else 0
-    evidence: list[Evidence] = []
+
+    issue_intent = bool(
+        terms.intersection(
+            {"bug", "issue", "fail", "failed", "failing", "error", "broken", "fix", "incorrect"}
+        )
+    )
+    test_intent = any(term.startswith("test") for term in terms)
+
+    evidence_candidates: list[dict] = []
     for file, lines, tokenized_lines, content_tokens, path_tokens in documents:
         matching = []
+        file_symbols = builder.symbols_by_file.get(file.path, [])
+        symbol_line_map = {s.line: s for s in file_symbols}
+
         for number, tokens in enumerate(tokenized_lines, 1):
             score = sum(weights[term] for term in terms.intersection(tokens))
             if score:
@@ -395,6 +413,9 @@ def retrieve(db: Session, repository_id: int, commit_sha: str, query: str) -> li
                     re.match(r"\s*(?:async\s+)?function\b", lines[number - 1])
                 )
                 if decl_m and decl_m.group(1).lower() in terms:
+                    score += 5.0
+                elif number in symbol_line_map and symbol_line_map[number].name.lower() in terms:
+                    declaration = True
                     score += 5.0
                 elif declaration:
                     score += 1.5
@@ -417,22 +438,62 @@ def retrieve(db: Session, repository_id: int, commit_sha: str, query: str) -> li
         score += 1.5 * sum(weights[term] for term in terms.intersection(basename_tokens))
         path_parts = file.path.lower().split("/")
         test_file = "tests" in path_parts or path_parts[-1].startswith("test_")
-        test_intent = any(term.startswith("test") for term in terms)
-        if test_file and not test_intent:
+        if test_file and not test_intent and not issue_intent:
             score *= 0.55
         elif not test_file and test_intent:
             score *= 0.65
         if "migrations" in path_parts and not terms.intersection({"migration", "migrations"}):
             score *= 0.75
-        if is_decl:
+
+        # Check if matched line belongs to an AST symbol definition
+        matched_sym = symbol_line_map.get(line_number)
+        if matched_sym and is_decl:
+            start = max(1, matched_sym.line - 1)
+            end = min(len(lines), max(matched_sym.end_line + 2, matched_sym.line + 20))
+        elif is_decl:
             start = max(1, line_number - 1)
             end = min(len(lines), line_number + 20)
         else:
             start, end = max(1, line_number - 5), min(len(lines), line_number + 5)
+
         content = "\n".join(lines[start - 1 : end])
         if _chunk_supports_operations(content, requested_operations):
-            evidence.append(Evidence(file.path, start, end, content, score))
+            evidence_candidates.append(
+                {
+                    "file": file.path,
+                    "start": start,
+                    "end": end,
+                    "content": content,
+                    "score": score,
+                    "is_test": test_file,
+                }
+            )
+
+    # Dependency propagation and related test boost
+    if evidence_candidates:
+        top_source_files = {
+            c["file"] for c in evidence_candidates if not c["is_test"] and c["score"] >= 2.0
+        }
+        max_source_score = max(
+            (c["score"] for c in evidence_candidates if not c["is_test"]), default=0.0
+        )
+        for cand in evidence_candidates:
+            if cand["is_test"] and (issue_intent or test_intent):
+                # Check if this test imports or depends on any top suspect file
+                test_deps = set(builder.get_dependencies(cand["file"]))
+                if test_deps.intersection(top_source_files):
+                    boost = 1.5
+                    if max_source_score > 0:
+                        cand["score"] = min(cand["score"] + boost, max_source_score - 0.05)
+                    else:
+                        cand["score"] += boost
+
+    evidence: list[Evidence] = [
+        Evidence(c["file"], c["start"], c["end"], c["content"], c["score"])
+        for c in evidence_candidates
+    ]
     return sorted(evidence, key=lambda item: (-item.score, item.path))[:MAX_RESULTS]
+
 
 
 def classify_intent(query: str, history: list[dict[str, str]] | None = None) -> ChatMode:
@@ -744,7 +805,14 @@ class MockProvider(Provider):
 
         # Check for Scenario 1: deterministic demo calculator power bug
         calc_ev = next(
-            (e for e in evidence if "calculator.py" in e.path and "power" in e.content),
+            (
+                e
+                for e in evidence
+                if "calculator.py" in e.path and "test" not in e.path and "power" in e.content
+            ),
+            None,
+        ) or next(
+            (e for e in evidence if "calculator.py" in e.path and "test" not in e.path),
             None,
         )
         if calc_ev is not None or "power" in issue_text:
