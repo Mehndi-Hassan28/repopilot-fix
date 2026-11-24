@@ -35,6 +35,7 @@ export type ProofEvidence = {
   commit_sha: string;
   issue_number: number;
   patch_hash: string;
+  approved_spec_hash?: string | null;
   sandbox_image: string;
   test_command: string[];
   baseline_exit_code: number | null;

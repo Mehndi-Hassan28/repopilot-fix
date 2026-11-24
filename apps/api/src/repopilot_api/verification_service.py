@@ -957,6 +957,7 @@ class VerificationJobManager:
             patches=patches,
             hypothesis=run.hypothesis,
             user_id=run.user_id,
+            approved_spec_hash=run.approved_spec_hash,
         )
 
         engine = ProofOfFixEngine(

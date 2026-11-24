@@ -141,6 +141,22 @@ export function IssueWorkspace({
               </div>
               <div className="flex items-center gap-2">
                 <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-mono uppercase font-bold border ${
+                    analysisResult.is_mock ?? analysisResult.analysis.is_mock
+                      ? "bg-purple-950/40 border-purple-500/40 text-purple-300"
+                      : "bg-emerald-950/40 border-emerald-500/40 text-emerald-300"
+                  }`}
+                  title={
+                    analysisResult.is_mock ?? analysisResult.analysis.is_mock
+                      ? "Generated via deterministic mock provider"
+                      : "Generated via live LLM provider"
+                  }
+                >
+                  {analysisResult.is_mock ?? analysisResult.analysis.is_mock
+                    ? "Mock AI Execution"
+                    : "Live AI Model"}
+                </span>
+                <span
                   className={`rounded-full px-2.5 py-0.5 text-[11px] font-mono uppercase font-bold border ${
                     analysisResult.analysis.confidence === "high"
                       ? "bg-lime-950/40 border-lime-500/40 text-lime-400"

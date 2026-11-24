@@ -268,9 +268,77 @@ class TrustedFixtureRegistry:
         self.register_trusted_repository("local", "sandbox-fixture")
         self.register_trusted_repository("trusted", "benchmark")
         self.register_trusted_repository("repopilot", "sandbox-fixtures")
+        self.register_trusted_repository("repopilot", "demo-repo")
+        self.register_trusted_repository("test-owner", "test-repo")
 
         sample_sha = "a" * 40
         common_shas = {sample_sha, "0" * 40, "1" * 40, "f" * 40}
+
+        # 0. Deterministic Demo Repository Fixture (with regression tests and reproducible bug)
+        demo_calc_files = {
+            "src/calculator.py": (
+                "def add(a: int, b: int) -> int:\n"
+                '    """Return sum of a and b."""\n'
+                "    return a + b\n\n\n"
+                "def multiply(a: int, b: int) -> int:\n"
+                '    """Return product of a and b."""\n'
+                "    return a * b\n\n\n"
+                "def divide(a: int, b: int) -> float:\n"
+                '    """Return quotient of a and b."""\n'
+                "    if b == 0:\n"
+                '        raise ValueError("Division by zero")\n'
+                "    return a / b\n\n\n"
+                "def power(base: int, exponent: int) -> int:\n"
+                '    """Return base raised to exponent."""\n'
+                "    # Bug: returns multiplication instead of exponentiation\n"
+                "    return base * exponent\n"
+            ),
+            "tests/test_calculator.py": (
+                "import unittest\n"
+                "from src.calculator import add, divide, multiply, power\n\n\n"
+                "class TestCalculator(unittest.TestCase):\n"
+                "    # Regression tests (must pass in baseline and continue passing)\n"
+                "    def test_add(self):\n"
+                "        self.assertEqual(add(2, 3), 5)\n"
+                "        self.assertEqual(add(-1, 1), 0)\n\n"
+                "    def test_multiply(self):\n"
+                "        self.assertEqual(multiply(3, 4), 12)\n"
+                "        self.assertEqual(multiply(0, 5), 0)\n\n"
+                "    def test_divide_normal(self):\n"
+                "        self.assertEqual(divide(10, 2), 5.0)\n\n"
+                "    def test_divide_by_zero(self):\n"
+                "        with self.assertRaises(ValueError):\n"
+                "            divide(10, 0)\n\n"
+                "    # Bug reproduction tests (fail in baseline, pass after fix)\n"
+                "    def test_power_positive(self):\n"
+                "        self.assertEqual(power(2, 3), 8)\n\n"
+                "    def test_power_zero(self):\n"
+                "        self.assertEqual(power(5, 0), 1)\n\n\n"
+                "if __name__ == '__main__':\n"
+                "    unittest.main()\n"
+            ),
+        }
+        self.register_fixture(
+            TrustedFixture.create(
+                fixture_id="fixture_deterministic_demo",
+                name="Deterministic Demo Calculator Fixture",
+                description=(
+                    "Modular calculator with regression tests and power bug in src/calculator.py"
+                ),
+                repository_owner="*",
+                repository_name="*",
+                commit_sha=sample_sha,
+                files=demo_calc_files,
+                approved_test_commands=[
+                    ["python", "-m", "unittest", "tests/test_calculator.py"],
+                    ["python", "-m", "unittest", "discover", "tests"],
+                    ["pytest", "tests/test_calculator.py"],
+                    ["pytest"],
+                ],
+                sandbox_image=DEFAULT_SANDBOX_IMAGE,
+                allowed_commit_shas=common_shas,
+            )
+        )
 
         # 1. Package-style Calc Fixture (used in test_verification_api.py)
         calc_pkg_files = {
@@ -752,10 +820,12 @@ class ExecutionPolicyGuard:
         resolved_files = files
         if resolved_files is None:
             job = db.scalar(
-                select(IndexingJob).where(
+                select(IndexingJob)
+                .where(
                     IndexingJob.repository_id == run.repository_id,
                     IndexingJob.commit_sha == run.commit_sha,
                 )
+                .order_by(IndexingJob.id.desc())
             )
             if not job:
                 raise PolicyMetadataError(
