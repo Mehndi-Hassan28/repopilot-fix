@@ -534,39 +534,60 @@ export function DependencyGraphWorkspace({
               </div>
 
               <div className="space-y-1.5">
-                {filteredSymbols.map((sym, idx) => (
-                  <div
-                    key={`${sym.file_path}-${sym.name}-${idx}`}
-                    onClick={() => {
-                      setSelectedPath(sym.file_path);
-                      onOpenFile(sym.file_path, sym.start_line);
-                    }}
-                    className="flex items-center justify-between p-2.5 rounded-lg border border-white/5 bg-[#0b0e16] hover:border-cyan-400/40 cursor-pointer transition-colors"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold uppercase ${
-                        sym.kind === "class"
-                          ? "bg-amber-950/40 text-amber-300 border border-amber-500/30"
-                          : "bg-cyan-950/40 text-cyan-300 border border-cyan-500/30"
-                      }`}>
-                        {sym.kind}
-                      </span>
-                      <span className="font-mono text-xs font-semibold text-white">
-                        {sym.qualified_name}
-                      </span>
-                      {sym.docstring && (
-                        <span className="text-xs text-zinc-400 truncate max-w-xs font-sans">
-                          — {sym.docstring.split("\n")[0]}
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-3 text-[11px] font-mono text-zinc-400">
-                      <span>{sym.file_path}:{sym.start_line}</span>
-                      <span className="text-cyan-400">→</span>
-                    </div>
+                {loading ? (
+                  <div className="h-64 flex items-center justify-center text-zinc-400 font-mono text-xs">
+                    <span className="size-2 rounded-full bg-[#00F0FF] animate-ping mr-2" />
+                    Loading AST symbols…
                   </div>
-                ))}
+                ) : error ? (
+                  <div className="h-64 flex items-center justify-center text-rose-400 font-mono text-xs">
+                    {error}
+                  </div>
+                ) : filteredSymbols.length === 0 ? (
+                  <div className="h-64 flex items-center justify-center text-zinc-500 font-mono text-xs">
+                    {symbols.length === 0
+                      ? "No AST symbols found for this repository."
+                      : "No symbols match query."}
+                  </div>
+                ) : (
+                  filteredSymbols.map((sym, idx) => (
+                    <div
+                      key={`${sym.file_path}-${sym.name}-${idx}`}
+                      onClick={() => {
+                        setSelectedPath(sym.file_path);
+                        onOpenFile(sym.file_path, sym.start_line);
+                      }}
+                      className="flex items-center justify-between p-2.5 rounded-lg border border-white/5 bg-[#0b0e16] hover:border-cyan-400/40 cursor-pointer transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold uppercase ${
+                            sym.kind === "class"
+                              ? "bg-amber-950/40 text-amber-300 border border-amber-500/30"
+                              : "bg-cyan-950/40 text-cyan-300 border border-cyan-500/30"
+                          }`}
+                        >
+                          {sym.kind}
+                        </span>
+                        <span className="font-mono text-xs font-semibold text-white">
+                          {sym.qualified_name}
+                        </span>
+                        {sym.docstring && (
+                          <span className="text-xs text-zinc-400 truncate max-w-xs font-sans">
+                            — {sym.docstring.split("\n")[0]}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-3 text-[11px] font-mono text-zinc-400">
+                        <span>
+                          {sym.file_path}:{sym.start_line}
+                        </span>
+                        <span className="text-cyan-400">→</span>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}
@@ -698,6 +719,13 @@ export function DependencyGraphWorkspace({
                       ))}
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* Empty state before impact analysis is run */}
+              {!impactResult && !analyzingImpact && !impactError && (
+                <div className="rounded-xl border border-white/5 bg-white/[0.01] p-8 text-center text-zinc-500 font-mono text-xs">
+                  Enter an issue title or select a component to inspect blast radius and identify regression tests.
                 </div>
               )}
             </div>

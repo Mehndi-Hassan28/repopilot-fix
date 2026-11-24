@@ -68,7 +68,7 @@ Retrieval was evaluated against the standard repository benchmark suite (41 qual
 | :--- | :--- | :--- | :--- |
 | **Standard Quality Benchmark (41 Cases)** | 41 / 41 Passed (100%) | 41 / 41 Passed (100%) | Maintained 100% precision with zero regression |
 | **Exact Symbol Resolution Window** | Heuristic window around line matches (`line - 5` to `line + 5`) | Centered on AST symbol declaration (`start_line - 1` to `end_line + 2`) | Snippets fully enclose target function/class definitions |
-| **Issue / Bug Query Test Relevance** | Test files penalized unconditionally (`score * 0.55`) | Test files importing suspect components boosted (`score + 2.5`) on issue intent | Relevant regression tests surfaced in top 5 evidence |
+| **Issue / Bug Query Test Relevance** | Test files penalized unconditionally (`score * 0.55`) | Test files importing suspect components boosted (bounded `score + 1.5` up to `max_source_score - 0.05`) on issue intent | Relevant regression tests surfaced in top 5 evidence |
 | **Shop Fixture Root Cause Identification** | `src/shop/discounts.py` ranked among several mentions | `src/shop/discounts.py` ranked #1 with `calculate_discount` declaration | +5.0 declaration bonus on exact symbol match |
 
 ---
@@ -113,10 +113,14 @@ Real container verification was executed using `DockerSandboxRunner` with image 
    - Outcome: **FAILED** (Exit code 1, `AssertionError` in `test_standard_customer`).
    - Confirms that fixes causing collateral regressions cannot proceed.
 
+> [!NOTE]
+> **Evaluation Methodology**: The multi-file shop fixture was evaluated with real isolated Docker container execution against predefined deterministic reference patches (`CROSS_FILE_SHOP_FIX_PATCH` and `CROSS_FILE_SHOP_REGRESSION_PATCH`). It was verified through actual containerized execution (`python -m unittest tests/test_pricing.py` inside `python:3.11-slim`), confirming baseline failure, patch success, and regression rejection, rather than live AI generation or mock simulation.
+
 ---
 
 ## 8. Summary of Added Test Coverage
 
 - `apps/api/tests/test_code_intelligence_evaluation.py`: 8 comprehensive tests (7 unit/integration + 1 real Docker test).
 - `apps/web/src/lib/code-intelligence.test.ts`: Frontend type validation and structure unit tests.
-- Total Backend Test Suite: 281 tests passing with zero failures.
+- Total Backend Test Suite: 288 passed (+7 non-docker unit/integration), 10 skipped, 21 deselected (including 1 new Docker verification test for cross-file shop) = 319 total tests collected.
+- Frontend Test Suite: 32 tests passed across 19 test suites.
