@@ -1838,7 +1838,7 @@ def recount_and_align_hunks(diff_text: str, file_content: str | None = None) -> 
                             curr_idx = best_idx
                             matched = True
 
-                # Harmonize exact whitespace with file lines for context and deletions ONLY if matched
+                # Harmonize exact whitespace with file lines only if matched
                 if matched and curr_idx + len(old_content_items) <= len(file_lines):
                     for k, (hunk_idx, _) in enumerate(old_content_items):
                         orig_file_line = file_lines[curr_idx + k]
