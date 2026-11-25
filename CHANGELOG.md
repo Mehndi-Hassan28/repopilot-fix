@@ -30,11 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Version Bump:** Bumped project versions across `apps/api/pyproject.toml` and `apps/web/package.json` to `1.0.0`.
-- **Security Hardening:**
+- **Security Hardening & Runtime Verification:**
+  - Added automatic Docker daemon capability detection in `get_sandbox_runner()`, dynamically selecting `DockerSandboxRunner` when Docker is active with safe fallback to `MockSandboxRunner`.
+  - Allowed real Docker container execution for authenticated internal demo fixtures without weakening sandbox boundaries or bypassing human approval.
+  - Implemented strict zero-test handling in `TestOutputParser`: recognizes `Ran 0 tests` and pytest empty collections as `no_tests_discovered`. Zero discovered tests in baseline yields `INCONCLUSIVE`, and zero tests in patched strictly blocks `VERIFIED_FIX`.
+  - Enforced evidence-first verification: `VERIFIED_FIX` strictly requires baseline exit 1 with failed tests, patched exit 0 with >0 passed tests, >=1 resolved failures, and 0 regressions.
+  - Gated frontend and backend against premature completion: Stage 8 halts advance to Stage 9 on unverified verdicts; Stage 9 disables patch export and PR simulation unless verdict is `VERIFIED_FIX`.
+  - Added `test_demo_real_docker_verification_e2e` and zero-test regression test suite. Expanded automated test suite to 361 passing tests.
   - Confirmed Docker daemon socket is restricted to the private background worker boundary and never exposed to the public API or web containers.
   - Clarified in-memory rate limiting as single-instance protection and documented Redis roadmap for distributed scaling.
   - Clarified prompt framing as defense-in-depth rather than guaranteed injection prevention.
-  - Distinguished 2 real Docker sandbox tests from 28 mocked sandbox tests in backend test suite.
 
 ---
 

@@ -5,7 +5,7 @@
 [![Node: 22+](https://img.shields.io/badge/node-22+-green.svg)](package.json)
 [![Next.js: 15.5](https://img.shields.io/badge/Next.js-15.5-black.svg)](apps/web/package.json)
 [![FastAPI: 0.115](https://img.shields.io/badge/FastAPI-0.115-teal.svg)](apps/api/pyproject.toml)
-[![Test Coverage: 348 Total Tests](https://img.shields.io/badge/Tests-348%20Passed-brightgreen.svg)](#11-benchmark-results--verified-metrics)
+[![Test Coverage: 361 Total Tests](https://img.shields.io/badge/Tests-361%20Passed-brightgreen.svg)](#11-benchmark-results--verified-metrics)
 
 > **Autonomous software repair backed by AST code intelligence, dual-sandbox Docker reproduction, and cryptographic human-in-the-loop gating.**
 
@@ -196,7 +196,9 @@ stateDiagram-v2
 ```
 
 ### Deterministic Verdict Classification
-- **`VERIFIED_FIX`:** The baseline container reproduces the targeted bug (failing tests), the patched container passes the targeted tests, and `len(new_failed_test_ids) == 0`.
+- **`VERIFIED_FIX`:** The baseline container reproduces the targeted bug (failing tests, exit code 1), the patched container passes the test suite (exit code 0, >0 passed tests), at least 1 original failure is resolved, and `len(new_failed_test_ids) == 0`.
+- **`UNREPRODUCED`:** The baseline test exited with code 0 with tests run; original defect could not be reproduced so proof cannot be established.
+- **`INCONCLUSIVE`:** Zero tests were discovered or runner output lacked identifiable test metrics. Zero discovered tests strictly cannot produce a verified fix.
 - **`FIX_FAILED`:** The patched container still experiences failures in the targeted tests.
 - **`REGRESSION_DETECTED`:** The candidate patch resolved the target defect but broke previously passing tests (`new_failed_test_ids > 0`).
 - **`PATCH_APPLICATION_ERROR`:** The candidate unified diff failed hunk application or touched files outside the permitted workspace.
@@ -253,10 +255,10 @@ RepoPilot Fix was rigorously benchmarked across 20 curated standalone defect-pat
 
 | Test Category | Passed | Skipped | Notes |
 |:---|:---:|:---:|:---|
-| **Backend Unit & Integration Tests** | **316** | 10 | Includes 28 mocked sandbox tests, 0 failures |
-| **Real Docker Sandbox Tests** | **2** | 0 | Real container creation, air-gapping, execution |
-| **Frontend Web Unit Tests** | **32** | 0 | Node test runner covering AST, API, and PR utilities |
-| **Total Automated Tests** | **348** | 10 | 100% Green in Local & GitHub Actions CI |
+| **Backend Unit & Integration Tests** | **324** | 10 | Includes 28 mocked sandbox tests, 0 failures |
+| **Real Docker Sandbox Tests** | **3** | 19 | Real container creation, air-gapping, execution (e2e demo) |
+| **Frontend Web Unit Tests** | **34** | 0 | Node test runner covering AST, API, and PR utilities |
+| **Total Automated Tests** | **361** | 29 | 100% Green in Local & GitHub Actions CI |
 
 ---
 
