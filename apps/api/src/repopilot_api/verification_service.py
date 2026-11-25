@@ -191,19 +191,33 @@ async def clear_cancellation_event(run_id: int) -> None:
         _ACTIVE_CANCELLATION_EVENTS.pop(run_id, None)
 
 
-# In-memory sliding window rate limiter
+# In-memory sliding window rate limiter with bounded cardinality
 _RATE_LIMIT_BUCKETS: dict[str, list[float]] = defaultdict(list)
+_MAX_RATE_LIMIT_KEYS = 5000
 
 
 def check_rate_limit(key: str, max_requests: int = 15, window_seconds: int = 60) -> bool:
-    """Check if request count for key exceeds rate limit."""
+    """Check if request count for key exceeds rate limit, with memory-bounded cleanup."""
     now = time.monotonic()
-    timestamps = _RATE_LIMIT_BUCKETS[key]
     cutoff = now - window_seconds
-    _RATE_LIMIT_BUCKETS[key] = [t for t in timestamps if t > cutoff]
-    if len(_RATE_LIMIT_BUCKETS[key]) >= max_requests:
+
+    # Evict expired keys if bucket dictionary exceeds threshold
+    if len(_RATE_LIMIT_BUCKETS) > _MAX_RATE_LIMIT_KEYS:
+        expired_keys = [
+            k for k, timestamps in _RATE_LIMIT_BUCKETS.items()
+            if not timestamps or timestamps[-1] <= cutoff
+        ]
+        for k in expired_keys:
+            _RATE_LIMIT_BUCKETS.pop(k, None)
+
+    timestamps = _RATE_LIMIT_BUCKETS[key]
+    valid_timestamps = [t for t in timestamps if t > cutoff]
+    if len(valid_timestamps) >= max_requests:
+        _RATE_LIMIT_BUCKETS[key] = valid_timestamps
         return False
-    _RATE_LIMIT_BUCKETS[key].append(now)
+
+    valid_timestamps.append(now)
+    _RATE_LIMIT_BUCKETS[key] = valid_timestamps
     return True
 
 

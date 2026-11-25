@@ -39,7 +39,7 @@ from repopilot_api.schemas import (
 )
 from repopilot_api.security import AuthContext, configured_origins, get_current_auth, require_csrf
 from repopilot_api.verification_router import router as verification_router
-from repopilot_api.verification_service import VerificationJobManager
+from repopilot_api.verification_service import VerificationJobManager, check_rate_limit
 
 
 @asynccontextmanager
@@ -95,7 +95,41 @@ def import_repository(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(require_csrf),
 ):
-    owner, name = payload.url.removeprefix("https://github.com/").split("/")
+    if not check_rate_limit(f"repo_import:{auth.user.id}", max_requests=10, window_seconds=60):
+        raise HTTPException(
+            429, "Too many repository import requests. Please wait a moment and try again."
+        )
+
+    if payload.url != payload.url.strip() or any(
+        c in payload.url for c in ("\n", "\r", "\t", "\0")
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Repository URL contains invalid whitespace or control characters.",
+        )
+
+    raw_url = payload.url.strip()
+    if not raw_url.startswith("https://github.com/"):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid repository URL. Must start with 'https://github.com/'.",
+        )
+
+    clean_path = raw_url.removeprefix("https://github.com/").strip("/")
+    parts = clean_path.split("/")
+    if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid repository URL format. Expected 'https://github.com/owner/repo'.",
+        )
+
+    owner, name = parts[0].strip(), parts[1].strip()
+    if any(c in owner or c in name for c in ("\0", "\n", "\r", " ", "?", "#")):
+        raise HTTPException(
+            status_code=422,
+            detail="Repository URL contains invalid control or query characters.",
+        )
+
     owner_clean = owner.strip().lower()
     name_clean = name.strip().lower()
 
@@ -357,6 +391,8 @@ def indexed_files(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(get_current_auth),
 ):
+    if len(q) > 256 or "\0" in q:
+        raise HTTPException(422, "Search filter is invalid or exceeds maximum length.")
     _require_repository_access(db, repository_id, auth.user.id)
     job = db.scalar(
         select(IndexingJob)
@@ -390,8 +426,16 @@ def get_file_content(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(get_current_auth),
 ):
-    if not path.strip():
+    path_clean = path.strip()
+    if not path_clean:
         raise HTTPException(422, "File path cannot be empty.")
+    if (
+        len(path_clean) > 1024
+        or "\0" in path_clean
+        or path_clean.startswith("/")
+        or ".." in path_clean.split("/")
+    ):
+        raise HTTPException(422, "Invalid or unsafe file path.")
     _require_repository_access(db, repository_id, auth.user.id)
     job = db.scalar(
         select(IndexingJob)
@@ -403,11 +447,11 @@ def get_file_content(
     file_record = db.scalar(
         select(IndexedFile).where(
             IndexedFile.job_id == job.id,
-            IndexedFile.path == path,
+            IndexedFile.path == path_clean,
         )
     )
     if file_record is None:
-        raise HTTPException(404, f"File '{path}' not found in repository index.")
+        raise HTTPException(404, f"File '{path_clean}' not found in repository index.")
     symbols = db.scalars(
         select(CodeSymbol).where(CodeSymbol.file_id == file_record.id).order_by(CodeSymbol.line)
     ).all()
@@ -427,8 +471,11 @@ def search_index(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(get_current_auth),
 ):
-    if not q.strip():
+    clean_q = q.strip()
+    if not clean_q:
         raise HTTPException(422, "Search query cannot be empty.")
+    if len(clean_q) > 256 or "\0" in clean_q:
+        raise HTTPException(422, "Search query is invalid or exceeds maximum length.")
     _require_repository_access(db, repository_id, auth.user.id)
     job = db.scalar(
         select(IndexingJob)
@@ -766,6 +813,12 @@ def ask_chat(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(require_csrf),
 ):
+    if not check_rate_limit(
+        f"ask_chat:{auth.user.id}:{session_id}", max_requests=25, window_seconds=60
+    ):
+        raise HTTPException(
+            429, "Too many chat messages sent in a short window. Please wait a moment."
+        )
     session = _owned_chat_session(db, session_id, auth.user.id)
     try:
         from repopilot_api.chat import get_provider
@@ -812,6 +865,12 @@ def analyze_issue(
     auth: AuthContext = Depends(require_csrf),
 ):
     _require_repository_access(db, repository_id, auth.user.id)
+    if not check_rate_limit(
+        f"analyze_issue:{auth.user.id}:{repository_id}", max_requests=10, window_seconds=60
+    ):
+        raise HTTPException(
+            429, "Too many issue analysis requests. Please wait a moment before trying again."
+        )
     repo = db.get(Repository, repository_id)
     if repo is None:
         raise HTTPException(404, "Repository not found.")

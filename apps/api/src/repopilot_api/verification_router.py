@@ -218,8 +218,12 @@ def submit_verification(
     auth: AuthContext = Depends(require_csrf),
 ):
     """Submit a draft verification specification for human approval."""
-    _require_repository_access(db, repository_id, auth.user.id)
-    _get_run_or_404(db, repository_id, verification_id)
+    access = _require_repository_access(db, repository_id, auth.user.id)
+    run = _get_run_or_404(db, repository_id, verification_id)
+    if access.role not in ("owner", "collaborator") and run.user_id != auth.user.id:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Unauthorized to submit this verification for approval."
+        )
 
     try:
         run = VerificationJobManager.submit_for_approval(db, verification_id, auth.user.id)
@@ -268,7 +272,10 @@ def reject_verification(
     auth: AuthContext = Depends(require_csrf),
 ):
     """Reject a verification request."""
-    _require_repository_access(db, repository_id, auth.user.id)
+    access = _require_repository_access(db, repository_id, auth.user.id)
+    if access.role not in ("owner", "collaborator"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Unauthorized to reject verifications.")
+
     _get_run_or_404(db, repository_id, verification_id)
 
     try:
@@ -292,8 +299,12 @@ async def cancel_verification(
     auth: AuthContext = Depends(require_csrf),
 ):
     """Cancel an approved, queued, or running verification job."""
-    _require_repository_access(db, repository_id, auth.user.id)
-    _get_run_or_404(db, repository_id, verification_id)
+    access = _require_repository_access(db, repository_id, auth.user.id)
+    run = _get_run_or_404(db, repository_id, verification_id)
+    if access.role not in ("owner", "collaborator") and run.user_id != auth.user.id:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Unauthorized to cancel this verification run."
+        )
 
     try:
         run = await VerificationJobManager.cancel_verification(
@@ -315,7 +326,12 @@ def queue_verification(
     auth: AuthContext = Depends(require_csrf),
 ):
     """Enqueue an approved verification run for execution."""
-    _require_repository_access(db, repository_id, auth.user.id)
+    access = _require_repository_access(db, repository_id, auth.user.id)
+    if access.role not in ("owner", "collaborator"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Unauthorized to queue verifications for this repository."
+        )
+
     _get_run_or_404(db, repository_id, verification_id)
 
     try:
@@ -333,7 +349,12 @@ async def execute_verification(
     auth: AuthContext = Depends(require_csrf),
 ):
     """Execute an approved/queued verification job through the durable manager."""
-    _require_repository_access(db, repository_id, auth.user.id)
+    access = _require_repository_access(db, repository_id, auth.user.id)
+    if access.role not in ("owner", "collaborator"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Unauthorized to execute verifications for this repository."
+        )
+
     _get_run_or_404(db, repository_id, verification_id)
 
     try:

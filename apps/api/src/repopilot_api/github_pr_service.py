@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from repopilot_api.models import (
@@ -91,6 +92,9 @@ class GitHubPRClient:
         )
         self.owned = client is None
 
+    def __repr__(self) -> str:
+        return "<GitHubPRClient token='***'>"
+
     def close(self) -> None:
         if self.owned:
             self.client.close()
@@ -126,6 +130,10 @@ class GitHubPRClient:
                 detail = body.get("message") or ""
         except Exception:
             detail = response.text[:200]
+        # Sanitize any accidental credentials in detail
+        if detail:
+            pattern = r"(?:ghp_|gho_|github_pat_|AIza|sk-|Bearer\s+)[A-Za-z0-9_.-]+"
+            detail = re.sub(pattern, "***", detail)
         raise GitHubPRError(
             f"GitHub API error ({response.status_code}) while attempting to "
             f"{action_description}: {detail}".strip()
@@ -521,8 +529,43 @@ class GitHubPullRequestService:
                 title=title,
                 body=body,
             )
-            db.add(record)
-            db.commit()
+            try:
+                db.add(record)
+                log_audit_event(
+                    db,
+                    run_id=run.id,
+                    event_type=VerificationAuditEventType.PR_CREATED.value,
+                    actor_user_id=user_id,
+                    from_status=run.status,
+                    to_status=run.status,
+                    details={
+                        "pr_number": pr_number,
+                        "pr_url": pr_url,
+                        "branch_name": branch_name,
+                        "base_branch": repo.default_branch or "main",
+                        "is_simulated": True,
+                    },
+                )
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                existing_pr = db.scalar(
+                    select(GitHubPullRequest).where(GitHubPullRequest.verification_run_id == run.id)
+                )
+                if existing_pr is not None:
+                    return PullRequestCreateResponse(
+                        success=True,
+                        pr_number=existing_pr.pr_number,
+                        pr_url=existing_pr.pr_url,
+                        branch_name=existing_pr.branch_name,
+                        base_branch=existing_pr.base_branch,
+                        status="already_exists",
+                        message=(
+                            f"Pull request #{existing_pr.pr_number} already exists for this run."
+                        ),
+                        is_simulated=True,
+                    )
+                raise
             return PullRequestCreateResponse(
                 success=True,
                 pr_number=pr_number,
@@ -670,25 +713,43 @@ class GitHubPullRequestService:
                 title=pr_title,
                 body=pr_body,
             )
-            db.add(pr_record)
-
-            log_audit_event(
-                db,
-                run_id=run.id,
-                event_type=VerificationAuditEventType.PR_CREATED.value,
-                actor_user_id=user_id,
-                from_status=run.status,
-                to_status=run.status,
-                details={
-                    "pr_number": pr_number,
-                    "pr_url": pr_url,
-                    "branch_name": branch_name,
-                    "base_branch": base_branch,
-                    "commit_sha": new_commit_sha,
-                },
-            )
-            db.commit()
-            db.refresh(pr_record)
+            try:
+                db.add(pr_record)
+                log_audit_event(
+                    db,
+                    run_id=run.id,
+                    event_type=VerificationAuditEventType.PR_CREATED.value,
+                    actor_user_id=user_id,
+                    from_status=run.status,
+                    to_status=run.status,
+                    details={
+                        "pr_number": pr_number,
+                        "pr_url": pr_url,
+                        "branch_name": branch_name,
+                        "base_branch": base_branch,
+                        "commit_sha": new_commit_sha,
+                    },
+                )
+                db.commit()
+                db.refresh(pr_record)
+            except IntegrityError:
+                db.rollback()
+                existing_pr = db.scalar(
+                    select(GitHubPullRequest).where(GitHubPullRequest.verification_run_id == run.id)
+                )
+                if existing_pr is not None:
+                    return PullRequestCreateResponse(
+                        success=True,
+                        pr_number=existing_pr.pr_number,
+                        pr_url=existing_pr.pr_url,
+                        branch_name=existing_pr.branch_name,
+                        base_branch=existing_pr.base_branch,
+                        status="already_exists",
+                        message=(
+                            f"Pull request #{existing_pr.pr_number} already exists for this run."
+                        ),
+                    )
+                raise
 
             return PullRequestCreateResponse(
                 success=True,
