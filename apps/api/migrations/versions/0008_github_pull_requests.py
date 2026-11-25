@@ -51,7 +51,6 @@ def upgrade():
         "ix_github_pull_requests_verification_run_id",
         "github_pull_requests",
         ["verification_run_id"],
-        unique=True,
     )
     op.create_index(
         "ix_github_pull_requests_issue_number",

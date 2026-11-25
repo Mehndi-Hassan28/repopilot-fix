@@ -464,3 +464,51 @@ def test_router_create_pr_unauthorized_user(test_session):
                 auth=other_auth,
             )
         assert exc_info.value.status_code == 404
+
+
+def test_create_pr_external_api_idempotency_when_pr_exists_on_github(test_session):
+    """External API idempotency: reuses existing upstream PR and prevents duplicates."""
+    with test_session() as session:
+        user, auth, repo, run, report = _setup_verified_repo_and_run(session)
+
+        called_endpoints = []
+
+        def tracking_handler(request):
+            called_endpoints.append((request.method, str(request.url)))
+            if request.method == "GET" and "/git/ref/heads/main" in str(request.url):
+                return httpx.Response(200, json={"object": {"sha": "base12345678"}})
+            if request.method == "GET" and "/git/ref/heads/repopilot" in str(request.url):
+                return httpx.Response(200, json={"object": {"sha": "existing_branch_sha"}})
+            if request.method == "GET" and "/pulls" in str(request.url):
+                return httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "number": 88,
+                            "html_url": "https://github.com/test-owner/test-repo/pull/88",
+                            "title": "Existing upstream PR",
+                        }
+                    ],
+                )
+            return httpx.Response(404, json={"message": "Not Found"})
+
+        transport = httpx.MockTransport(tracking_handler)
+        mock_client = httpx.Client(transport=transport)
+        payload = PullRequestCreateRequest(github_token="ghp_test_token_123")
+
+        resp = GitHubPullRequestService.create_pull_request(
+            db=session,
+            repository_id=repo.id,
+            verification_id=run.id,
+            user_id=user.id,
+            payload=payload,
+            client=mock_client,
+        )
+
+        assert resp.success is True
+        assert resp.pr_number == 88
+        assert resp.status == "already_exists"
+        assert "Reused existing GitHub pull request" in resp.message
+
+        methods = [m for m, _ in called_endpoints]
+        assert "POST" not in methods
