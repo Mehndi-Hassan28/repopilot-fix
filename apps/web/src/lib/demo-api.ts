@@ -1,4 +1,5 @@
 import type { DemoInitializeResponse, DemoStatusResponse } from "./types.ts";
+import { resolveApiUrl } from "./api.ts";
 
 function formatApiDetail(detail: unknown): string {
   if (typeof detail === "string") return detail;
@@ -27,7 +28,6 @@ function formatApiDetail(detail: unknown): string {
   return String(detail || "");
 }
 
-const apiUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 
 export class DemoApiError extends Error {
   status: number;
@@ -57,6 +57,7 @@ async function request<T>(
     headers.set("X-CSRF-Token", csrfToken);
   }
 
+  const apiUrl = resolveApiUrl();
   const response = await fetch(`${apiUrl}${path}`, {
     ...init,
     headers,

@@ -39,7 +39,7 @@ export function SettingsWorkspace({
           <div className="space-y-3 font-mono text-xs">
             <div className="flex items-center justify-between border-b border-white/5 pb-2">
               <span className="text-zinc-500">API Gateway</span>
-              <span className="text-cyan-300 font-semibold">{apiUrl}</span>
+              <span className="text-cyan-300 font-semibold">{apiUrl || "Same-Origin Proxy (/api)"}</span>
             </div>
             <div className="flex items-center justify-between border-b border-white/5 pb-2">
               <span className="text-zinc-500">CSRF Protection</span>
