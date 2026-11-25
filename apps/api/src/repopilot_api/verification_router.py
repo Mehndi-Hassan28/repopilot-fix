@@ -265,11 +265,20 @@ def approve_verification(
             auto_queue=payload.auto_queue,
             comment=payload.comment,
         )
-        if payload.auto_queue and is_cloud_worker_dispatch_configured():
+        repo = db.get(Repository, repository_id)
+        from repopilot_api.demo import is_internal_demo_repository
+
+        if (
+            payload.auto_queue
+            and is_cloud_worker_dispatch_configured()
+            and repo is not None
+            and is_internal_demo_repository(db, repo, auth.user.id)
+        ):
             background_tasks.add_task(
                 dispatch_cloud_worker,
                 run_id=verification_id,
                 repository_id=repository_id,
+                db=db,
             )
         return _run_to_read(run)
     except VerificationSpecificationMismatchError as spec_err:
@@ -290,6 +299,21 @@ async def dispatch_verification_worker(
     if access.role not in ("owner", "collaborator"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Unauthorized to dispatch worker.")
 
+    from repopilot_api.demo import is_internal_demo_repository
+
+    repo = db.get(Repository, repository_id)
+    if not (repo and is_internal_demo_repository(db, repo, auth.user.id)):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Cloud verification worker is strictly restricted to trusted internal demo repositories.",
+        )
+
+    if not check_rate_limit(f"dispatch_worker:{auth.user.id}", max_requests=3, window_seconds=60):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Worker dispatch rate limit exceeded. Please wait a moment before requesting another worker.",
+        )
+
     run = _get_run_or_404(db, repository_id, verification_id)
     if run.status not in ("queued", "approved"):
         raise HTTPException(
@@ -297,7 +321,7 @@ async def dispatch_verification_worker(
             f"Run #{verification_id} is in status '{run.status}', not queued/approved.",
         )
 
-    dispatched = await dispatch_cloud_worker(run_id=verification_id, repository_id=repository_id)
+    dispatched = await dispatch_cloud_worker(run_id=verification_id, repository_id=repository_id, db=db)
     return {
         "dispatched": dispatched,
         "run_id": verification_id,

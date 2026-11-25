@@ -189,28 +189,59 @@ In the free cloud tier where `SANDBOX_PROVIDER=mock` and `ALLOW_DOCKER_VERIFICAT
 * Stages 8 and 9 strictly gate patch export and real PR creation on authentic `verified_fix` verdicts, ensuring unverified diffs cannot be exported.
 
 #### 5. Bounded On-Demand GitHub Actions Verification Worker (Free Tier)
-Because `Mehndi-Hassan28/repopilot-fix` is a public GitHub repository, standard Linux GitHub Actions runners (Ubuntu 24.04 with Docker pre-installed) are 100% free with unlimited minutes under GitHub's standard open-source policy.
+Because `Mehndi-Hassan28/repopilot-fix` is a public GitHub repository, standard Linux GitHub Actions runners (`ubuntu-24.04` with Docker pre-installed) are 100% free with unlimited minutes under GitHub's standard open-source policy.
 
-##### Architecture & Safeguards
+##### GitHub Actions Acceptable-Use Policy Verification
+The verification worker operates in strict compliance with the [GitHub Actions Terms of Service and Acceptable Use Policy](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service):
+* **Repository-Associated Testing Only:** Workflows are executed exclusively to verify and test bug fixes and code modifications belonging directly to `Mehndi-Hassan28/repopilot-fix`.
+* **Server-Side Trusted Fixture Enforcement:** The backend enforces fail-closed checks (`validate_worker_dispatch_eligibility` and `ExecutionPolicyGuard`), strictly rejecting worker dispatch or execution for arbitrary user repositories or unverified code.
+* **Bounded Compute & Strict Limits:** Each workflow run has a 5-minute hard timeout (`timeout-minutes: 5`), a concurrency limit of 1 job (`concurrency: repopilot-verification-worker`) preventing parallel queue consumption, and single-job termination (`--once --max-jobs 1`).
+* **No Abusive Compute:** The worker is never used for cryptocurrency mining, high-volume serverless proxying, general-purpose computation, or long-running daemons.
+
+##### Architecture & Least-Privilege Security Model
 * **Workflow file:** `.github/workflows/verification-worker.yml`
-* **Trigger:** `workflow_dispatch` (manual) or `repository_dispatch` (automated on-demand from Render API).
-* **Strict Bounds:** 5-minute hard timeout (`timeout-minutes: 5`), concurrency group limit of 1 job (`concurrency: repopilot-verification-worker`), single-job execution (`--once --max-jobs 1`).
-* **Sandbox Security:** Docker runs with `--network none`, non-root user, read-only rootfs, and tmpfs boundaries.
-* **Secrets Isolation:** The database connection string is stored in GitHub Actions repository secrets (`secrets.DATABASE_URL`) and is never exposed in logs, API responses, or to public visitors.
+* **Trigger:** `workflow_dispatch` (manual or automated on-demand from Render API).
+* **Least-Privilege GitHub Permissions:** Automated dispatch uses `workflow_dispatch` via fine-grained GitHub Personal Access Token (PAT) with only `Actions: write` scope (under Repository permissions: Actions -> Read and write). Unlike `repository_dispatch`, this requires **zero** write access to repository source code (`Contents: read` or none).
+* **Sandbox Security:** Docker runs with `--network none`, non-root user (`uid 10001`), read-only rootfs, and isolated tmpfs boundaries.
+* **Secrets Isolation:** Database connection strings are stored exclusively in GitHub Actions repository secrets (`secrets.DATABASE_URL`) and are never exposed in logs, API responses, or to public visitors.
+
+##### Least-Privilege PostgreSQL Worker Role (`repopilot_worker`)
+To safeguard production user records and credentials against unexpected leakage, configure a dedicated least-privilege PostgreSQL role for the worker rather than sharing primary database credentials:
+
+```sql
+-- 1. Create dedicated restricted worker role
+CREATE ROLE repopilot_worker WITH LOGIN PASSWORD '<secure_worker_password>';
+
+-- 2. Explicitly revoke all access to sensitive authentication and user tables
+REVOKE ALL ON users, auth_sessions, oauth_identities, oauth_states, chat_sessions, chat_messages, pull_requests FROM repopilot_worker;
+
+-- 3. Grant only minimal permissions needed for container execution and proof recording
+GRANT SELECT, UPDATE ON verification_runs TO repopilot_worker;
+GRANT SELECT, INSERT, UPDATE ON proof_reports TO repopilot_worker;
+GRANT SELECT, INSERT ON verification_audit_events TO repopilot_worker;
+GRANT SELECT ON repositories, indexed_files, indexing_jobs, code_symbols, alembic_version TO repopilot_worker;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO repopilot_worker;
+```
 
 ##### Configuration Steps
 1. Navigate to **GitHub Repository Settings → Secrets and variables → Actions**.
 2. Add Repository Secret:
    * **Name:** `DATABASE_URL`
-   * **Value:** Your Neon PostgreSQL connection string (`postgresql+psycopg://...`).
+   * **Value:** Dedicated worker connection string: `postgresql+psycopg://repopilot_worker:<password>@<neon-host>/repopilot?sslmode=require`.
 3. (Optional for Automated Backend Dispatch) In Render Web Service Environment:
    * **Name:** `GITHUB_WORKER_DISPATCH_TOKEN`
-   * **Value:** Fine-grained GitHub Personal Access Token with `Actions: write` scope on `Mehndi-Hassan28/repopilot-fix`.
+   * **Value:** Fine-grained GitHub Personal Access Token with only `Actions: write` permission on `Mehndi-Hassan28/repopilot-fix`.
    * **Name:** `GITHUB_REPOSITORY`
    * **Value:** `Mehndi-Hassan28/repopilot-fix`
+   * **Name:** `GITHUB_WORKER_WORKFLOW`
+   * **Value:** `verification-worker.yml`
 
 #### 6. Production AI Configuration (Google Gemini Free Tier)
-RepoPilot Fix connects to Google Gemini using the OpenAI-compatible endpoint supported by Google AI Studio's free tier (15 requests/minute, 1,500 requests/day, zero billing required).
+RepoPilot Fix connects to Google Gemini using the standard OpenAI-compatible endpoint supported by Google AI Studio's free tier.
+
+##### Rate Limits & Guardrails
+* Free-tier rate limits vary dynamically by model, region, and Google AI Studio project tier (typically 15 RPM for models such as `gemini-2.5-flash` or `gemini-2.0-flash`). Check your active quotas directly in the [Google AI Studio Dashboard](https://aistudio.google.com/).
+* **Public AI Protection:** When `ALLOW_PUBLIC_AI=false` (default), anonymous guest demo visitors use deterministic `MockProvider` without calling Gemini. This prevents public visitor traffic from exhausting your free-tier quota, while allowing authenticated GitHub users or explicit benchmark runs to use the live Gemini model.
 
 ##### Render Backend Configuration
 Set the following environment variables in the Render Dashboard:

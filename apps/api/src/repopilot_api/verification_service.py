@@ -623,6 +623,7 @@ class VerificationJobManager:
         lease_duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS,
         max_global_concurrent: int | None = None,
         max_repo_concurrent: int | None = None,
+        target_run_id: int | None = None,
     ) -> VerificationRun | None:
         """Atomically claim one queued verification job using database transactions.
 
@@ -698,12 +699,16 @@ class VerificationJobManager:
             .having(func.count(VerificationRun.id) >= max_repo)
         )
 
+        filters = [
+            VerificationRun.status == VerificationJobStatus.QUEUED.value,
+            VerificationRun.repository_id.not_in(active_repo_ids_query),
+        ]
+        if target_run_id is not None:
+            filters.append(VerificationRun.id == target_run_id)
+
         query = (
             select(VerificationRun.id)
-            .where(
-                VerificationRun.status == VerificationJobStatus.QUEUED.value,
-                VerificationRun.repository_id.not_in(active_repo_ids_query),
-            )
+            .where(*filters)
             .order_by(VerificationRun.created_at.asc())
         )
         if dialect_name == "postgresql":

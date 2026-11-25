@@ -14,8 +14,9 @@ import httpx
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from repopilot_api.models import VerificationRun
+from repopilot_api.models import Repository, VerificationRun
 from repopilot_api.schemas import VerificationJobStatus
+from repopilot_api.verification_service import check_rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -34,30 +35,106 @@ def get_worker_repository() -> str:
     return os.getenv("GITHUB_REPOSITORY", "Mehndi-Hassan28/repopilot-fix").strip()
 
 
+def get_worker_workflow() -> str:
+    """Get the target GitHub Actions workflow filename."""
+    return os.getenv("GITHUB_WORKER_WORKFLOW", "verification-worker.yml").strip()
+
+
+def validate_worker_dispatch_eligibility(
+    db: Session,
+    run_id: int,
+    repository_id: int | None = None,
+) -> tuple[bool, str]:
+    """Validate server-side eligibility for on-demand cloud worker dispatch.
+
+    Enforces:
+    1. Run exists in database.
+    2. Run is in 'queued' or 'approved' state.
+    3. Run has an immutable approved specification hash.
+    4. Target repository is an internal demo fixture OR matches a known trusted deterministic fixture.
+    5. Run does not already have an active unexpired worker lease (replay prevention).
+    """
+    run = db.get(VerificationRun, run_id)
+    if run is None:
+        return False, f"Verification run #{run_id} not found."
+
+    if repository_id is not None and run.repository_id != repository_id:
+        return False, f"Run #{run_id} does not belong to repository #{repository_id}."
+
+    if run.status not in (VerificationJobStatus.QUEUED.value, VerificationJobStatus.APPROVED.value):
+        return False, f"Run #{run_id} is in status '{run.status}', not queued/approved."
+
+    if not run.approved_spec_hash:
+        return False, f"Run #{run_id} has not been approved with an authentic specification hash."
+
+    # Prevent duplicate dispatch if worker is already executing with valid lease
+    now = datetime.now(UTC)
+    if run.status == VerificationJobStatus.RUNNING.value and run.lease_expires_at and run.lease_expires_at > now:
+        return False, f"Run #{run_id} is already actively executing (leased to worker '{run.worker_id}')."
+
+    # Enforce trusted fixture-only execution: repository must be verified as trusted demo fixture
+    from repopilot_api.fixture_registry import get_default_fixture_registry
+
+    repo = db.get(Repository, run.repository_id)
+    user_id = run.approved_by_user_id or run.user_id
+    if repo is None or user_id is None:
+        return False, "Repository or user associated with run not found."
+
+    registry = get_default_fixture_registry()
+    is_trusted = registry.is_repository_trusted(
+        repo.owner,
+        repo.name,
+        repo.github_id,
+        repository=repo,
+        db=db,
+        user_id=user_id,
+    )
+
+    if not is_trusted:
+        return False, "Cloud verification worker execution is strictly restricted to trusted demo fixtures."
+
+    return True, "Eligible"
+
+
 async def dispatch_cloud_worker(
     run_id: int | None = None,
     repository_id: int | None = None,
+    db: Session | None = None,
 ) -> bool:
     """Dispatch an on-demand GitHub Actions verification worker workflow.
 
-    Uses GitHub repository_dispatch to trigger the verification-worker.yml workflow
-    in an isolated runner with native Docker daemon access.
+    Uses GitHub workflow_dispatch (requiring only Actions:write scope) to trigger
+    the bounded verification-worker.yml workflow in an isolated runner with native Docker daemon access.
     """
     token = os.getenv("GITHUB_WORKER_DISPATCH_TOKEN", "").strip() or os.getenv("GITHUB_TOKEN", "").strip()
     if not token:
         logger.info("GITHUB_WORKER_DISPATCH_TOKEN not configured; skipping cloud worker dispatch.")
         return False
 
+    # Global rate limit on dispatch requests
+    if not check_rate_limit("global_cloud_worker_dispatch", max_requests=6, window_seconds=60):
+        logger.warning("Global cloud worker dispatch rate limit exceeded.")
+        return False
+
+    # Server-side validation if database session is provided
+    if db is not None and run_id is not None:
+        eligible, reason = validate_worker_dispatch_eligibility(db, run_id, repository_id)
+        if not eligible:
+            logger.warning("Worker dispatch rejected for run %s: %s", run_id, reason)
+            return False
+
     repo = get_worker_repository()
-    url = f"https://api.github.com/repos/{repo}/dispatches"
+    workflow = get_worker_workflow()
+    ref = os.getenv("GITHUB_WORKER_REF", "main").strip() or "main"
+    url = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow}/dispatches"
+
+    inputs: dict[str, str] = {}
+    if run_id is not None:
+        inputs["run_id"] = str(run_id)
 
     payload = {
-        "event_type": "repopilot_verify",
-        "client_payload": {
-            "run_id": run_id,
-            "repository_id": repository_id,
-            "timestamp": datetime.now(UTC).isoformat(),
-        },
+        "ref": ref,
+        "inputs": inputs,
     }
 
     headers = {
@@ -72,7 +149,7 @@ async def dispatch_cloud_worker(
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code == 204:
                 logger.info(
-                    "Successfully dispatched GitHub Actions verification worker for run %s on %s.",
+                    "Successfully dispatched GitHub Actions verification worker for run %s via workflow_dispatch on %s.",
                     run_id,
                     repo,
                 )

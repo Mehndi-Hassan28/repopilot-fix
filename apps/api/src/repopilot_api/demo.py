@@ -45,6 +45,7 @@ from repopilot_api.worker_dispatch import (
     dispatch_cloud_worker,
     get_cloud_worker_status,
 )
+from repopilot_api.verification_service import check_rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -325,6 +326,12 @@ async def dispatch_demo_worker(
     auth: AuthContext = Depends(require_csrf),
 ):
     """Trigger an on-demand GitHub Actions verification worker for the active demo run."""
+    if not check_rate_limit(f"dispatch_worker:{auth.user.id}", max_requests=3, window_seconds=60):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Worker dispatch rate limit exceeded. Please wait a moment before requesting another worker.",
+        )
+
     repo = _get_user_demo_repository(db, auth.user.id)
     if not repo:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Demo repository not found.")
@@ -340,7 +347,7 @@ async def dispatch_demo_worker(
             f"No queued verification run available to dispatch (current status: '{latest_run.status if latest_run else 'none'}').",
         )
 
-    dispatched = await dispatch_cloud_worker(run_id=latest_run.id, repository_id=repo.id)
+    dispatched = await dispatch_cloud_worker(run_id=latest_run.id, repository_id=repo.id, db=db)
     return {
         "dispatched": dispatched,
         "run_id": latest_run.id,

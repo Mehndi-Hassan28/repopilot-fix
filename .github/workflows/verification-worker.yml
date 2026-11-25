@@ -1,5 +1,16 @@
 name: Cloud Verification Worker
 
+# Milestone 3.6 / Cloud Production:
+# On-demand, bounded verification worker running exclusively for continuous integration
+# and fix verification of the trusted repository fixtures in Mehndi-Hassan28/repopilot-fix.
+#
+# Acceptable Use Policy Compliance:
+# - Strictly bounded to repository software verification (5m timeout, 1 job per run).
+# - Concurrency limit of 1 (strictly non-overlapping execution).
+# - Dispatched exclusively via workflow_dispatch requiring fine-grained Actions:write permission.
+# - Zero arbitrary code execution: server-side policy enforces registered trusted fixtures only.
+# - Zero secret leakage: Least-privilege PostgreSQL credentials stored in repository secrets.
+
 on:
   workflow_dispatch:
     inputs:
@@ -7,8 +18,6 @@ on:
         description: "Target Verification Run ID (optional, claims oldest queued run if omitted)"
         required: false
         type: string
-  repository_dispatch:
-    types: [repopilot_verify]
 
 concurrency:
   group: repopilot-verification-worker
@@ -48,12 +57,17 @@ jobs:
           SANDBOX_PROVIDER: docker
           ALLOW_DOCKER_VERIFICATION_EXECUTION: "true"
           LOG_LEVEL: INFO
+          TARGET_RUN_ID: ${{ inputs.run_id }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
             echo "::error::DATABASE_URL secret is not configured in repository secrets."
             exit 1
           fi
-          python -m repopilot_api.worker --once --max-jobs 1 --lease-seconds 60
+          RUN_ARG=""
+          if [ -n "$TARGET_RUN_ID" ]; then
+            RUN_ARG="--run-id $TARGET_RUN_ID"
+          fi
+          python -m repopilot_api.worker --once --max-jobs 1 --lease-seconds 60 $RUN_ARG
 
       - name: Clean up temporary containers
         if: always()
