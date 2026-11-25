@@ -379,11 +379,19 @@ export function InteractiveDemoWorkspace({
       const run = await handleStep6Approve();
       if (!run) return;
       setCurrentStep(7);
-      await handleStep7Verify();
+      const report = await handleStep7Verify();
       setCurrentStep(8);
-      await handleStep8Evidence();
-      setCurrentStep(9);
-      setMaxCompletedStep(9);
+      const finalReport = report || (await handleStep8Evidence());
+      // STRICT GATING: Only advance to Stage 9 if verdict is verified_fix
+      if (finalReport?.verdict === "verified_fix") {
+        setCurrentStep(9);
+        setMaxCompletedStep(9);
+      } else {
+        // Fix is NOT verified (UNREPRODUCED, FIX_FAILED, INCONCLUSIVE, etc.)
+        // Remain at Stage 8 evidence report
+        setCurrentStep(8);
+        setMaxCompletedStep((prev) => Math.min(Math.max(prev, 8), 8));
+      }
     } catch {
       // Errors caught and set by step handlers
     }
@@ -466,6 +474,15 @@ export function InteractiveDemoWorkspace({
     const targetId = activeRepo?.id || demoInitRef.current?.repository.id || demoInit?.repository.id;
     const runId = verificationRunRef.current?.id || verificationRun?.id;
     if (!targetId || !runId) return;
+
+    if (proofReport?.verdict !== "verified_fix") {
+      setStepError({
+        step: 9,
+        message: `Patch export blocked: verification verdict is '${proofReport?.verdict || "pending"}'. Only verified fixes qualify for patch export.`,
+      });
+      return;
+    }
+
     setLoadingStep(9);
     try {
       const exported = await exportPatch(targetId, runId);
@@ -498,6 +515,15 @@ export function InteractiveDemoWorkspace({
     const targetId = activeRepo?.id || demoInitRef.current?.repository.id || demoInit?.repository.id;
     const runId = verificationRunRef.current?.id || verificationRun?.id;
     if (!targetId || !runId) return;
+
+    if (proofReport?.verdict !== "verified_fix") {
+      setStepError({
+        step: 9,
+        message: `PR simulation blocked: verification verdict is '${proofReport?.verdict || "pending"}'. Only verified fixes qualify for PR creation.`,
+      });
+      return;
+    }
+
     setSimulatingPR(true);
     try {
       const res = await createPullRequest(
@@ -734,11 +760,13 @@ export function InteractiveDemoWorkspace({
             const isActive = currentStep === stg.id;
             const isCompleted = maxCompletedStep >= stg.id;
 
+            const isGated = stg.id === 9 && proofReport?.verdict !== "verified_fix";
+
             return (
               <button
                 key={stg.id}
                 onClick={() => setCurrentStep(stg.id)}
-                disabled={autoRunning || (!isCompleted && stg.id > maxCompletedStep + 1)}
+                disabled={autoRunning || isGated || (!isCompleted && stg.id > maxCompletedStep + 1)}
                 className={`flex items-center gap-2 rounded-lg px-3 py-1.5 transition-all text-xs ${
                   isActive
                     ? "bg-[#BFFF00]/10 border border-[#BFFF00]/50 text-white shadow-sm"
@@ -1627,12 +1655,29 @@ export function InteractiveDemoWorkspace({
                 >
                   ← Back
                 </button>
-                <button
-                  onClick={() => setCurrentStep(9)}
-                  className="rounded-xl bg-[#BFFF00] px-5 py-2.5 text-xs font-bold text-black hover:brightness-110 transition-all font-sans"
-                >
-                  Proceed to Export & PR Preview →
-                </button>
+                {proofReport?.verdict === "verified_fix" ? (
+                  <button
+                    onClick={() => {
+                      setMaxCompletedStep((prev) => Math.max(prev, 9));
+                      setCurrentStep(9);
+                    }}
+                    className="rounded-xl bg-[#BFFF00] px-5 py-2.5 text-xs font-bold text-black hover:brightness-110 transition-all font-sans"
+                  >
+                    Proceed to Export & PR Preview →
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-mono text-amber-400">
+                      Fix not verified ({proofReport?.verdict ? proofReport.verdict.toUpperCase().replace(/_/g, " ") : "PENDING"}) — PR simulation & export gated
+                    </span>
+                    <button
+                      onClick={() => setCurrentStep(7)}
+                      className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-mono text-amber-300 hover:bg-amber-500/20 transition-colors"
+                    >
+                      Re-run Verification
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1678,10 +1723,14 @@ export function InteractiveDemoWorkspace({
                   </div>
                   <button
                     onClick={handleExportPatch}
-                    disabled={loadingStep === 9}
-                    className="w-full rounded-xl border border-[#BFFF00]/40 bg-[#BFFF00]/10 px-4 py-2.5 text-xs font-bold text-[#BFFF00] hover:bg-[#BFFF00] hover:text-black transition-all font-sans"
+                    disabled={loadingStep === 9 || proofReport?.verdict !== "verified_fix"}
+                    className="w-full rounded-xl border border-[#BFFF00]/40 bg-[#BFFF00]/10 px-4 py-2.5 text-xs font-bold text-[#BFFF00] hover:bg-[#BFFF00] hover:text-black disabled:opacity-40 disabled:cursor-not-allowed transition-all font-sans"
                   >
-                    {loadingStep === 9 ? "Exporting…" : "⬇ Download .patch File"}
+                    {loadingStep === 9
+                      ? "Exporting…"
+                      : proofReport?.verdict !== "verified_fix"
+                      ? "Export Blocked (Fix Unverified)"
+                      : "⬇ Download .patch File"}
                   </button>
                 </div>
 
@@ -1702,13 +1751,15 @@ export function InteractiveDemoWorkspace({
                   </div>
                   <button
                     onClick={handleSimulatePR}
-                    disabled={simulatingPR || simulatedPR !== null}
-                    className="w-full rounded-xl bg-gradient-to-r from-[#BFFF00] to-emerald-400 px-4 py-2.5 text-xs font-bold text-black hover:brightness-110 disabled:opacity-50 transition-all font-sans"
+                    disabled={simulatingPR || simulatedPR !== null || proofReport?.verdict !== "verified_fix"}
+                    className="w-full rounded-xl bg-gradient-to-r from-[#BFFF00] to-emerald-400 px-4 py-2.5 text-xs font-bold text-black hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-all font-sans"
                   >
                     {simulatingPR
                       ? "Generating PR Preview…"
                       : simulatedPR
                       ? "PR #101 Simulated"
+                      : proofReport?.verdict !== "verified_fix"
+                      ? "PR Simulation Blocked (Fix Unverified)"
                       : "⚡ Simulate Pull Request"}
                   </button>
                 </div>
@@ -1758,19 +1809,33 @@ export function InteractiveDemoWorkspace({
                 </div>
               )}
 
-              {/* Completion Celebration Banner */}
-              <div className="rounded-xl border border-white/10 bg-gradient-to-r from-[#0d1612] via-[#09151c] to-[#0c1017] p-5 space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="size-2 rounded-full bg-[#BFFF00]" />
-                  <p className="text-xs font-bold font-mono uppercase text-[#BFFF00]">
-                    Interactive Proof-of-Fix Pipeline Complete
+              {/* Completion Celebration or Incomplete Banner */}
+              {proofReport?.verdict === "verified_fix" ? (
+                <div className="rounded-xl border border-white/10 bg-gradient-to-r from-[#0d1612] via-[#09151c] to-[#0c1017] p-5 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="size-2 rounded-full bg-[#BFFF00]" />
+                    <p className="text-xs font-bold font-mono uppercase text-[#BFFF00]">
+                      Interactive Proof-of-Fix Pipeline Complete
+                    </p>
+                  </div>
+                  <p className="text-xs text-zinc-300 leading-relaxed font-sans">
+                    You have successfully observed the end-to-end evidence-driven repair lifecycle:
+                    Issue Discovery → AST Grounding → Patch Synthesis → Mandatory Operator Approval → Isolated Dual-Sandbox Execution → Cryptographic Proof-of-Fix Verification.
                   </p>
                 </div>
-                <p className="text-xs text-zinc-300 leading-relaxed font-sans">
-                  You have successfully observed the end-to-end evidence-driven repair lifecycle:
-                  Issue Discovery → AST Grounding → Patch Synthesis → Mandatory Operator Approval → Isolated Dual-Sandbox Execution → Cryptographic Proof-of-Fix Verification.
-                </p>
-              </div>
+              ) : (
+                <div className="rounded-xl border border-rose-500/30 bg-rose-950/20 p-5 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="size-2 rounded-full bg-rose-400" />
+                    <p className="text-xs font-bold font-mono uppercase text-rose-400">
+                      Pipeline Incomplete — Fix Not Verified ({proofReport?.verdict ? proofReport.verdict.toUpperCase().replace(/_/g, " ") : "PENDING"})
+                    </p>
+                  </div>
+                  <p className="text-xs text-zinc-300 leading-relaxed font-sans">
+                    Dual-sandbox verification did not establish a proven fix. Exporting verified patches and simulating pull requests are strictly blocked until an authentic fix is verified.
+                  </p>
+                </div>
+              )}
 
               {/* Action Buttons */}
               <div className="flex items-center justify-between pt-2">

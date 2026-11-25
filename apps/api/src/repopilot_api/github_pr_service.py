@@ -777,7 +777,13 @@ class GitHubPullRequestService:
             raise GitHubPRError("Verification run contains no patch content to export.")
 
         report = db.scalar(select(ProofReport).where(ProofReport.verification_run_id == run.id))
-        verdict = report.verdict if report else "unreproduced"
+        if report is None or report.verdict != ProofVerdict.VERIFIED_FIX.value:
+            verdict_str = report.verdict if report else "pending"
+            raise GitHubVerificationPrerequisiteError(
+                f"Cannot export verified patch: verification verdict is '{verdict_str}'. "
+                f"Only verified fixes qualify for verified patch export."
+            )
+        verdict = report.verdict
 
         filename = f"repopilot-fix-issue-{run.issue_number}.patch"
         branch = f"repopilot/fix-issue-{run.issue_number}"

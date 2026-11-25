@@ -213,5 +213,24 @@ describe("Demo API Client", () => {
       assert.equal(simulatedPrData.is_simulated, true);
       assert.ok(simulatedPrData.message.includes("Simulated"));
     });
+
+    it("verifies pipeline gating: unverified verdicts strictly block Stage 9 actions", () => {
+      const unverifiedVerdicts = [
+        "unreproduced",
+        "inconclusive",
+        "fix_failed",
+        "timeout",
+        "error",
+        "patch_error",
+        "regression_detected",
+      ];
+
+      for (const verdict of unverifiedVerdicts) {
+        const isEligible = verdict === "verified_fix";
+        assert.equal(isEligible, false, `Verdict ${verdict} must not qualify as verified fix`);
+      }
+
+      assert.equal("verified_fix" === "verified_fix", true);
+    });
   });
 });

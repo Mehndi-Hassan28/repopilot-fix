@@ -982,10 +982,18 @@ class VerificationJobManager:
             active_runner.image = ImageValidator.validate(run.sandbox_image, require_digest=True)
 
         # Guard: Restrict real Docker execution in normal API flows
-        allow_docker = os.getenv("ALLOW_DOCKER_VERIFICATION_EXECUTION", "false").lower() in (
-            "true",
-            "1",
-        )
+        allow_docker_env = os.getenv("ALLOW_DOCKER_VERIFICATION_EXECUTION", "").strip().lower()
+        if allow_docker_env in ("true", "1"):
+            allow_docker = True
+        elif allow_docker_env in ("false", "0"):
+            allow_docker = False
+        else:
+            # When unset: permit Docker execution if running on a verified internal demo repository
+            from repopilot_api.demo import is_internal_demo_repository
+
+            repo = db.get(Repository, run.repository_id)
+            allow_docker = is_internal_demo_repository(db, repo, user_id=None)
+
         is_docker_runner = (
             hasattr(active_runner, "run")
             and getattr(active_runner, "__class__", None).__name__ == "DockerSandboxRunner"

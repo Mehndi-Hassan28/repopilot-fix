@@ -10,8 +10,6 @@ Provides an isolated, idempotent, deterministic demo environment:
 
 import hashlib
 import logging
-import shutil
-import subprocess
 import threading
 from datetime import UTC, datetime
 from typing import Any
@@ -40,7 +38,7 @@ from repopilot_api.models import (
     VerificationAuditEvent,
     VerificationRun,
 )
-from repopilot_api.sandbox import DEFAULT_SANDBOX_IMAGE
+from repopilot_api.sandbox import DEFAULT_SANDBOX_IMAGE, check_docker_daemon_status
 from repopilot_api.schemas import RepositoryRead
 from repopilot_api.security import AuthContext, get_optional_auth, require_csrf
 
@@ -136,26 +134,7 @@ def is_internal_demo_repository(
     return True
 
 
-def check_docker_daemon_status() -> tuple[bool, str]:
-    """Check whether host Docker daemon is available and accessible.
 
-    Fails closed and never fabricates container capability.
-    """
-    if shutil.which("docker") is None:
-        return False, "Docker CLI executable not found on host PATH."
-    try:
-        proc = subprocess.run(
-            ["docker", "info"],
-            capture_output=True,
-            timeout=6,
-            check=False,
-        )
-        if proc.returncode != 0:
-            err_msg = proc.stderr.decode("utf-8", errors="replace").strip()
-            return False, f"Docker daemon is not accessible: {err_msg[:120]}"
-    except Exception as exc:
-        return False, f"Docker daemon check failed: {exc}"
-    return True, "Docker daemon is running and accessible."
 
 
 # ==============================================================================

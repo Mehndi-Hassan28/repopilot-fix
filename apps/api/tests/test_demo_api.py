@@ -1244,4 +1244,168 @@ def test_stage5_and_stage7_verification_consistency(test_session, monkeypatch):
         assert result.evidence.test_command == DEMO_CALC_TEST_CMD
 
 
+def test_unverified_verdict_blocks_pr_and_patch_export(test_session, monkeypatch):
+    """Ensure PR creation and patch export are blocked if verification is not VERIFIED_FIX."""
+    from repopilot_api.models import ProofReport, VerificationRun
+
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+    client = get_client(test_session)
+    db = test_session()
+    user, headers = create_authenticated_user(db)
+
+    res_init = client.post("/api/demo/initialize", headers=headers)
+    assert res_init.status_code == 200
+    repo_id = res_init.json()["repository"]["id"]
+
+    res_create = client.post(
+        f"/api/repositories/{repo_id}/verifications",
+        json={
+            "commit_sha": DEMO_CALC_COMMIT_SHA,
+            "issue_number": 1,
+            "test_command": DEMO_CALC_TEST_CMD,
+            "patches": [{"file_path": "src/calculator.py", "diff": DEMO_CALC_FIX_PATCH}],
+            "hypothesis": "Test unverified gating",
+            "sandbox_image": DEFAULT_SANDBOX_IMAGE,
+            "auto_submit_approval": True,
+        },
+        headers=headers,
+    )
+    assert res_create.status_code == 201
+    run_id = res_create.json()["id"]
+
+    # Approve
+    client.post(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/approve",
+        json={"expected_spec_hash": res_create.json()["spec_hash"]},
+        headers=headers,
+    )
+
+    # Simulate completed run with UNREPRODUCED verdict
+    run = db.get(VerificationRun, run_id)
+    run.status = "completed"
+    report = ProofReport(
+        verification_run_id=run.id,
+        verdict="unreproduced",
+        hypothesis="Original bug not reproducible",
+        summary="Baseline passed without reproducing bug",
+        baseline_summary="Passed",
+        patched_summary="Pending",
+        confidence="low",
+        evidence_json="{}",
+    )
+    db.add(report)
+    db.commit()
+
+    # PR creation must be blocked
+    res_pr = client.post(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/create-pr",
+        json={"custom_title": "Blocked PR"},
+        headers=headers,
+    )
+    assert res_pr.status_code == 400
+    assert "Only verified fixes ('verified_fix') qualify for PR creation" in res_pr.json()["detail"]
+
+    # Patch export must be blocked
+    res_export = client.get(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/export-patch",
+        headers=headers,
+    )
+    assert res_export.status_code == 400
+    assert "Only verified fixes qualify for verified patch export" in res_export.json()["detail"]
+
+
+@pytest.mark.docker
+def test_demo_real_docker_verification_e2e(test_session, monkeypatch):
+    """Execute end-to-end demo verification workflow using real Docker containers."""
+    import anyio
+
+    from repopilot_api.sandbox import check_docker_daemon_status
+
+    docker_ok, reason = check_docker_daemon_status()
+    if not docker_ok:
+        pytest.skip(f"Docker daemon unavailable: {reason}")
+
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+    client = get_client(test_session)
+    db = test_session()
+    user, headers = create_authenticated_user(db)
+
+    # Step 1: Initialize demo repository
+    res_init = client.post("/api/demo/initialize", headers=headers)
+    assert res_init.status_code == 200
+    repo_id = res_init.json()["repository"]["id"]
+
+    # Step 2: Create verification run
+    res_create = client.post(
+        f"/api/repositories/{repo_id}/verifications",
+        json={
+            "commit_sha": DEMO_CALC_COMMIT_SHA,
+            "issue_number": 1,
+            "test_command": DEMO_CALC_TEST_CMD,
+            "patches": [{"file_path": "src/calculator.py", "diff": DEMO_CALC_FIX_PATCH}],
+            "hypothesis": "Fix power operator bug from multiplication to exponentiation",
+            "sandbox_image": DEFAULT_SANDBOX_IMAGE,
+            "auto_submit_approval": True,
+        },
+        headers=headers,
+    )
+    assert res_create.status_code == 201
+    run_id = res_create.json()["id"]
+    spec_hash = res_create.json()["spec_hash"]
+
+    # Step 3: Human operator approval
+    res_approve = client.post(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/approve",
+        json={"expected_spec_hash": spec_hash, "comment": "Operator verified approval"},
+        headers=headers,
+    )
+    assert res_approve.status_code == 200
+
+    # Step 4: Execute real Docker verification (uses auto-detected DockerSandboxRunner)
+    async def do_execute():
+        return await VerificationJobManager.execute_job(db=db, run_id=run_id, user_id=user.id)
+
+    result = anyio.run(do_execute)
+
+    # Assert exact deterministic evidence-based outcomes
+    assert result.verdict == ProofVerdict.VERIFIED_FIX
+    assert result.evidence is not None
+    assert result.evidence.baseline_exit_code == 1
+    assert result.evidence.patched_exit_code == 0
+    assert result.evidence.baseline_metrics.total == 6
+    assert result.evidence.baseline_metrics.failed == 2
+    assert result.evidence.baseline_metrics.passed == 4
+    assert result.evidence.patched_metrics.total == 6
+    assert result.evidence.patched_metrics.failed == 0
+    assert result.evidence.patched_metrics.passed == 6
+    assert len(result.evidence.resolved_test_ids) == 2
+    assert len(result.evidence.new_failed_test_ids) == 0
+
+    # Step 5: Check Report API
+    res_report = client.get(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/report",
+        headers=headers,
+    )
+    assert res_report.status_code == 200
+    assert res_report.json()["verdict"] == "verified_fix"
+
+    # Step 6: Export Patch succeeds for verified fix
+    res_export = client.get(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/export-patch",
+        headers=headers,
+    )
+    assert res_export.status_code == 200
+    assert "return base ** exponent" in res_export.json()["patch_diff"]
+
+    # Step 7: Simulated PR succeeds for verified fix
+    res_pr = client.post(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/create-pr",
+        json={"custom_title": "Fix power calculation in calculator"},
+        headers=headers,
+    )
+    assert res_pr.status_code == 200
+    assert res_pr.json()["pr_number"] == 101
+    assert res_pr.json()["success"] is True
+
+
 

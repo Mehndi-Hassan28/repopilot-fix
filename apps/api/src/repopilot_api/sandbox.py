@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import time
 import uuid
 from datetime import UTC, datetime
@@ -834,10 +835,38 @@ class DockerSandboxRunner(SandboxRunner):
             await self.limiter.release(run_id)
 
 
+def check_docker_daemon_status() -> tuple[bool, str]:
+    """Check whether host Docker daemon is available and accessible.
+
+    Fails closed and never fabricates container capability.
+    """
+    if shutil.which("docker") is None:
+        return False, "Docker CLI executable not found on host PATH."
+    try:
+        proc = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            timeout=6,
+            check=False,
+        )
+        if proc.returncode != 0:
+            err_msg = proc.stderr.decode("utf-8", errors="replace").strip()
+            return False, f"Docker daemon is not accessible: {err_msg[:120]}"
+    except Exception as exc:
+        return False, f"Docker daemon check failed: {exc}"
+    return True, "Docker daemon is running and accessible."
+
+
 def get_sandbox_runner(worker_id: str | None = None) -> SandboxRunner:
     """Factory creating the appropriate runner according to server environment configuration."""
-    provider = os.getenv("SANDBOX_PROVIDER", "mock").lower()
+    provider = os.getenv("SANDBOX_PROVIDER", "").strip().lower()
     scratch_root = os.getenv("SANDBOX_SCRATCH_ROOT", DEFAULT_SCRATCH_ROOT)
+
+    # Auto-detect when unset or explicitly set to auto
+    if not provider or provider == "auto":
+        is_avail, _ = check_docker_daemon_status()
+        provider = "docker" if is_avail else "mock"
+
     if provider == "mock":
         return MockSandboxRunner(scratch_root=scratch_root)
     if provider == "docker":
@@ -852,5 +881,5 @@ def get_sandbox_runner(worker_id: str | None = None) -> SandboxRunner:
             worker_id=worker_id,
         )
     raise SandboxConfigurationError(
-        f"Unsupported SANDBOX_PROVIDER '{provider}'. Use 'mock' or 'docker'."
+        f"Unsupported SANDBOX_PROVIDER '{provider}'. Use 'mock', 'docker', or 'auto'."
     )
