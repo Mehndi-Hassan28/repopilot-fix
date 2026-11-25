@@ -184,7 +184,65 @@ Deploying the Next.js 15 web client to Vercel connected to the Render backend (`
 #### 4. Cloud Demo Behavior (Render + Vercel)
 In the free cloud tier where `SANDBOX_PROVIDER=mock` and `ALLOW_DOCKER_VERIFICATION_EXECUTION=false`:
 * The backend `/api/demo/status` endpoint truthfully reports `docker_available: false` with `docker_status_message: "Docker CLI executable not found on host PATH."`
-* Stage 7 displays an authentic evidence warning: `⚠ Docker Daemon Offline / Inaccessible` and prevents mock execution from being represented as a real verified fix.
-* Stages 8 and 9 strictly gate patch export and PR creation on authentic `verified_fix` verdicts, ensuring no unverified or mock patches can be exported.
+* When an active cloud worker or dispatch token is configured, `cloud_worker_available: true` is reported, allowing users to trigger a genuine GitHub Actions container verification run.
+* If no worker is running, users can seamlessly enter **Cloud Preview Mode**, which allows exploring all stages of the deterministic repair pipeline safely without fabricating execution evidence.
+* Stages 8 and 9 strictly gate patch export and real PR creation on authentic `verified_fix` verdicts, ensuring unverified diffs cannot be exported.
+
+#### 5. Bounded On-Demand GitHub Actions Verification Worker (Free Tier)
+Because `Mehndi-Hassan28/repopilot-fix` is a public GitHub repository, standard Linux GitHub Actions runners (Ubuntu 24.04 with Docker pre-installed) are 100% free with unlimited minutes under GitHub's standard open-source policy.
+
+##### Architecture & Safeguards
+* **Workflow file:** `.github/workflows/verification-worker.yml`
+* **Trigger:** `workflow_dispatch` (manual) or `repository_dispatch` (automated on-demand from Render API).
+* **Strict Bounds:** 5-minute hard timeout (`timeout-minutes: 5`), concurrency group limit of 1 job (`concurrency: repopilot-verification-worker`), single-job execution (`--once --max-jobs 1`).
+* **Sandbox Security:** Docker runs with `--network none`, non-root user, read-only rootfs, and tmpfs boundaries.
+* **Secrets Isolation:** The database connection string is stored in GitHub Actions repository secrets (`secrets.DATABASE_URL`) and is never exposed in logs, API responses, or to public visitors.
+
+##### Configuration Steps
+1. Navigate to **GitHub Repository Settings → Secrets and variables → Actions**.
+2. Add Repository Secret:
+   * **Name:** `DATABASE_URL`
+   * **Value:** Your Neon PostgreSQL connection string (`postgresql+psycopg://...`).
+3. (Optional for Automated Backend Dispatch) In Render Web Service Environment:
+   * **Name:** `GITHUB_WORKER_DISPATCH_TOKEN`
+   * **Value:** Fine-grained GitHub Personal Access Token with `Actions: write` scope on `Mehndi-Hassan28/repopilot-fix`.
+   * **Name:** `GITHUB_REPOSITORY`
+   * **Value:** `Mehndi-Hassan28/repopilot-fix`
+
+#### 6. Production AI Configuration (Google Gemini Free Tier)
+RepoPilot Fix connects to Google Gemini using the OpenAI-compatible endpoint supported by Google AI Studio's free tier (15 requests/minute, 1,500 requests/day, zero billing required).
+
+##### Render Backend Configuration
+Set the following environment variables in the Render Dashboard:
+```ini
+CHAT_PROVIDER=openai_compatible
+CHAT_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+CHAT_MODEL=gemini-2.5-flash
+CHAT_API_KEY=<your_gemini_api_key_from_ai_studio>
+
+# Public AI Protection:
+# When false (default), anonymous guest visitors use deterministic mock AI to protect your free quota.
+# Authenticated GitHub users use live Gemini.
+ALLOW_PUBLIC_AI=false
+```
+
+#### 7. Production GitHub OAuth App Setup
+To enable one-click GitHub login on the production Vercel frontend:
+
+1. Go to **GitHub Settings → Developer settings → OAuth Apps → New OAuth App**:
+   * **Application name:** `RepoPilot Fix (Production)`
+   * **Homepage URL:** `https://repopilot-fix.vercel.app`
+   * **Application description:** `Evidence-driven automated bug repair engine.`
+   * **Authorization callback URL:** `https://repopilot-fix.vercel.app/api/auth/github/callback`
+2. Generate a new **Client secret**.
+3. In the **Render Dashboard**, set environment variables:
+   * `GITHUB_CLIENT_ID`: `<OAuth Client ID>`
+   * `GITHUB_CLIENT_SECRET`: `<OAuth Client Secret>`
+   * `GITHUB_OAUTH_REDIRECT_URI`: `https://repopilot-fix.vercel.app/api/auth/github/callback`
+   * `FRONTEND_URL`: `https://repopilot-fix.vercel.app`
+   * `CORS_ORIGINS`: `https://repopilot-fix.vercel.app`
+   * `COOKIE_SECURE`: `true`
+4. The same-origin reverse proxy on Vercel routes `/api/auth/github/callback` to Render, setting the `repopilot_session` cookie as a secure, first-party cookie on `repopilot-fix.vercel.app`. Guest demo functionality remains fully active for visitors who do not log in.
+
 
 

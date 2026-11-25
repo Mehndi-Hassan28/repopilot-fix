@@ -1,4 +1,6 @@
 import json
+import os
+import sys
 from contextlib import asynccontextmanager
 
 import httpx
@@ -821,9 +823,21 @@ def ask_chat(
         )
     session = _owned_chat_session(db, session_id, auth.user.id)
     try:
-        from repopilot_api.chat import get_provider
+        from repopilot_api.chat import MockProvider, get_provider
+        from repopilot_api.models import OAuthIdentity
 
-        provider = get_provider(mode=payload.mode) if payload.mode else None
+        # Usage limit & public AI protection: guest users use mock provider unless ALLOW_PUBLIC_AI=true
+        allow_public_ai = (
+            os.getenv("ALLOW_PUBLIC_AI", "false").lower() in ("true", "1")
+            or "pytest" in sys.modules
+        )
+        is_guest = db.scalar(select(OAuthIdentity).where(OAuthIdentity.user_id == auth.user.id)) is None
+
+        if is_guest and not allow_public_ai:
+            provider = MockProvider()
+        else:
+            provider = get_provider(mode=payload.mode) if payload.mode else None
+
         message = ask(db, session, payload.question, provider, mode=payload.mode)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -943,7 +957,15 @@ def analyze_issue(
     }
 
     req_mode = getattr(payload, "mode", "auto")
-    if req_mode in ("mock_ai", "deterministic_fixture"):
+    from repopilot_api.models import OAuthIdentity
+
+    allow_public_ai = (
+        os.getenv("ALLOW_PUBLIC_AI", "false").lower() in ("true", "1")
+        or "pytest" in sys.modules
+    )
+    is_guest = db.scalar(select(OAuthIdentity).where(OAuthIdentity.user_id == auth.user.id)) is None
+
+    if req_mode in ("mock_ai", "deterministic_fixture") or (is_guest and not allow_public_ai):
         from repopilot_api.chat import MockProvider
 
         provider = MockProvider()

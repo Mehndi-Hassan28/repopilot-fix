@@ -24,6 +24,7 @@ import {
   initializeDemo,
   resetDemo,
   createGuestSession,
+  dispatchDemoWorker,
 } from "../lib/demo-api";
 import {
   createVerification,
@@ -101,6 +102,8 @@ export function InteractiveDemoWorkspace({
   const [simulatedPR, setSimulatedPR] = useState<PullRequestCreateResponse | null>(null);
   const [simulatingPR, setSimulatingPR] = useState<boolean>(false);
   const [isCloudPreview, setIsCloudPreview] = useState<boolean>(false);
+  const [isWorkerPolling, setIsWorkerPolling] = useState<boolean>(false);
+  const [pollingElapsed, setPollingElapsed] = useState<number>(0);
 
   const reportEvidence = (proofReport?.evidence || {}) as Partial<ProofEvidence>;
   const autoRunAbortRef = useRef<boolean>(false);
@@ -464,6 +467,100 @@ export function InteractiveDemoWorkspace({
     }
   };
 
+  // Stage 7 Cloud Worker: Trigger GitHub Actions verification runner and poll until completion
+  const handleStep7DispatchCloudWorker = async () => {
+    const targetId = activeRepo?.id || demoInitRef.current?.repository.id || demoInit?.repository.id;
+    const runId = verificationRunRef.current?.id || verificationRun?.id;
+    if (!targetId || !runId) {
+      setStepError({ step: 7, message: "Approved verification run required. Complete Stage 6 first." });
+      return;
+    }
+
+    setLoadingStep(7);
+    setIsWorkerPolling(true);
+    setPollingElapsed(0);
+    setStepError(null);
+
+    const startTime = Date.now();
+    const timerInterval = setInterval(() => {
+      setPollingElapsed(Math.floor((Date.now() - startTime) / 1000));
+    }, 1000);
+
+    try {
+      // 1. Request on-demand worker dispatch
+      try {
+        await dispatchDemoWorker(activeCsrf || csrfToken);
+      } catch {
+        // Fallback: Continue polling even if dispatch endpoint is deferred
+      }
+
+      // 2. Poll for job completion (up to 90 seconds = 30 attempts * 3s)
+      const maxAttempts = 30;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+
+        const updatedRun = await getVerification(targetId, runId);
+        setVerificationRun(updatedRun);
+        verificationRunRef.current = updatedRun;
+
+        if (updatedRun.status === "completed") {
+          clearInterval(timerInterval);
+          setIsWorkerPolling(false);
+          setLoadingStep(null);
+
+          const report = await getVerificationReport(targetId, runId);
+          setProofReport(report);
+          setMaxCompletedStep((prev) => Math.max(prev, 8));
+          setCurrentStep(8);
+          if (report.verdict === "verified_fix") {
+            setMaxCompletedStep(9);
+          }
+          await refreshDemoStatus();
+          return report;
+        }
+
+        if (updatedRun.status === "failed") {
+          clearInterval(timerInterval);
+          setIsWorkerPolling(false);
+          setLoadingStep(null);
+          setStepError({
+            step: 7,
+            message: `Cloud verification worker reported failure: ${updatedRun.error_message || "Execution failed in container sandbox"}.`,
+          });
+          return;
+        }
+
+        if (updatedRun.status === "cancelled") {
+          clearInterval(timerInterval);
+          setIsWorkerPolling(false);
+          setLoadingStep(null);
+          setStepError({
+            step: 7,
+            message: "Verification run was cancelled.",
+          });
+          return;
+        }
+      }
+
+      // Timeout after 90 seconds
+      clearInterval(timerInterval);
+      setIsWorkerPolling(false);
+      setLoadingStep(null);
+      setStepError({
+        step: 7,
+        message: "Cloud verification worker is queued or taking longer than 90s to complete. You can continue waiting, check GitHub Actions, or explore Cloud Preview Mode.",
+      });
+    } catch (err) {
+      clearInterval(timerInterval);
+      setIsWorkerPolling(false);
+      setLoadingStep(null);
+      setStepError({
+        step: 7,
+        message: formatErrorMessage(err, "Failed during cloud worker polling."),
+      });
+    }
+  };
+
   // Cloud Preview Mode: Allows safe exploration of Stage 8 & Stage 9 without Docker
   const handleEnterCloudPreview = () => {
     setIsCloudPreview(true);
@@ -805,6 +902,8 @@ export function InteractiveDemoWorkspace({
       setExportedPatch(null);
       setSimulatedPR(null);
       setIsCloudPreview(false);
+      setIsWorkerPolling(false);
+      setPollingElapsed(0);
       setStepError(null);
       setMaxCompletedStep(0);
       setCurrentStep(1);
@@ -1590,43 +1689,84 @@ export function InteractiveDemoWorkspace({
                 </span>
               </div>
 
-              {/* Live Docker Daemon Status Handling */}
+              {/* Live Docker Daemon / Cloud Worker Handling */}
               {demoStatus && !demoStatus.docker_available ? (
-                <div className="rounded-xl border border-amber-500/40 bg-amber-950/20 p-5 space-y-4">
-                  <div className="flex items-center gap-2 text-amber-300 font-mono text-xs font-bold uppercase">
-                    <span>⚠ Docker Daemon Offline / Inaccessible</span>
+                demoStatus.cloud_worker_available || demoStatus.cloud_worker_dispatch_configured ? (
+                  <div className="rounded-xl border border-cyan-500/40 bg-cyan-950/20 p-5 space-y-4">
+                    <div className="flex items-center gap-2 text-cyan-300 font-mono text-xs font-bold uppercase">
+                      <span className="size-2 rounded-full bg-cyan-400 animate-pulse" />
+                      <span>Cloud Verification Worker Available (GitHub Actions Docker Sandbox)</span>
+                    </div>
+                    <p className="text-xs text-zinc-300 leading-relaxed font-sans">
+                      The Render Web Service operates without a local Docker daemon. An on-demand GitHub Actions verification runner with native Docker access is ready to execute genuine dual-sandbox verification (baseline defect run vs. patched run) for this deterministic calculator fixture.
+                    </p>
+                    <div className="font-mono text-xs text-cyan-200 bg-[#0c0e14] p-3 rounded-lg border border-cyan-500/20">
+                      {isWorkerPolling
+                        ? `Worker polling active: run #${verificationRun?.id || 1} [status: ${verificationRun?.status || "queued"}] (${pollingElapsed}s elapsed)`
+                        : demoStatus.worker_status_message || "GitHub Actions worker ready to dispatch."}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3 pt-1">
+                      <button
+                        onClick={handleStep7DispatchCloudWorker}
+                        disabled={isWorkerPolling || loadingStep === 7}
+                        className="rounded-lg bg-cyan-400 text-black px-4 py-2 text-xs font-bold hover:bg-cyan-300 disabled:opacity-50 transition-colors font-sans flex items-center gap-1.5"
+                      >
+                        <span>{isWorkerPolling ? `Executing Dual Sandboxes (${pollingElapsed}s)…` : "⚡ Dispatch GitHub Actions Worker & Verify"}</span>
+                        <span>→</span>
+                      </button>
+                      <button
+                        onClick={handleEnterCloudPreview}
+                        disabled={isWorkerPolling}
+                        className="rounded-lg bg-amber-400 text-black px-4 py-2 text-xs font-bold hover:bg-amber-300 disabled:opacity-50 transition-colors font-sans"
+                      >
+                        Explore Cloud Preview Mode →
+                      </button>
+                      <button
+                        onClick={handleCancelQueuedRun}
+                        disabled={isWorkerPolling}
+                        className="rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 px-3 py-2 text-xs font-mono hover:bg-rose-500/30 disabled:opacity-50 transition-colors ml-auto"
+                      >
+                        Cancel Queued Run & Reset
+                      </button>
+                    </div>
                   </div>
-                  <p className="text-xs text-zinc-300 leading-relaxed font-sans">
-                    Docker is currently offline or the socket is inaccessible on this host:
-                  </p>
-                  <p className="font-mono text-xs text-amber-200 bg-[#0c0e14] p-3 rounded-lg border border-amber-500/20">
-                    {demoStatus.docker_status_message}
-                  </p>
-                  <p className="text-[11px] text-zinc-400 font-sans leading-relaxed">
-                    RepoPilot Fix strictly adheres to authentic evidence verification: real execution is never fabricated when Docker is unavailable. You can safely explore the deterministic repair lifecycle via Cloud Preview Mode without container execution.
-                  </p>
-                  <div className="flex flex-wrap items-center gap-3 pt-1">
-                    <button
-                      onClick={() => void refreshDemoStatus()}
-                      className="rounded-lg bg-white/10 text-zinc-200 border border-white/20 px-3 py-2 text-xs font-semibold hover:bg-white/20 transition-colors font-sans"
-                    >
-                      Check Docker Status Again
-                    </button>
-                    <button
-                      onClick={handleEnterCloudPreview}
-                      className="rounded-lg bg-amber-400 text-black px-4 py-2 text-xs font-bold hover:bg-amber-300 transition-colors font-sans flex items-center gap-1.5"
-                    >
-                      <span>Explore Cloud Preview Mode</span>
-                      <span>→</span>
-                    </button>
-                    <button
-                      onClick={handleCancelQueuedRun}
-                      className="rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 px-3 py-2 text-xs font-mono hover:bg-rose-500/30 transition-colors"
-                    >
-                      Cancel Queued Run & Reset
-                    </button>
+                ) : (
+                  <div className="rounded-xl border border-amber-500/40 bg-amber-950/20 p-5 space-y-4">
+                    <div className="flex items-center gap-2 text-amber-300 font-mono text-xs font-bold uppercase">
+                      <span>⚠ Docker Daemon Offline / Inaccessible</span>
+                    </div>
+                    <p className="text-xs text-zinc-300 leading-relaxed font-sans">
+                      Docker is currently offline or the socket is inaccessible on this host:
+                    </p>
+                    <p className="font-mono text-xs text-amber-200 bg-[#0c0e14] p-3 rounded-lg border border-amber-500/20">
+                      {demoStatus.docker_status_message}
+                    </p>
+                    <p className="text-[11px] text-zinc-400 font-sans leading-relaxed">
+                      RepoPilot Fix strictly adheres to authentic evidence verification: real execution is never fabricated when Docker is unavailable. You can safely explore the deterministic repair lifecycle via Cloud Preview Mode without container execution.
+                    </p>
+                    <div className="flex flex-wrap items-center gap-3 pt-1">
+                      <button
+                        onClick={() => void refreshDemoStatus()}
+                        className="rounded-lg bg-white/10 text-zinc-200 border border-white/20 px-3 py-2 text-xs font-semibold hover:bg-white/20 transition-colors font-sans"
+                      >
+                        Check Docker Status Again
+                      </button>
+                      <button
+                        onClick={handleEnterCloudPreview}
+                        className="rounded-lg bg-amber-400 text-black px-4 py-2 text-xs font-bold hover:bg-amber-300 transition-colors font-sans flex items-center gap-1.5"
+                      >
+                        <span>Explore Cloud Preview Mode</span>
+                        <span>→</span>
+                      </button>
+                      <button
+                        onClick={handleCancelQueuedRun}
+                        className="rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 px-3 py-2 text-xs font-mono hover:bg-rose-500/30 transition-colors"
+                      >
+                        Cancel Queued Run & Reset
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )
               ) : (
                 <div className="space-y-4">
                   {/* Container Execution Visualization */}
@@ -1675,12 +1815,31 @@ export function InteractiveDemoWorkspace({
                   ← Back
                 </button>
                 {demoStatus && !demoStatus.docker_available ? (
-                  <button
-                    onClick={handleEnterCloudPreview}
-                    className="rounded-xl bg-amber-400 px-5 py-2.5 text-xs font-bold text-black hover:bg-amber-300 transition-all font-sans"
-                  >
-                    Explore Cloud Preview Mode →
-                  </button>
+                  demoStatus.cloud_worker_available || demoStatus.cloud_worker_dispatch_configured ? (
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={handleEnterCloudPreview}
+                        disabled={isWorkerPolling}
+                        className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs font-mono text-zinc-300 hover:text-white disabled:opacity-50"
+                      >
+                        Cloud Preview Mode →
+                      </button>
+                      <button
+                        onClick={handleStep7DispatchCloudWorker}
+                        disabled={isWorkerPolling || loadingStep === 7}
+                        className="rounded-xl bg-cyan-400 px-5 py-2.5 text-xs font-bold text-black hover:bg-cyan-300 disabled:opacity-50 transition-all font-sans"
+                      >
+                        {isWorkerPolling ? `Executing in Cloud Sandbox (${pollingElapsed}s)…` : "⚡ Dispatch GitHub Actions Worker →"}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={handleEnterCloudPreview}
+                      className="rounded-xl bg-amber-400 px-5 py-2.5 text-xs font-bold text-black hover:bg-amber-300 transition-all font-sans"
+                    >
+                      Explore Cloud Preview Mode →
+                    </button>
+                  )
                 ) : (
                   <button
                     onClick={async () => {

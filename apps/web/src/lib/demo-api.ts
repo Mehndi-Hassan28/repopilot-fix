@@ -126,3 +126,19 @@ export async function createGuestSession(): Promise<{
     method: "POST",
   });
 }
+
+export async function dispatchDemoWorker(csrfToken = ""): Promise<{
+  dispatched: boolean;
+  run_id: number;
+  status: string;
+  message: string;
+}> {
+  return request<{
+    dispatched: boolean;
+    run_id: number;
+    status: string;
+    message: string;
+  }>("/api/demo/dispatch-worker", {
+    method: "POST",
+  }, csrfToken);
+}
