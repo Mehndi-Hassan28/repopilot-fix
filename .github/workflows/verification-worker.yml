@@ -1,0 +1,75 @@
+name: Cloud Verification Worker
+
+# Milestone 3.6 / Cloud Production:
+# On-demand, bounded verification worker running exclusively for continuous integration
+# and fix verification of the trusted repository fixtures in Mehndi-Hassan28/repopilot-fix.
+#
+# Acceptable Use Policy Compliance:
+# - Strictly bounded to repository software verification (5m timeout, 1 job per run).
+# - Concurrency limit of 1 (strictly non-overlapping execution).
+# - Dispatched exclusively via workflow_dispatch requiring fine-grained Actions:write permission.
+# - Zero arbitrary code execution: server-side policy enforces registered trusted fixtures only.
+# - Zero secret leakage: Least-privilege PostgreSQL credentials stored in repository secrets.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Target Verification Run ID (optional, claims oldest queued run if omitted)"
+        required: false
+        type: string
+
+concurrency:
+  group: repopilot-verification-worker
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Execute Sandbox Verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install API package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./apps/api
+
+      - name: Pull authoritative sandbox image
+        run: |
+          docker pull python:3.11-slim
+
+      - name: Run verification worker (single job)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SANDBOX_PROVIDER: docker
+          ALLOW_DOCKER_VERIFICATION_EXECUTION: "true"
+          LOG_LEVEL: INFO
+          TARGET_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL secret is not configured in repository secrets."
+            exit 1
+          fi
+          RUN_ARG=""
+          if [ -n "$TARGET_RUN_ID" ]; then
+            RUN_ARG="--run-id $TARGET_RUN_ID"
+          fi
+          python -m repopilot_api.worker --once --max-jobs 1 --lease-seconds 60 $RUN_ARG
+
+      - name: Clean up temporary containers
+        if: always()
+        run: |
+          docker container prune -f --filter "label=repopilot.managed=true" || true

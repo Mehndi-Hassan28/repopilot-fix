@@ -259,6 +259,9 @@ export type DemoStatusResponse = {
   latest_run_status?: string | null;
   latest_report_verdict?: string | null;
   approved_spec_hash?: string | null;
+  cloud_worker_available?: boolean;
+  cloud_worker_dispatch_configured?: boolean;
+  worker_status_message?: string;
 };
 
 export type DemoInitializeResponse = {

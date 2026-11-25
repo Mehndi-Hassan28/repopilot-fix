@@ -41,6 +41,11 @@ from repopilot_api.models import (
 from repopilot_api.sandbox import DEFAULT_SANDBOX_IMAGE, check_docker_daemon_status
 from repopilot_api.schemas import RepositoryRead
 from repopilot_api.security import AuthContext, get_optional_auth, require_csrf
+from repopilot_api.verification_service import check_rate_limit
+from repopilot_api.worker_dispatch import (
+    dispatch_cloud_worker,
+    get_cloud_worker_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +177,9 @@ class DemoStatusResponse(BaseModel):
     latest_run_status: str | None = None
     latest_report_verdict: str | None = None
     approved_spec_hash: str | None = None
+    cloud_worker_available: bool = False
+    cloud_worker_dispatch_configured: bool = False
+    worker_status_message: str = ""
 
 
 class DemoInitializeResponse(BaseModel):
@@ -253,11 +261,16 @@ def get_demo_status(
 ):
     """Retrieve current user's demo environment status and Docker capability."""
     docker_ok, docker_msg = check_docker_daemon_status()
+    worker_info = get_cloud_worker_status(db)
+
     if auth is None:
         return DemoStatusResponse(
             initialized=False,
             docker_available=docker_ok,
             docker_status_message=docker_msg,
+            cloud_worker_available=worker_info["cloud_worker_available"],
+            cloud_worker_dispatch_configured=worker_info["cloud_worker_dispatch_configured"],
+            worker_status_message=worker_info["worker_status_message"],
         )
 
     repo = _get_user_demo_repository(db, auth.user.id)
@@ -267,6 +280,9 @@ def get_demo_status(
             initialized=False,
             docker_available=docker_ok,
             docker_status_message=docker_msg,
+            cloud_worker_available=worker_info["cloud_worker_available"],
+            cloud_worker_dispatch_configured=worker_info["cloud_worker_dispatch_configured"],
+            worker_status_message=worker_info["worker_status_message"],
         )
 
     # Check for latest verification run and proof report
@@ -298,7 +314,55 @@ def get_demo_status(
         latest_run_status=latest_run.status if latest_run else None,
         latest_report_verdict=latest_report.verdict if latest_report else None,
         approved_spec_hash=latest_run.approved_spec_hash if latest_run else None,
+        cloud_worker_available=worker_info["cloud_worker_available"],
+        cloud_worker_dispatch_configured=worker_info["cloud_worker_dispatch_configured"],
+        worker_status_message=worker_info["worker_status_message"],
     )
+
+
+@router.post("/dispatch-worker", status_code=status.HTTP_200_OK)
+async def dispatch_demo_worker(
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(require_csrf),
+):
+    """Trigger an on-demand GitHub Actions verification worker for the active demo run."""
+    if not check_rate_limit(f"dispatch_worker:{auth.user.id}", max_requests=3, window_seconds=60):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Worker dispatch rate limit exceeded. "
+            "Please wait a moment before requesting another worker.",
+        )
+
+    repo = _get_user_demo_repository(db, auth.user.id)
+    if not repo:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Demo repository not found.")
+
+    latest_run = db.scalar(
+        select(VerificationRun)
+        .where(VerificationRun.repository_id == repo.id)
+        .order_by(VerificationRun.id.desc())
+    )
+    if not latest_run or latest_run.status not in ("queued", "approved"):
+        status_desc = latest_run.status if latest_run else "none"
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"No queued verification run available to dispatch (current status: '{status_desc}').",
+        )
+
+    dispatched = await dispatch_cloud_worker(run_id=latest_run.id, repository_id=repo.id, db=db)
+    return {
+        "dispatched": dispatched,
+        "run_id": latest_run.id,
+        "status": latest_run.status,
+        "message": (
+            "GitHub Actions verification worker dispatched successfully."
+            if dispatched
+            else (
+                "Worker dispatch request accepted (token not configured; "
+                "workflow can be triggered manually in GitHub Actions)."
+            )
+        ),
+    }
 
 
 @router.post("/initialize", response_model=DemoInitializeResponse, status_code=status.HTTP_200_OK)

@@ -628,7 +628,7 @@ class WorkerLoop:
 
             await clear_cancellation_event(run_id)
 
-    async def run_once(self) -> bool:
+    async def run_once(self, target_run_id: int | None = None) -> bool:
         """Atomically claim and process at most one job.
 
         Returns True if a job was claimed and processed, False if queue was empty or slots full.
@@ -642,6 +642,7 @@ class WorkerLoop:
                 lease_duration_seconds=int(self.lease_duration),
                 max_global_concurrent=self.max_global_concurrent,
                 max_repo_concurrent=self.max_repo_concurrent,
+                target_run_id=target_run_id,
             )
             if run is not None:
                 run_id = run.id
@@ -653,7 +654,11 @@ class WorkerLoop:
         await self.process_job(run_id, fencing_token=fencing_token)
         return True
 
-    async def run(self, max_jobs: int | None = None) -> int:
+    async def run(
+        self,
+        max_jobs: int | None = None,
+        target_run_id: int | None = None,
+    ) -> int:
         """Run the worker polling loop until stopped or max_jobs processed.
 
         Performs crash recovery reconciliation on startup before claiming new work.
@@ -662,11 +667,13 @@ class WorkerLoop:
         self._is_running = True
         jobs_processed = 0
         logger.info(
-            "WorkerLoop '%s' started. poll_interval=%.2fs, lease_duration=%.1fs, max_jobs=%s",
+            "WorkerLoop '%s' started. poll_interval=%.2fs, lease_duration=%.1fs, "
+            "max_jobs=%s, target_run_id=%s",
             self.worker_id,
             self.poll_interval,
             self.lease_duration,
             max_jobs,
+            target_run_id,
         )
 
         # ----------------------------------------------------------------------
@@ -712,12 +719,17 @@ class WorkerLoop:
                     break
 
                 try:
-                    claimed = await self.run_once()
+                    claimed = await self.run_once(target_run_id=target_run_id)
                 except VerificationSchemaError:
                     raise
                 if claimed:
                     jobs_processed += 1
+                    if target_run_id is not None:
+                        break
                 else:
+                    if target_run_id is not None:
+                        # Targeted run was not available/claimable; terminate loop
+                        break
                     try:
                         await asyncio.wait_for(
                             self._stop_event.wait(), timeout=self.poll_interval
@@ -770,6 +782,12 @@ def main():
         help="Maximum number of jobs to process before exiting",
     )
     parser.add_argument(
+        "--run-id",
+        type=int,
+        default=None,
+        help="Target a specific verification run ID instead of claiming the oldest queued run",
+    )
+    parser.add_argument(
         "--worker-id",
         type=str,
         default=None,
@@ -812,9 +830,11 @@ def main():
 
     try:
         if args.once:
-            loop.run_until_complete(worker.run_once())
+            loop.run_until_complete(worker.run_once(target_run_id=args.run_id))
         else:
-            loop.run_until_complete(worker.run(max_jobs=args.max_jobs))
+            loop.run_until_complete(
+                worker.run(max_jobs=args.max_jobs, target_run_id=args.run_id)
+            )
     finally:
         loop.close()
 

@@ -3,7 +3,16 @@
 import json
 import logging
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Response,
+    status,
+)
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -43,6 +52,10 @@ from repopilot_api.verification_service import (
     VerificationSpecificationMismatchError,
     VerificationStateError,
     check_rate_limit,
+)
+from repopilot_api.worker_dispatch import (
+    dispatch_cloud_worker,
+    is_cloud_worker_dispatch_configured,
 )
 
 logger = logging.getLogger(__name__)
@@ -243,6 +256,7 @@ def approve_verification(
     payload: VerificationApprovalRequest = VerificationApprovalRequest(),
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(require_csrf),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """Explicitly approve an immutable verification specification."""
     access = _require_repository_access(db, repository_id, auth.user.id)
@@ -260,11 +274,76 @@ def approve_verification(
             auto_queue=payload.auto_queue,
             comment=payload.comment,
         )
+        repo = db.get(Repository, repository_id)
+        from repopilot_api.demo import is_internal_demo_repository
+
+        if (
+            payload.auto_queue
+            and is_cloud_worker_dispatch_configured()
+            and repo is not None
+            and is_internal_demo_repository(db, repo, auth.user.id)
+        ):
+            background_tasks.add_task(
+                dispatch_cloud_worker,
+                run_id=verification_id,
+                repository_id=repository_id,
+                db=db,
+            )
         return _run_to_read(run)
     except VerificationSpecificationMismatchError as spec_err:
         raise HTTPException(status.HTTP_409_CONFLICT, str(spec_err)) from spec_err
     except VerificationStateError as state_err:
         raise HTTPException(status.HTTP_409_CONFLICT, str(state_err)) from state_err
+
+
+@router.post("/{verification_id}/dispatch-worker")
+async def dispatch_verification_worker(
+    repository_id: int,
+    verification_id: int,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(require_csrf),
+):
+    """Explicitly dispatch an on-demand GitHub Actions verification worker for this run."""
+    access = _require_repository_access(db, repository_id, auth.user.id)
+    if access.role not in ("owner", "collaborator"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Unauthorized to dispatch worker.")
+
+    from repopilot_api.demo import is_internal_demo_repository
+
+    repo = db.get(Repository, repository_id)
+    if not (repo and is_internal_demo_repository(db, repo, auth.user.id)):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Cloud verification worker is restricted to trusted internal demo repositories.",
+        )
+
+    if not check_rate_limit(f"dispatch_worker:{auth.user.id}", max_requests=3, window_seconds=60):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Worker dispatch rate limit exceeded. "
+            "Please wait a moment before requesting another worker.",
+        )
+
+    run = _get_run_or_404(db, repository_id, verification_id)
+    if run.status not in ("queued", "approved"):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Run #{verification_id} is in status '{run.status}', not queued/approved.",
+        )
+
+    dispatched = await dispatch_cloud_worker(
+        run_id=verification_id, repository_id=repository_id, db=db
+    )
+    return {
+        "dispatched": dispatched,
+        "run_id": verification_id,
+        "status": run.status,
+        "message": (
+            "GitHub Actions verification worker dispatched successfully."
+            if dispatched
+            else "Worker dispatch request accepted (token not configured or deferred)."
+        ),
+    }
 
 
 @router.post("/{verification_id}/reject", response_model=VerificationRunRead)
