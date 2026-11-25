@@ -40,17 +40,17 @@ RepoPilot Fix replaces blind generation with a **closed-loop evidence engine**:
 
 ---
 
-## 4. Unique Differentiators
+## 4. Unique Architectural Differentiators
 
-| Feature | Conventional AI Assistants (Copilot, Cursor) | Autonomous PR Agents (Sweep, Devin) | RepoPilot Fix |
-|:---|:---:|:---:|:---:|
-| **Grounded Retrieval** | Keyword / Vector RAG | Broad Repository Search | **AST-Driven Symbol Resolution + BM25 Context Windows** |
-| **Cross-File Impact Analysis** | None (File Local) | Heuristic | **Static Call Graph & Blast Radius Traversal** |
-| **Independent Patch Synthesis** | Autocomplete only | Full Generation | **Constrained Unified Diff Synthesis (No Golden Diff Leakage)** |
-| **Pre-PR Verification** | None (User Tests Manually) | Cloud CI Pipeline | **Local Dual Docker Sandbox with Delta Test Evaluation** |
-| **Regression Prevention** | Blind to regressions | Detects CI Failure | **Distinguishes Original Failures vs New Regressions (`new_failed_test_ids`)** |
-| **Security Architecture** | Hosted cloud | Direct shell access | **Air-gapped (`--network none`), Non-root, Read-only, Fenced Workers** |
-| **Zero-Cost Operation** | Subscription required | Enterprise pricing | **100% Free-Tier / Offline Capable (`CHAT_PROVIDER=mock`)** |
+| Core Architectural Dimension | Standard Code Assistants | RepoPilot Fix Closed-Loop Architecture |
+|:---|:---|:---|
+| **Retrieval Strategy** | Naive keyword or chunk-based text search | **AST-Driven Symbol Mapping & Caller/Callee Resolution** |
+| **Defect Impact Scope** | Local file edits without dependency awareness | **Static Call Graph Traversal & Blast Radius Calculation** |
+| **Patch Formulation** | Unconstrained inline completions | **Constrained Unified Diff Synthesis (No Golden Diff Leakage)** |
+| **Verification Strategy** | None (Relies entirely on manual developer testing) | **Dual Docker Sandbox (Baseline Reproduction + Patched Verification)** |
+| **Regression Prevention** | Blind to new test failures introduced by patch | **Delta Test Failure Tracking (`new_failed_test_ids == 0`)** |
+| **Execution Security** | Direct local shell execution or cloud execution | **Air-gapped (`--network none`), Non-root (`1000:1000`), Read-only, Fenced Workers** |
+| **Infrastructure Cost** | Paid subscription or commercial cloud requirement | **100% Free-Tier & Local/Offline Capable (`CHAT_PROVIDER=mock`)** |
 
 ---
 
@@ -205,7 +205,7 @@ stateDiagram-v2
 
 ## 10. Security Architecture & Human Approval
 
-RepoPilot Fix enforces enterprise defense-in-depth principles:
+RepoPilot Fix enforces strict defense-in-depth security principles:
 
 1. **Private Worker Boundary:** The Docker socket is **never mounted** to public-facing API or Web containers. Container execution occurs exclusively inside a trusted private worker container on an internal bridge network (`backend-net`).
 2. **Hardened Container Sandbox Flags:**
@@ -311,7 +311,11 @@ RepoPilot Fix was rigorously benchmarked across 20 curated standalone defect-pat
 
 ## 13. Docker Compose Deployment
 
-For staging and production deployments, RepoPilot Fix provides an air-gapped, multi-service Docker Compose configuration:
+> [!NOTE]
+> **Deployment Status & Local Readiness Disclosure:**  
+> RepoPilot Fix v1.0.0 is packaged and validated as a **local, demo-ready application**. The Docker Compose configuration (`docker-compose.yml`) and containerfiles have been validated (`docker compose config`, image building, and PostgreSQL migration runs). However, running a multi-container Docker Compose cluster with background worker execution is an experimental self-hosted mode and has not been validated as an independently audited multi-tenant production cloud SaaS. For immediate exploration and hackathon demonstrations, the local native workflow (FastAPI + Next.js + PostgreSQL) is the verified and recommended environment.
+
+For staging and local multi-service testing, RepoPilot Fix provides an air-gapped, multi-service Docker Compose configuration:
 
 ```bash
 # 1. Build and start all 4 services (db, api, worker, web)

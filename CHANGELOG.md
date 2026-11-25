@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added multi-stage, unprivileged `apps/api/Dockerfile` (non-root `repopilot:1000`) and `apps/web/Dockerfile` (non-root `nextjs:1001`).
   - Added root `docker-compose.yml` orchestrating `db` (Postgres 16 Alpine), `api`, `worker`, and `web` with container healthchecks, persistent storage, and internal network segmentation (`backend-net`).
   - Added root `.dockerignore` strictly excluding `.git`, `.env*`, `.venv`, `node_modules`, and local agent configurations.
-- **Enterprise Operations & Deployment Documentation:**
+- **Operations & Deployment Documentation:**
   - Added [`docs/deployment/deployment_guide.md`](docs/deployment/deployment_guide.md) detailing architecture, reproducible local setup, zero-cost operations, manual Alembic migration procedures, and automated `pg_dump` backup/recovery workflows.
   - Added [`docs/evaluations/browser_smoke_test.md`](docs/evaluations/browser_smoke_test.md) certifying the complete 15-stage live HTTP user journey against running FastAPI and Next.js services.
 - **Hackathon & Presentation Materials:**

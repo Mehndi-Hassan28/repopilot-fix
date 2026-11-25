@@ -66,7 +66,7 @@ RepoPilot Fix closes the loop through four interlocking innovations:
 
 ## 5. Value Proposition by Stakeholder
 
-### For Engineering Leaders & VPs of Engineering
+### For Engineering Leaders
 - **Cuts MTTR (Mean Time to Resolution) by 70%:** Automates the most tedious 30 minutes of every bug ticket: reproduction, context gathering, and initial patch formulation.
 - **Zero Risk of Silent Regressions:** Every candidate patch is certified by delta test execution before code review.
 - **Air-Gapped Security Compliance:** Keeps untrusted code and LLM execution strictly isolated from host environments and production networks.
@@ -75,6 +75,6 @@ RepoPilot Fix closes the loop through four interlocking innovations:
 - **No More "Works On My Machine":** Delivers reproducible Proof-of-Fix evidence reports with exact container exit codes, logs, and test durations.
 - **Review Clean Diffs, Not AI Novelizations:** Produces minimal, atomic standard unified diffs instead of sprawling rewrites.
 
-### For Hackathon Judges & AI Recruiters
-- **Production-Grade Engineering:** Demonstrates end-to-end full-stack mastery—Next.js 15, FastAPI, SQLAlchemy row-locking distributed leases, Docker containerization, and static AST graph construction.
+### For Hackathon Judges & Evaluators
+- **Robust Full-Stack Engineering:** Demonstrates end-to-end full-stack mastery—Next.js 15, FastAPI, SQLAlchemy row-locking distributed leases, Docker containerization, and static AST graph construction.
 - **Honest, Empirical Methodology:** Full transparency regarding benchmark setup (defect-pattern fixtures, historical subprocess baseline vs production Docker verification).
