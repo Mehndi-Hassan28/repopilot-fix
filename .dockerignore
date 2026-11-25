@@ -1,0 +1,12 @@
+.git
+.github
+.env*
+.venv
+node_modules
+__pycache__
+*.pyc
+.next
+out
+docs/evaluations
+.agents
+.superdesign
