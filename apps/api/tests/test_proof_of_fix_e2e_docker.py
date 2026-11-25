@@ -260,6 +260,7 @@ async def test_demo_fixture_baseline_failure_and_patched_success_docker(test_ses
         hypothesis="power() incorrectly calculates base * exponent instead of base ** exponent",
         user_id=user.id,
         files=DEMO_FIXTURE_FILES,
+        timeout_seconds=60,
     )
 
     result = await engine.verify(req, db=db)
@@ -363,6 +364,7 @@ async def test_unsuccessful_fixes_blocked_from_pr_creation(test_session, tmp_pat
         patches=[PatchProposal(file_path="src/calculator.py", diff=DEMO_CALC_FAILED_PATCH)],
         user_id=user.id,
         files=DEMO_FIXTURE_FILES,
+        timeout_seconds=60,
     )
     res_failed = await engine_failed.verify(req_failed, db=db)
     assert res_failed.verdict == ProofVerdict.FIX_FAILED
