@@ -136,6 +136,12 @@ describe("Verification PR & Export Utilities", () => {
       assert.equal(formatErrorMessage(objErr, "Fallback"), "token: Token expired");
     });
 
+    it("translates queued state error to friendly worker explanation", () => {
+      const err = new Error("No Proof-of-Fix report found for verification run 1 (current state: 'queued').");
+      const result = formatErrorMessage(err, "Fallback");
+      assert.ok(result.includes("Verification job is queued awaiting an available Docker worker"));
+    });
+
     it("uses fallback string when error is empty or undefined", () => {
       assert.equal(formatErrorMessage(null, "Safe fallback"), "Safe fallback");
       assert.equal(formatErrorMessage(undefined, "Safe fallback"), "Safe fallback");
