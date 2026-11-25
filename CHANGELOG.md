@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Version Bump:** Bumped project versions across `apps/api/pyproject.toml` and `apps/web/package.json` to `1.0.0`.
+- **Interactive Demo PR Simulation & Error Handling (PR #24):**
+  - Fixed Git branch name validation in `PullRequestCreateRequest` to adhere to Git ref standards and permit valid branch names with hyphens and slashes (e.g., `fix/issue-1-power-calc`).
+  - Added structured error formatting utility (`formatApiDetail` and `formatErrorMessage`) to parse FastAPI 422 error detail arrays into human-readable messages, completely eliminating `[object Object]` error callouts across the demo UI.
+  - Enforced guest session authorization boundaries: guest users can create local simulated PR #101 in the database for verified demo fixtures, but are strictly forbidden from creating real GitHub PRs on external repositories with HTTP 403 Forbidden.
+  - Enforced simulation idempotency: repeated simulation requests return existing PR metadata with `status='already_exists'` and `is_simulated=True` without duplicate database entries.
+  - Expanded automated test suite to 372 passing tests across backend and frontend.
 - **Security Hardening & Runtime Verification:**
   - Added automatic Docker daemon capability detection in `get_sandbox_runner()`, dynamically selecting `DockerSandboxRunner` when Docker is active with safe fallback to `MockSandboxRunner`.
   - Allowed real Docker container execution for authenticated internal demo fixtures without weakening sandbox boundaries or bypassing human approval.

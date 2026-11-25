@@ -5,7 +5,7 @@
 [![Node: 22+](https://img.shields.io/badge/node-22+-green.svg)](package.json)
 [![Next.js: 15.5](https://img.shields.io/badge/Next.js-15.5-black.svg)](apps/web/package.json)
 [![FastAPI: 0.115](https://img.shields.io/badge/FastAPI-0.115-teal.svg)](apps/api/pyproject.toml)
-[![Test Coverage: 361 Total Tests](https://img.shields.io/badge/Tests-361%20Passed-brightgreen.svg)](#11-benchmark-results--verified-metrics)
+[![Test Coverage: 372 Total Tests](https://img.shields.io/badge/Tests-372%20Passed-brightgreen.svg)](#11-benchmark-results--verified-metrics)
 
 > **Autonomous software repair backed by AST code intelligence, dual-sandbox Docker reproduction, and cryptographic human-in-the-loop gating.**
 
@@ -255,10 +255,10 @@ RepoPilot Fix was rigorously benchmarked across 20 curated standalone defect-pat
 
 | Test Category | Passed | Skipped | Notes |
 |:---|:---:|:---:|:---|
-| **Backend Unit & Integration Tests** | **324** | 10 | Includes 28 mocked sandbox tests, 0 failures |
+| **Backend Unit & Integration Tests** | **327** | 10 | Includes 28 mocked sandbox tests, 0 failures |
 | **Real Docker Sandbox Tests** | **3** | 19 | Real container creation, air-gapping, execution (e2e demo) |
-| **Frontend Web Unit Tests** | **34** | 0 | Node test runner covering AST, API, and PR utilities |
-| **Total Automated Tests** | **361** | 29 | 100% Green in Local & GitHub Actions CI |
+| **Frontend Web Unit Tests** | **42** | 0 | Node test runner covering AST, API, error parsing, and PR utilities |
+| **Total Automated Tests** | **372** | 29 | 100% Green in Local & GitHub Actions CI |
 
 ---
 
