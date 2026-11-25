@@ -88,6 +88,7 @@ export type AuthUser = {
   id: number;
   login: string;
   avatar_url?: string;
+  is_guest?: boolean;
 };
 
 export type FileCitation = {

@@ -235,10 +235,86 @@ def auth_session(
         )
     )
     token = request.cookies.get(SESSION_COOKIE_NAME, "")
+    is_guest = identity is None
+    login = identity.login if identity else f"guest-{auth.user.id}"
     return {
         "authenticated": True,
-        "user": {"id": auth.user.id, "login": identity.login if identity else "github-user"},
+        "user": {
+            "id": auth.user.id,
+            "login": login,
+            "is_guest": is_guest,
+        },
         "csrf_token": csrf_token_for_session(token),
+    }
+
+
+@router.post("/guest")
+def guest_session(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    auth: AuthContext | None = Depends(get_optional_auth),
+):
+    """Initialize or reuse a secure guest demo session."""
+    origin = request.headers.get("origin", "").rstrip("/")
+    if origin and origin not in configured_origins():
+        raise HTTPException(403, "Origin not allowed.")
+
+    if auth is not None:
+        token = request.cookies.get(SESSION_COOKIE_NAME, "")
+        identity = db.scalar(
+            select(OAuthIdentity).where(
+                OAuthIdentity.user_id == auth.user.id,
+                OAuthIdentity.provider == "github",
+            )
+        )
+        login = identity.login if identity else f"guest-{auth.user.id}"
+        return {
+            "authenticated": True,
+            "user": {
+                "id": auth.user.id,
+                "login": login,
+                "is_guest": identity is None,
+            },
+            "csrf_token": csrf_token_for_session(token),
+        }
+
+    user = User()
+    db.add(user)
+    db.flush()
+
+    session_token = secrets.token_urlsafe(32)
+    csrf = csrf_token_for_session(session_token)
+    ttl = session_ttl_seconds()
+
+    db.add(
+        AuthSession(
+            user_id=user.id,
+            token_hash=digest(session_token),
+            csrf_hash=digest(csrf),
+            expires_at=datetime.now(UTC) + timedelta(seconds=ttl),
+        )
+    )
+    db.commit()
+
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        session_token,
+        max_age=ttl,
+        httponly=True,
+        secure=cookie_secure(),
+        samesite="lax",
+        path="/",
+    )
+
+    return {
+        "authenticated": True,
+        "user": {
+            "id": user.id,
+            "login": f"guest-{user.id}",
+            "is_guest": True,
+        },
+        "csrf_token": csrf,
     }
 
 
