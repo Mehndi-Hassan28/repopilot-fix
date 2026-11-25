@@ -22,3 +22,6 @@ htmlcov/
 # Local database rehearsal artifacts
 /apps/api/-
 /apps/api/.venv/db-backups/
+.agents/
+.superdesign/
+

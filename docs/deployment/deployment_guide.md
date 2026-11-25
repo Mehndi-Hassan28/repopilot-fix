@@ -136,3 +136,25 @@ docker compose start api worker web
    All services and configurations documented herein utilize 100% free open-source software (Linux, PostgreSQL, Node.js, Python, Docker). No paid cloud subscriptions or billable APIs were initiated or required.
 4. **Public Deployment Status:**
    In accordance with verification guidelines, RepoPilot Fix is verified locally in containerized and bare-metal environments. No public cloud URL is claimed without an active, verified, publicly accessible endpoint.
+
+---
+
+## 6. Cloud Deployment Audit & Genuinely Free Hosting Options
+
+For teams evaluating hosted cloud environments instead of local Docker Compose, the table below audits service requirements, free tier viability, and charge prevention measures:
+
+| Service Layer | Recommended Free Platform | Free Tier Specifications | Charge Protection & Caveats |
+|:---|:---|:---|:---|
+| **Frontend Web** | **Vercel Hobby** | Next.js 15 App Router, 100 GB bandwidth, unlimited deployments | Hard cap on free limits; no automatic overage charges. |
+| **Backend API** | **Render Free Web Service** | FastAPI (Python 3.12+), 512 MB RAM, 0.1 CPU, 750 free hrs/mo | Free instances spin down after 15 min idle (~50s cold start). |
+| **Database** | **Neon Free Tier** | PostgreSQL 16 serverless, 0.5 GB storage, autoscaling compute | Auto-suspends after 5 min idle (~500ms wake-up). No credit card required. |
+| **Verification Worker** | **Local Workstation / Private VM** | Docker engine with `--network none`, `--read-only`, tmpfs, caps | **NEVER expose Docker socket to public cloud PaaS or web APIs.** |
+
+### Secure Private Docker Worker Architecture
+- **Threat Vector:** Exposing the Docker socket (`/var/run/docker.sock`) over an unauthenticated TCP port or mounting it to a public-facing API creates an immediate remote code execution (RCE) risk with root-equivalent host compromise.
+- **Enforced Isolation:** In RepoPilot Fix, the verification worker operates strictly behind a private execution boundary. It has **no public ingress ports** and connects outbound only to PostgreSQL via `SELECT FOR UPDATE SKIP LOCKED` leases.
+- **Zero-Cost Deployment Options:**
+  1. *Local / On-Premise Worker:* Run the worker daemon on a local machine or private homelab server connecting to the cloud Neon database.
+  2. *Oracle Cloud Always Free VM:* 4 ARM Ampere cores, 24 GB RAM, 200 GB storage permanently free without unexpected charges.
+  3. *Cloud Simulation Mode:* Set `ALLOW_DOCKER_VERIFICATION_EXECUTION=false` in worker environment to run zero-risk deterministic simulation without requiring the Docker socket.
+
