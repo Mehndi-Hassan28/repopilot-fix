@@ -273,7 +273,7 @@ class GitHubPullRequest(Base):
         ForeignKey("repositories.id", ondelete="CASCADE"), index=True
     )
     verification_run_id: Mapped[int] = mapped_column(
-        ForeignKey("verification_runs.id", ondelete="CASCADE"), index=True
+        ForeignKey("verification_runs.id", ondelete="CASCADE"), index=True, unique=True
     )
     created_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True

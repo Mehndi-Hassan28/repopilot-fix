@@ -126,10 +126,22 @@ class WorkerLoop:
         """The verification run ID currently being processed, or None."""
         return self._current_job_id
 
-    def stop(self) -> None:
-        """Request graceful shutdown of the worker loop."""
-        logger.info("Signaling stop to WorkerLoop '%s'...", self.worker_id)
+    def stop(self, cancel_active: bool = False) -> None:
+        """Request graceful shutdown (or immediate cancellation if cancel_active is True)."""
+        logger.info(
+            "Signaling stop to WorkerLoop '%s' (cancel_active=%s)...",
+            self.worker_id,
+            cancel_active,
+        )
         self._stop_event.set()
+        if cancel_active and self._current_job_id is not None:
+            job_to_cancel = self._current_job_id
+            try:
+                loop = asyncio.get_running_loop()
+                from repopilot_api.verification_service import signal_cancellation
+                loop.create_task(signal_cancellation(job_to_cancel))
+            except RuntimeError:
+                pass
 
     def _fail_security(
         self,

@@ -323,6 +323,11 @@ class BenchmarkEvaluator:
 
             def _run_test(cwd: str) -> subprocess.CompletedProcess:
                 if self.use_docker:
+                    container_user = (
+                        f"{os.getuid()}:{os.getgid()}"
+                        if hasattr(os, "getuid") and os.getuid() != 0
+                        else "1000:1000"
+                    )
                     docker_cmd = [
                         "docker",
                         "run",
@@ -334,7 +339,9 @@ class BenchmarkEvaluator:
                         "--security-opt",
                         "no-new-privileges",
                         "-u",
-                        f"{os.getuid()}:{os.getgid()}",
+                        container_user,
+                        "--tmpfs",
+                        "/tmp:rw,noexec,nosuid,size=64m",
                         "--memory",
                         self.memory_limit,
                         "--memory-swap",
