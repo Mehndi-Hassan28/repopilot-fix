@@ -11,6 +11,7 @@ import type {
   PatchExportResponse,
   PullRequestStatusResponse,
 } from "./verification-types.ts";
+import { resolveApiUrl } from "./api.ts";
 
 export function formatApiDetail(detail: unknown): string {
   if (typeof detail === "string") return detail;
@@ -59,7 +60,6 @@ export function formatErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-const apiUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 
 export class VerificationApiError extends Error {
   status: number;
@@ -89,6 +89,7 @@ async function request<T>(
     headers.set("X-CSRF-Token", csrfToken);
   }
 
+  const apiUrl = resolveApiUrl();
   const response = await fetch(`${apiUrl}${path}`, {
     ...init,
     headers,

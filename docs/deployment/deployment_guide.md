@@ -158,3 +158,33 @@ For teams evaluating hosted cloud environments instead of local Docker Compose, 
   2. *Oracle Cloud Always Free VM:* 4 ARM Ampere cores, 24 GB RAM, 200 GB storage permanently free without unexpected charges.
   3. *Cloud Simulation Mode:* Set `ALLOW_DOCKER_VERIFICATION_EXECUTION=false` in worker environment to run zero-risk deterministic simulation without requiring the Docker socket.
 
+### Vercel Production Frontend Deployment Guide
+
+Deploying the Next.js 15 web client to Vercel connected to the Render backend (`https://repopilot-fix.onrender.com`):
+
+#### 1. Vercel Dashboard Project Settings
+* **Framework Preset:** Next.js
+* **Root Directory:** `apps/web` (select in General Settings)
+* **Build Command:** `next build` (default)
+* **Output Directory:** `.next` (default)
+* **Install Command:** `npm install` (default)
+* **Node.js Version:** `22.x`
+
+#### 2. Environment Variables on Vercel
+* `BACKEND_API_URL`: `https://repopilot-fix.onrender.com`
+  *(Used by `next.config.ts` rewrites to proxy `/api/:path*` and `/health` requests to Render server-side).*
+* `NEXT_PUBLIC_API_BASE_URL`: Leave empty / unset.
+  *(When unset or pointing to localhost, the client automatically defaults to same-origin relative URLs `""`, routing all browser calls through the Next.js reverse proxy).*
+
+#### 3. Same-Origin Proxy Architecture & Security
+* **No Cross-Origin Cookie Issues:** By proxying `/api/:path*` through Next.js, all session cookies (`repopilot_session`, `repopilot_oauth_state`) are received as first-party cookies for the Vercel domain. This eliminates third-party cookie blocking in Safari, Chrome, and Firefox.
+* **CORS Alignment:** Ensure the Render backend's `CORS_ORIGINS` and `FRONTEND_URL` include your exact Vercel production URL (e.g. `https://repopilot-fix.vercel.app`) without trailing slash.
+* **CSRF Protection:** The frontend client sends the `X-CSRF-Token` header on state-mutating requests, which the proxy forwards to Render where origin and HMAC session signatures are validated.
+
+#### 4. Cloud Demo Behavior (Render + Vercel)
+In the free cloud tier where `SANDBOX_PROVIDER=mock` and `ALLOW_DOCKER_VERIFICATION_EXECUTION=false`:
+* The backend `/api/demo/status` endpoint truthfully reports `docker_available: false` with `docker_status_message: "Docker CLI executable not found on host PATH."`
+* Stage 7 displays an authentic evidence warning: `⚠ Docker Daemon Offline / Inaccessible` and prevents mock execution from being represented as a real verified fix.
+* Stages 8 and 9 strictly gate patch export and PR creation on authentic `verified_fix` verdicts, ensuring no unverified or mock patches can be exported.
+
+
