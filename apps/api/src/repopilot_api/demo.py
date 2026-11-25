@@ -42,7 +42,7 @@ from repopilot_api.models import (
 )
 from repopilot_api.sandbox import DEFAULT_SANDBOX_IMAGE
 from repopilot_api.schemas import RepositoryRead
-from repopilot_api.security import AuthContext, get_current_auth, require_csrf
+from repopilot_api.security import AuthContext, get_optional_auth, require_csrf
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ def check_docker_daemon_status() -> tuple[bool, str]:
         proc = subprocess.run(
             ["docker", "info"],
             capture_output=True,
-            timeout=3,
+            timeout=6,
             check=False,
         )
         if proc.returncode != 0:
@@ -270,10 +270,17 @@ def _build_demo_init_response(
 @router.get("/status", response_model=DemoStatusResponse)
 def get_demo_status(
     db: Session = Depends(get_db),
-    auth: AuthContext = Depends(get_current_auth),
+    auth: AuthContext | None = Depends(get_optional_auth),
 ):
     """Retrieve current user's demo environment status and Docker capability."""
     docker_ok, docker_msg = check_docker_daemon_status()
+    if auth is None:
+        return DemoStatusResponse(
+            initialized=False,
+            docker_available=docker_ok,
+            docker_status_message=docker_msg,
+        )
+
     repo = _get_user_demo_repository(db, auth.user.id)
 
     if repo is None:

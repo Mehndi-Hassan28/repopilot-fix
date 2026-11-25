@@ -50,6 +50,7 @@ function MainWorkspace() {
   const [authLoading, setAuthLoading] = useState(true);
   const [backendStatus, setBackendStatus] = useState<"ready" | "connecting" | "offline">("connecting");
   const csrfToken = useRef("");
+  const [csrfTokenValue, setCsrfTokenValue] = useState<string>("");
 
   // Workspace Navigation & Views
   const [currentView, setCurrentView] = useState<WorkspaceView>("overview");
@@ -151,6 +152,7 @@ function MainWorkspace() {
         if (session.authenticated) {
           setCurrentUser(session.user as AuthUser);
           csrfToken.current = session.csrf_token as string;
+          setCsrfTokenValue(session.csrf_token as string);
           await loadRepositories();
         } else {
           setRepositories([]);
@@ -165,6 +167,26 @@ function MainWorkspace() {
       }
     })();
   }, [loadRepositories, showToast]);
+
+  // Ensure Guest Session
+  const ensureGuestSession = useCallback(async () => {
+    try {
+      const response = await apiRequest("/api/auth/guest", { method: "POST" });
+      if (!response.ok) {
+        throw new Error("Could not initialize guest session.");
+      }
+      const data = await response.json();
+      const user = data.user as AuthUser;
+      const token = data.csrf_token as string;
+      setCurrentUser(user);
+      csrfToken.current = token;
+      setCsrfTokenValue(token);
+      return { user, csrfToken: token };
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Guest session initialization failed", "error");
+      throw err;
+    }
+  }, [showToast]);
 
   // Load Chat Sessions when active repository changes
   const loadSessions = useCallback(
@@ -210,6 +232,7 @@ function MainWorkspace() {
       const response = await apiRequest("/api/auth/logout", { method: "POST" }, csrfToken.current);
       if (!response.ok) throw new Error("Could not sign out.");
       csrfToken.current = "";
+      setCsrfTokenValue("");
       setCurrentUser(null);
       setRepositories([]);
       setSessions([]);
@@ -582,7 +605,12 @@ function MainWorkspace() {
         {/* Left 56px Navigation Rail */}
         <NavigationRail
           currentView={currentView}
-          onSelectView={setCurrentView}
+          onSelectView={(view) => {
+            if (view === "demo" && !currentUser) {
+              void ensureGuestSession();
+            }
+            setCurrentView(view);
+          }}
           currentUser={currentUser}
           onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
           onSignOut={() => void signOut()}
@@ -638,7 +666,12 @@ function MainWorkspace() {
                     setActiveRepo(r);
                     setCurrentView("repos");
                   }}
-                  onSelectView={setCurrentView}
+                  onSelectView={(view) => {
+                    if (view === "demo" && !currentUser) {
+                      void ensureGuestSession();
+                    }
+                    setCurrentView(view);
+                  }}
                   onReindex={handleReindex}
                   indexingId={indexingId}
                   onSignIn={signIn}
@@ -648,7 +681,9 @@ function MainWorkspace() {
               {currentView === "demo" && (
                 <InteractiveDemoWorkspace
                   currentUser={currentUser}
-                  csrfToken={csrfToken.current}
+                  csrfToken={csrfTokenValue || csrfToken.current}
+                  onEnsureSession={ensureGuestSession}
+                  onSignIn={signIn}
                   onSelectRepo={(r) => {
                     setActiveRepo(r);
                     if (!repositories.some((repo) => repo.id === r.id)) {

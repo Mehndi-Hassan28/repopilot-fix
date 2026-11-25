@@ -80,3 +80,17 @@ export async function resetDemo(csrfToken = ""): Promise<DemoStatusResponse> {
     csrfToken
   );
 }
+
+export async function createGuestSession(): Promise<{
+  authenticated: boolean;
+  user: { id: number; login: string; is_guest?: boolean };
+  csrf_token: string;
+}> {
+  return request<{
+    authenticated: boolean;
+    user: { id: number; login: string; is_guest?: boolean };
+    csrf_token: string;
+  }>("/api/auth/guest", {
+    method: "POST",
+  });
+}

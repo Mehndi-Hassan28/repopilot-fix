@@ -21,6 +21,7 @@ import {
   getDemoStatus,
   initializeDemo,
   resetDemo,
+  createGuestSession,
 } from "../lib/demo-api";
 import {
   createVerification,
@@ -41,6 +42,8 @@ import {
 interface InteractiveDemoWorkspaceProps {
   currentUser?: AuthUser | null;
   csrfToken: string;
+  onEnsureSession?: () => Promise<{ user: AuthUser; csrfToken: string }>;
+  onSignIn?: () => void;
   onSelectRepo: (repo: Repository) => void;
   onSelectView: (view: WorkspaceView) => void;
   onAnalysisLoaded?: (result: IssueAnalysisResponse) => void;
@@ -59,7 +62,10 @@ const STAGES = [
 ];
 
 export function InteractiveDemoWorkspace({
+  currentUser,
   csrfToken,
+  onEnsureSession,
+  onSignIn,
   onSelectRepo,
   onSelectView,
   onAnalysisLoaded,
@@ -73,6 +79,11 @@ export function InteractiveDemoWorkspace({
   const [awaitingApproval, setAwaitingApproval] = useState<boolean>(false);
   const [diffMode, setDiffMode] = useState<"unified" | "split">("unified");
   const [showResetConfirm, setShowResetConfirm] = useState<boolean>(false);
+
+  // Active CSRF & Host Status Tracking
+  const [activeCsrf, setActiveCsrf] = useState<string>(csrfToken);
+  const [statusLoading, setStatusLoading] = useState<boolean>(true);
+  const [statusError, setStatusError] = useState<string | null>(null);
 
   // Core Data Entities
   const [demoStatus, setDemoStatus] = useState<DemoStatusResponse | null>(null);
@@ -89,31 +100,88 @@ export function InteractiveDemoWorkspace({
   const reportEvidence = (proofReport?.evidence || {}) as Partial<ProofEvidence>;
   const autoRunAbortRef = useRef<boolean>(false);
 
+  useEffect(() => {
+    if (csrfToken) {
+      setActiveCsrf(csrfToken);
+    }
+  }, [csrfToken]);
+
   // Initial status check
   const refreshDemoStatus = useCallback(async () => {
+    setStatusLoading(true);
+    setStatusError(null);
     try {
       const status = await getDemoStatus();
       setDemoStatus(status);
       return status;
     } catch (err) {
-      setStepError({
-        step: currentStep,
-        message: err instanceof Error ? err.message : "Failed to query demo status.",
-      });
+      const msg = err instanceof Error ? err.message : "Failed to query demo status.";
+      setStatusError(msg);
       return null;
+    } finally {
+      setStatusLoading(false);
     }
-  }, [currentStep]);
+  }, []);
 
+  // Ensure guest session and probe initial status
   useEffect(() => {
-    void refreshDemoStatus();
-  }, [refreshDemoStatus]);
+    let isMounted = true;
+    async function initWorkspace() {
+      setStatusLoading(true);
+      setStatusError(null);
+      try {
+        if (!currentUser) {
+          if (onEnsureSession) {
+            const session = await onEnsureSession();
+            if (isMounted && session.csrfToken) {
+              setActiveCsrf(session.csrfToken);
+            }
+          } else {
+            const session = await createGuestSession();
+            if (isMounted && session.csrf_token) {
+              setActiveCsrf(session.csrf_token);
+            }
+          }
+        }
+        const status = await getDemoStatus();
+        if (isMounted) {
+          setDemoStatus(status);
+        }
+      } catch (err) {
+        if (isMounted) {
+          const msg = err instanceof Error ? err.message : "Failed to query demo status.";
+          setStatusError(msg);
+        }
+      } finally {
+        if (isMounted) {
+          setStatusLoading(false);
+        }
+      }
+    }
+    void initWorkspace();
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUser, onEnsureSession]);
 
   // Stage 1: Initialize Demo Repository
   const handleStep1Initialize = async () => {
     setLoadingStep(1);
     setStepError(null);
     try {
-      const initResponse = await initializeDemo(false, csrfToken);
+      let tokenToUse = activeCsrf || csrfToken;
+      if (!tokenToUse) {
+        if (onEnsureSession) {
+          const session = await onEnsureSession();
+          tokenToUse = session.csrfToken;
+          setActiveCsrf(tokenToUse);
+        } else {
+          const session = await createGuestSession();
+          tokenToUse = session.csrf_token;
+          setActiveCsrf(tokenToUse);
+        }
+      }
+      const initResponse = await initializeDemo(false, tokenToUse);
       setDemoInit(initResponse);
       setActiveRepo(initResponse.repository);
       onSelectRepo(initResponse.repository);
@@ -241,13 +309,13 @@ export function InteractiveDemoWorkspace({
             test_command: ["pytest", "-q", "tests/test_calculator.py"],
             sandbox_image: "python:3.11-slim",
           },
-          csrfToken
+          activeCsrf || csrfToken
         );
       }
 
       // 2. Submit for approval if in draft
       if (run.status === "draft") {
-        run = await submitForApproval(targetId, run.id, csrfToken);
+        run = await submitForApproval(targetId, run.id, activeCsrf || csrfToken);
       }
 
       // 3. Explicitly approve specification
@@ -259,7 +327,7 @@ export function InteractiveDemoWorkspace({
             expected_spec_hash: run.spec_hash || undefined,
             comment: "Approved in Interactive Proof-of-Fix Demo.",
           },
-          csrfToken
+          activeCsrf || csrfToken
         );
       }
 
@@ -318,7 +386,7 @@ export function InteractiveDemoWorkspace({
     setStepError(null);
     try {
       // Execute verified job
-      await executeVerification(targetId, runId, csrfToken);
+      await executeVerification(targetId, runId, activeCsrf || csrfToken);
 
       // Fetch updated run details and report
       const updatedRun = await getVerification(targetId, runId);
@@ -413,7 +481,7 @@ export function InteractiveDemoWorkspace({
           custom_body: `### Proof-of-Fix Automated Pull Request\n\n- Closes Issue #1\n- Verified Fix in isolated Docker sandbox\n- All regression tests passing\n\n*Created safely via RepoPilot Fix Interactive Demo.*`,
           custom_branch_name: "fix/issue-1-power-calc",
         },
-        csrfToken
+        activeCsrf || csrfToken
       );
       setSimulatedPR(res);
       setMaxCompletedStep((prev) => Math.max(prev, 9));
@@ -477,11 +545,11 @@ export function InteractiveDemoWorkspace({
             test_command: ["pytest", "-q", "tests/test_calculator.py"],
             sandbox_image: "python:3.11-slim",
           },
-          csrfToken
+          activeCsrf || csrfToken
         );
       }
       if (run && run.status === "draft") {
-        run = await submitForApproval(targetId, run.id, csrfToken);
+        run = await submitForApproval(targetId, run.id, activeCsrf || csrfToken);
       }
       if (run) {
         setVerificationRun(run);
@@ -505,7 +573,7 @@ export function InteractiveDemoWorkspace({
     setStepError(null);
 
     try {
-      await resetDemo(csrfToken);
+      await resetDemo(activeCsrf || csrfToken);
       setDemoInit(null);
       setActiveRepo(null);
       setIndexedFiles([]);
@@ -544,18 +612,36 @@ export function InteractiveDemoWorkspace({
               <span className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[9px] font-mono text-cyan-300">
                 Deterministic Sandbox
               </span>
-              {demoStatus && (
-                <span
-                  className={`rounded-md border px-2 py-0.5 text-[9px] font-mono ${
-                    demoStatus.docker_available
-                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                      : "border-amber-500/30 bg-amber-500/10 text-amber-300"
-                  }`}
-                  title={demoStatus.docker_status_message}
+              {currentUser?.is_guest && (
+                <button
+                  type="button"
+                  onClick={onSignIn}
+                  className="rounded-md border border-cyan-400/40 bg-cyan-950/30 px-2 py-0.5 text-[9px] font-mono text-cyan-200 hover:border-cyan-400 hover:text-white transition-colors cursor-pointer"
+                  title="Guest Demo Session active. Click to sign in with GitHub."
                 >
-                  {demoStatus.docker_available ? "Docker: Active" : "Docker: Offline"}
-                </span>
+                  Guest Demo Session · Sign in ↗
+                </button>
               )}
+              <span
+                className={`rounded-md border px-2 py-0.5 text-[9px] font-mono ${
+                  statusLoading
+                    ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-300 animate-pulse"
+                    : demoStatus?.docker_available
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                    : demoStatus
+                    ? "border-rose-500/30 bg-rose-500/10 text-rose-300"
+                    : "border-white/10 bg-white/5 text-zinc-400"
+                }`}
+                title={demoStatus?.docker_status_message || statusError || "Checking Docker daemon capability…"}
+              >
+                {statusLoading
+                  ? "Docker: Probing…"
+                  : demoStatus
+                  ? demoStatus.docker_available
+                    ? "Docker: Active"
+                    : "Docker: Offline"
+                  : "Docker: Unavailable"}
+              </span>
             </div>
             <h1 className="mt-0.5 text-lg font-semibold text-[#F5F5F5] tracking-tight">
               Evidence-Driven Autonomous Software Repair
@@ -716,15 +802,34 @@ export function InteractiveDemoWorkspace({
                   <div className="flex items-center gap-2">
                     <span
                       className={`size-2 rounded-full ${
-                        demoStatus?.docker_available ? "bg-emerald-400" : "bg-amber-400 animate-pulse"
+                        statusLoading
+                          ? "bg-cyan-400 animate-pulse"
+                          : demoStatus?.docker_available
+                          ? "bg-emerald-400"
+                          : demoStatus
+                          ? "bg-rose-500"
+                          : "bg-amber-400"
                       }`}
                     />
                     <p className="text-xs font-semibold text-zinc-200">
-                      Host Docker Daemon: {demoStatus?.docker_available ? "Active and Connected" : "Offline / Inaccessible"}
+                      Host Docker Daemon:{" "}
+                      {statusLoading
+                        ? "Probing capability…"
+                        : demoStatus
+                        ? demoStatus.docker_available
+                          ? "Active and Connected"
+                          : "Offline / Inaccessible"
+                        : statusError
+                        ? "Status Unavailable"
+                        : "Checking…"}
                     </p>
                   </div>
                   <p className="text-[11px] font-mono text-zinc-400">
-                    {demoStatus?.docker_status_message || "Checking Docker daemon capability…"}
+                    {statusLoading
+                      ? "Probing Docker host daemon status…"
+                      : demoStatus?.docker_status_message ||
+                        statusError ||
+                        "Checking Docker daemon capability…"}
                   </p>
                 </div>
                 <button

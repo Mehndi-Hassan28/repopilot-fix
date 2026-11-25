@@ -165,7 +165,7 @@ export function NavigationRail({
         </button>
 
         {/* User Account or Sign In */}
-        {currentUser ? (
+        {currentUser && !currentUser.is_guest ? (
           <div className="group relative">
             <button
               onClick={onSignOut}
@@ -188,14 +188,24 @@ export function NavigationRail({
           <div className="group relative">
             <button
               onClick={onSignIn}
-              className="size-8 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-white hover:bg-white/10 flex items-center justify-center transition-colors"
-              title="Sign in with GitHub"
+              className={`size-8 rounded-xl border flex items-center justify-center transition-colors ${
+                currentUser?.is_guest
+                  ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/20"
+                  : "bg-white/5 border-white/10 text-white/50 hover:text-white hover:bg-white/10"
+              }`}
+              title={
+                currentUser?.is_guest
+                  ? "Guest Session Active — Click to Sign in with GitHub"
+                  : "Sign in with GitHub"
+              }
               aria-label="Sign in with GitHub"
             >
               <GithubIcon className="size-4" />
             </button>
             <div className="pointer-events-none absolute left-14 bottom-0 z-50 hidden rounded-md border border-white/10 bg-[#0e1117] px-2.5 py-1 text-xs font-sans text-white shadow-2xl group-hover:block whitespace-nowrap">
-              Sign in with GitHub
+              {currentUser?.is_guest
+                ? "Guest User (Click to sign in with GitHub)"
+                : "Sign in with GitHub"}
             </div>
           </div>
         )}

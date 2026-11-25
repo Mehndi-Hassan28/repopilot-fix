@@ -912,3 +912,154 @@ def test_demo_concurrent_users_isolated(test_session, monkeypatch):
     status_b = client.get("/api/demo/status", headers=headers_b)
     assert status_b.status_code == 200
     assert status_b.json()["repository_id"] == repo_b_id
+
+
+def test_unauthenticated_demo_status_docker_capability(test_session, monkeypatch):
+    """Regression: Guest without a session gets 200 OK with accurate Docker capability."""
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+    client = get_client(test_session)
+
+    # Completely unauthenticated request (no Cookie, no Authorization header)
+    res = client.get("/api/demo/status")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["initialized"] is False
+    assert "docker_available" in data
+    assert "docker_status_message" in data
+    assert data["repository_id"] is None
+
+
+def test_guest_session_initialization_and_reuse(test_session, monkeypatch):
+    """Regression: POST /api/auth/guest initializes secure guest session and is idempotent."""
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+    client = get_client(test_session)
+
+    # 1. Invalid origin is rejected
+    res_invalid_origin = client.post("/api/auth/guest", headers={"Origin": "http://malicious.com"})
+    assert res_invalid_origin.status_code == 403
+
+    # 2. Valid origin initializes guest session
+    res_guest = client.post("/api/auth/guest", headers={"Origin": "http://localhost:3000"})
+    assert res_guest.status_code == 200
+    data = res_guest.json()
+    assert data["authenticated"] is True
+    assert data["user"]["is_guest"] is True
+    guest_id = data["user"]["id"]
+    assert data["user"]["login"] == f"guest-{guest_id}"
+    csrf_token = data["csrf_token"]
+    assert csrf_token is not None and len(csrf_token) == 64
+
+    # Cookie is returned with HttpOnly and SameSite=lax
+    assert SESSION_COOKIE_NAME in res_guest.cookies
+    session_cookie = res_guest.cookies[SESSION_COOKIE_NAME]
+
+    guest_headers = {
+        "Cookie": f"{SESSION_COOKIE_NAME}={session_cookie}",
+        "Origin": "http://localhost:3000",
+        "X-CSRF-Token": csrf_token,
+    }
+
+    # 3. GET /api/auth/session reports authenticated guest
+    res_session = client.get("/api/auth/session", headers={"Cookie": guest_headers["Cookie"]})
+    assert res_session.status_code == 200
+    sess_data = res_session.json()
+    assert sess_data["authenticated"] is True
+    assert sess_data["user"]["id"] == guest_id
+    assert sess_data["user"]["is_guest"] is True
+
+    # 4. Calling POST /api/auth/guest again with existing session reuses it
+    res_reuse = client.post("/api/auth/guest", headers=guest_headers)
+    assert res_reuse.status_code == 200
+    reuse_data = res_reuse.json()
+    assert reuse_data["user"]["id"] == guest_id
+    assert reuse_data["user"]["is_guest"] is True
+
+
+def test_guest_demo_complete_workflow_and_isolation(test_session, monkeypatch):
+    """Regression: Guest demo session initializes, steps through workflow, and isolates data."""
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+    client = get_client(test_session)
+    db = test_session()
+
+    # Create an authenticated GitHub user with their own repo
+    github_user, gh_headers = create_authenticated_user(db)
+    res_gh_init = client.post("/api/demo/initialize", headers=gh_headers)
+    assert res_gh_init.status_code == 200
+    gh_repo_id = res_gh_init.json()["repository"]["id"]
+
+    # 1. Guest acquires a guest session
+    res_guest_auth = client.post("/api/auth/guest", headers={"Origin": "http://localhost:3000"})
+    assert res_guest_auth.status_code == 200
+    guest_data = res_guest_auth.json()
+    guest_id = guest_data["user"]["id"]
+    guest_cookie = res_guest_auth.cookies[SESSION_COOKIE_NAME]
+    guest_csrf = guest_data["csrf_token"]
+
+    guest_headers = {
+        "Cookie": f"{SESSION_COOKIE_NAME}={guest_cookie}",
+        "Origin": "http://localhost:3000",
+        "X-CSRF-Token": guest_csrf,
+    }
+
+    # 2. Before init, status reports uninitialized for guest
+    res_status = client.get("/api/demo/status", headers={"Cookie": guest_headers["Cookie"]})
+    assert res_status.status_code == 200
+    assert res_status.json()["initialized"] is False
+
+    # 3. Guest CANNOT access GitHub user's demo repo
+    res_leak = client.get(
+        f"/api/repositories/{gh_repo_id}/files",
+        headers={"Cookie": guest_headers["Cookie"]},
+    )
+    assert res_leak.status_code == 404
+
+    # 4. Guest initializes demo
+    res_init = client.post("/api/demo/initialize", headers=guest_headers)
+    assert res_init.status_code == 200
+    guest_init = res_init.json()
+    guest_repo_id = guest_init["repository"]["id"]
+    assert guest_init["repository"]["name"] == f"demo-calc-{guest_id}"
+    assert guest_repo_id != gh_repo_id
+
+    # 5. Guest status now reports initialized
+    res_status_after = client.get("/api/demo/status", headers={"Cookie": guest_headers["Cookie"]})
+    assert res_status_after.status_code == 200
+    assert res_status_after.json()["initialized"] is True
+    assert res_status_after.json()["repository_id"] == guest_repo_id
+
+    # 6. Guest runs issue analysis (Stage 3 & 4)
+    res_analyze = client.post(
+        f"/api/repositories/{guest_repo_id}/issues/analyze",
+        json={"issue_number": 1},
+        headers=guest_headers,
+    )
+    assert res_analyze.status_code == 200
+    analysis = res_analyze.json()
+    assert analysis["is_mock"] is True
+    assert "power" in analysis["analysis"]["root_cause_hypothesis"].lower()
+
+    # 7. GitHub user CANNOT access Guest user's demo repo
+    res_gh_probe = client.get(
+        f"/api/repositories/{guest_repo_id}/files",
+        headers={"Cookie": gh_headers["Cookie"]},
+    )
+    assert res_gh_probe.status_code == 404
+
+    # 8. Unauthenticated mutation attempts fail closed
+    res_unauth_init = client.post("/api/demo/initialize")
+    assert res_unauth_init.status_code in {401, 403}
+
+    res_unauth_reset = client.post("/api/demo/reset")
+    assert res_unauth_reset.status_code in {401, 403}
+
+    # 9. Guest resets demo: only guest repo is reset, GitHub user repo remains untouched
+    res_reset = client.post("/api/demo/reset", headers=guest_headers)
+    assert res_reset.status_code == 200
+    assert res_reset.json()["initialized"] is True
+    assert res_reset.json()["has_active_run"] is False
+
+    res_gh_status = client.get("/api/demo/status", headers={"Cookie": gh_headers["Cookie"]})
+    assert res_gh_status.status_code == 200
+    assert res_gh_status.json()["initialized"] is True
+    assert res_gh_status.json()["repository_id"] == gh_repo_id
+

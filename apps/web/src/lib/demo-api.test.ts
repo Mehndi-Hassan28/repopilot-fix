@@ -4,6 +4,7 @@ import {
   getDemoStatus,
   initializeDemo,
   resetDemo,
+  createGuestSession,
   DemoApiError,
 } from "./demo-api.ts";
 
@@ -157,6 +158,35 @@ describe("Demo API Client", () => {
       assert.equal(method, "POST");
       assert.equal(capturedCsrf, "csrf-reset-token");
       assert.equal(status.initialized, false);
+    });
+  });
+
+  describe("createGuestSession", () => {
+    it("initializes a guest demo session and returns user and CSRF token", async () => {
+      let method = "";
+      let capturedUrl = "";
+
+      globalThis.fetch = async (url: string | URL | Request, init?: RequestInit) => {
+        capturedUrl = String(url);
+        method = init?.method || "";
+        return new Response(
+          JSON.stringify({
+            authenticated: true,
+            user: { id: 42, login: "guest-42", is_guest: true },
+            csrf_token: "mock-guest-csrf-token",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      };
+
+      const session = await createGuestSession();
+      assert.ok(capturedUrl.endsWith("/api/auth/guest"));
+      assert.equal(method, "POST");
+      assert.equal(session.authenticated, true);
+      assert.equal(session.user.id, 42);
+      assert.equal(session.user.login, "guest-42");
+      assert.equal(session.user.is_guest, true);
+      assert.equal(session.csrf_token, "mock-guest-csrf-token");
     });
   });
 
