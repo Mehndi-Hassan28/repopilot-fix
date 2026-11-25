@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from repopilot_api.dependencies import get_db
+from repopilot_api.fixture_registry import FixtureRegistryError
 from repopilot_api.github_pr_service import (
     GitHubPRError,
     GitHubPullRequestService,
@@ -163,6 +164,8 @@ def create_verification(
         )
     except VerificationSecurityError as sec_err:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(sec_err)) from sec_err
+    except FixtureRegistryError as fix_err:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(fix_err)) from fix_err
     except SandboxError as s_err:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(s_err)) from s_err
     except ValueError as v_err:

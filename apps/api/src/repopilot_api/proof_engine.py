@@ -534,7 +534,11 @@ class ProofOfFixEngine:
                 request.approved_spec_hash
                 or (vrun.approved_spec_hash if vrun else None)
             ),
-            sandbox_image=getattr(self.runner, "image", "default"),
+            sandbox_image=(
+                (vrun.sandbox_image if vrun and vrun.sandbox_image else None)
+                or getattr(self.runner, "image", None)
+                or DEFAULT_SANDBOX_IMAGE
+            ),
             test_command=request.test_command,
             baseline_exit_code=baseline_res.exit_code if baseline_res else None,
             baseline_stdout=baseline_res.stdout if baseline_res else "",
