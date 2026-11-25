@@ -13,6 +13,9 @@ from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from repopilot_api.models import (
+    IndexedFile,
+    IndexingJob,
+    Repository,
     VerificationAuditEvent,
     VerificationRun,
 )
@@ -24,6 +27,7 @@ from repopilot_api.sandbox import (
     DEFAULT_SANDBOX_IMAGE,
     DEFAULT_SCRATCH_ROOT,
     CommandValidator,
+    ImageValidator,
     SandboxConfigurationError,
     SandboxRunner,
     SandboxSecurityError,
@@ -226,13 +230,18 @@ class VerificationJobManager:
 
     @classmethod
     def validate_sandbox_image(cls, image: str | None) -> str:
-        """Enforce server-controlled sandbox image allowlist."""
+        """Enforce server-controlled sandbox image allowlist with immutable digest pinning."""
         chosen = (image or DEFAULT_SANDBOX_IMAGE).strip()
-        if chosen not in APPROVED_SANDBOX_IMAGES:
+        # Canonicalize unpinned default tag prefix to immutable digest-pinned image
+        if chosen == DEFAULT_SANDBOX_IMAGE.split("@")[0]:
+            chosen = DEFAULT_SANDBOX_IMAGE
+
+        if chosen not in APPROVED_SANDBOX_IMAGES and chosen != DEFAULT_SANDBOX_IMAGE:
             raise VerificationSecurityError(
                 f"Sandbox image '{chosen}' is not in the server allowlist. "
                 f"Approved images: {sorted(APPROVED_SANDBOX_IMAGES)}"
             )
+        ImageValidator.validate(chosen, require_digest=True)
         return chosen
 
     @classmethod
@@ -263,8 +272,69 @@ class VerificationJobManager:
         # Validate test command against approved entrypoints and forbidden characters
         CommandValidator.validate(payload.test_command)
 
-        # Validate sandbox image against server allowlist
-        sandbox_image = cls.validate_sandbox_image(payload.sandbox_image)
+        # Check trusted fixture registry as authoritative source
+        repo = db.get(Repository, repository_id)
+        if repo is None:
+            raise VerificationStateError(f"Repository {repository_id} not found.")
+
+        from repopilot_api.fixture_registry import (
+            get_default_fixture_registry,
+        )
+
+        registry = get_default_fixture_registry()
+        job = db.scalar(
+            select(IndexingJob)
+            .where(
+                IndexingJob.repository_id == repository_id,
+                IndexingJob.commit_sha == payload.commit_sha,
+            )
+            .order_by(IndexingJob.id.desc())
+        )
+        repo_files: dict[str, str] = {}
+        if job:
+            indexed_records = db.scalars(
+                select(IndexedFile).where(IndexedFile.job_id == job.id)
+            ).all()
+            repo_files = {rec.path: rec.content for rec in indexed_records if rec.content}
+
+        matching_fixture = None
+        if repo_files:
+            try:
+                matching_fixture = registry.find_fixture(
+                    repository_owner=repo.owner,
+                    repository_name=repo.name,
+                    commit_sha=payload.commit_sha,
+                    files=repo_files,
+                )
+            except Exception:
+                matching_fixture = None
+
+        if not matching_fixture:
+            for fixture in registry.list_fixtures():
+                if fixture.repository_owner != "*" and fixture.repository_name != "*":
+                    if fixture.matches_repo(repo.owner, repo.name) and fixture.matches_commit(
+                        payload.commit_sha
+                    ):
+                        matching_fixture = fixture
+                        break
+
+        if matching_fixture:
+            req_img = (payload.sandbox_image or "").strip()
+            # If payload image is empty, matches fixture image,
+            # or matches the unpinned tag prefix (e.g. python:3.11-slim)
+            if (
+                not req_img
+                or req_img == matching_fixture.sandbox_image
+                or req_img == matching_fixture.sandbox_image.split("@")[0]
+            ):
+                sandbox_image = matching_fixture.sandbox_image
+            else:
+                raise VerificationSecurityError(
+                    f"Sandbox image '{req_img}' does not match fixture "
+                    f"authoritative pinned image '{matching_fixture.sandbox_image}'."
+                )
+        else:
+            sandbox_image = cls.validate_sandbox_image(payload.sandbox_image)
 
         # Extract patch proposals and compute cryptographic patch hash
         patches = (
@@ -908,12 +978,22 @@ class VerificationJobManager:
 
         # Resolve Sandbox Runner
         active_runner = runner or get_sandbox_runner()
+        if run.sandbox_image and hasattr(active_runner, "image"):
+            active_runner.image = ImageValidator.validate(run.sandbox_image, require_digest=True)
 
         # Guard: Restrict real Docker execution in normal API flows
-        allow_docker = os.getenv("ALLOW_DOCKER_VERIFICATION_EXECUTION", "false").lower() in (
-            "true",
-            "1",
-        )
+        allow_docker_env = os.getenv("ALLOW_DOCKER_VERIFICATION_EXECUTION", "").strip().lower()
+        if allow_docker_env in ("true", "1"):
+            allow_docker = True
+        elif allow_docker_env in ("false", "0"):
+            allow_docker = False
+        else:
+            # When unset: permit Docker execution if running on a verified internal demo repository
+            from repopilot_api.demo import is_internal_demo_repository
+
+            repo = db.get(Repository, run.repository_id)
+            allow_docker = is_internal_demo_repository(db, repo, user_id=None)
+
         is_docker_runner = (
             hasattr(active_runner, "run")
             and getattr(active_runner, "__class__", None).__name__ == "DockerSandboxRunner"

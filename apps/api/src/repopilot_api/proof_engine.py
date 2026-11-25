@@ -89,6 +89,13 @@ class TestOutputParser:
     @classmethod
     def detect_failure_type(cls, exit_code: int | None, combined: str) -> str:
         """Classify the failure into assertion failure, collection error, syntax, or clean exit."""
+        if (
+            "Ran 0 tests" in combined
+            or "collected 0 items" in combined
+            or "no tests ran" in combined.lower()
+            or "0 passed, 0 failed" in combined
+        ):
+            return "no_tests_discovered"
         if exit_code == 0 or ("OK" in combined and exit_code is None):
             return "none"
         if any(ind in combined for ind in cls.COLLECTION_ERROR_INDICATORS):
@@ -111,11 +118,34 @@ class TestOutputParser:
         combined = f"{stdout}\n{stderr}"
         failure_type = cls.detect_failure_type(exit_code, combined)
 
+        # 0. Fast-path: Explicit zero tests discovered
+        if failure_type == "no_tests_discovered":
+            return TestMetricsSchema(
+                total=0,
+                passed=0,
+                failed=0,
+                errors=0,
+                failed_test_ids=[],
+                failure_type="no_tests_discovered",
+                summary="Ran 0 tests (no tests discovered)",
+            )
+
         # 1. Try parsing unittest standard output
         unit_match = cls.UNITTEST_RUN_REGEX.search(combined)
         failed_match = cls.UNITTEST_FAILED_REGEX.search(combined)
         if unit_match or failed_match:
             total = int(unit_match.group(1)) if unit_match else None
+            if total == 0:
+                return TestMetricsSchema(
+                    total=0,
+                    passed=0,
+                    failed=0,
+                    errors=0,
+                    failed_test_ids=[],
+                    failure_type="no_tests_discovered",
+                    summary="Ran 0 tests (no tests discovered)",
+                )
+
             if "OK" in combined and (exit_code is None or exit_code == 0):
                 return TestMetricsSchema(
                     total=total,
@@ -162,6 +192,16 @@ class TestOutputParser:
                 failed = int(f_m.group(1)) if f_m else 0
                 errors = int(e_m.group(1)) if e_m else 0
                 total = passed + failed + errors
+                if total == 0:
+                    return TestMetricsSchema(
+                        total=0,
+                        passed=0,
+                        failed=0,
+                        errors=0,
+                        failed_test_ids=[],
+                        failure_type="no_tests_discovered",
+                        summary="Ran 0 tests (no tests discovered)",
+                    )
                 test_ids = cls.PYTEST_FAILED_ID_REGEX.findall(combined)
                 return TestMetricsSchema(
                     total=total,
@@ -350,6 +390,18 @@ class ProofOfFixEngine:
                 summary = f"Baseline sandbox infrastructure error: {baseline_res.error_message}"
                 confidence = "low"
                 uncertainty_reasons.append("Sandbox infrastructure error occurred.")
+            elif (
+                baseline_metrics.total == 0
+                or baseline_metrics.failure_type == "no_tests_discovered"
+            ):
+                # Core Evidence-First Rule: Zero discovered tests cannot establish reproduction
+                verdict = ProofVerdict.INCONCLUSIVE
+                summary = (
+                    "Baseline test execution discovered 0 tests. "
+                    "Defect reproduction could not be established."
+                )
+                confidence = "low"
+                uncertainty_reasons.append("Zero tests discovered in baseline.")
             elif baseline_res.exit_code == 0:
                 # Core Evidence-First Rule: If baseline passes, fix CANNOT be proven!
                 verdict = ProofVerdict.UNREPRODUCED
@@ -430,32 +482,68 @@ class ProofOfFixEngine:
                         )
                         confidence = "low"
                         uncertainty_reasons.append("Patched sandbox infrastructure error.")
+                    elif (
+                        patched_metrics.total == 0
+                        or patched_metrics.failure_type == "no_tests_discovered"
+                    ):
+                        # Evidence-First Rule: Zero discovered tests CANNOT produce a verified fix!
+                        verdict = ProofVerdict.INCONCLUSIVE
+                        confidence = "low"
+                        summary = (
+                            "Patched test execution discovered 0 tests. "
+                            "Zero discovered tests cannot produce a successful verification."
+                        )
+                        uncertainty_reasons.append(
+                            "Patched test execution discovered 0 tests; fix cannot be proven."
+                        )
                     elif patched_res.exit_code == 0:
                         # Patched run passed after baseline failed!
-                        # Verify that we actually have identifiable test metrics / test IDs
-                        has_structured_evidence = (
-                            (baseline_metrics.total is not None and baseline_metrics.total > 0)
+                        base_ids = set(baseline_metrics.failed_test_ids)
+                        patch_ids = set(patched_metrics.failed_test_ids)
+                        resolved = sorted(list(base_ids - patch_ids))
+                        resolved_test_ids = resolved
+
+                        # Evidence-First verification rules:
+                        # 1. Baseline reproduced failure (exit_code != 0, failures > 0)
+                        # 2. Patched passed complete suite (exit_code == 0, passed > 0)
+                        # 3. At least one original failure is resolved
+                        # 4. Zero new regressions
+                        has_baseline_failure = (
+                            (baseline_metrics.failed is not None and baseline_metrics.failed > 0)
+                            or (baseline_metrics.errors is not None and baseline_metrics.errors > 0)
                             or bool(baseline_metrics.failed_test_ids)
-                        ) and (
-                            (patched_metrics.total is not None and patched_metrics.total > 0)
-                            or patched_metrics.passed is not None
+                        )
+                        has_patched_pass = (
+                            patched_metrics.total is not None
+                            and patched_metrics.total > 0
+                            and patched_metrics.passed is not None
+                            and patched_metrics.passed > 0
+                            and (patched_metrics.failed is None or patched_metrics.failed == 0)
+                            and (patched_metrics.errors is None or patched_metrics.errors == 0)
+                        )
+                        has_resolved = bool(resolved_test_ids) or (
+                            (baseline_metrics.failed or 0) > 0
+                            and (patched_metrics.failed or 0) == 0
                         )
 
-                        if has_structured_evidence:
-                            resolved_test_ids = list(baseline_metrics.failed_test_ids)
+                        if has_baseline_failure and has_patched_pass and has_resolved:
+                            if not resolved_test_ids and baseline_metrics.failed_test_ids:
+                                resolved_test_ids = list(baseline_metrics.failed_test_ids)
                             verdict = ProofVerdict.VERIFIED_FIX
                             confidence = "high"
                             summary = (
-                                "Proof-of-Fix Verified: Baseline test reproduced failure (exit 1) "
-                                "and patched test passed with exit code 0 without regressions."
+                                f"Proof-of-Fix Verified: Baseline test reproduced failure "
+                                f"(exit {baseline_res.exit_code}) and patched test passed "
+                                f"with exit code 0 ({patched_metrics.passed}/"
+                                f"{patched_metrics.total} tests passed) without regressions."
                             )
                         else:
                             # Missing/unparseable test metrics: do not claim proven fix!
                             verdict = ProofVerdict.INCONCLUSIVE
                             confidence = "low"
                             summary = (
-                                "Patched test exited with code 0, but specific test identities or "
-                                "metrics could not be verified from runner output."
+                                "Patched test exited with code 0, but valid test pass evidence "
+                                "or defect resolution could not be verified from runner output."
                             )
                             uncertainty_reasons.append(
                                 "Missing or unparseable test metrics; cannot reliably "
@@ -534,7 +622,11 @@ class ProofOfFixEngine:
                 request.approved_spec_hash
                 or (vrun.approved_spec_hash if vrun else None)
             ),
-            sandbox_image=getattr(self.runner, "image", "default"),
+            sandbox_image=(
+                (vrun.sandbox_image if vrun and vrun.sandbox_image else None)
+                or getattr(self.runner, "image", None)
+                or DEFAULT_SANDBOX_IMAGE
+            ),
             test_command=request.test_command,
             baseline_exit_code=baseline_res.exit_code if baseline_res else None,
             baseline_stdout=baseline_res.stdout if baseline_res else "",

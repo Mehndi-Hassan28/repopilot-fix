@@ -881,3 +881,99 @@ async def test_proof_engine_duplicate_verification_requests(tmp_path, test_sessi
         assert res1.run_id != res2.run_id
         assert res1.verification_run_id != res2.verification_run_id
         assert res1.proof_report_id != res2.proof_report_id
+
+
+def test_output_parser_zero_tests_discovered():
+    """Verify unittest and pytest with 0 discovered tests return no_tests_discovered."""
+    # unittest with 0 tests
+    stdout_unittest = "Ran 0 tests in 0.000s\n\nOK\n"
+    metrics_u = TestOutputParser.parse(stdout_unittest, "", exit_code=0)
+    assert metrics_u.total == 0
+    assert metrics_u.passed == 0
+    assert metrics_u.failed == 0
+    assert metrics_u.errors == 0
+    assert metrics_u.failure_type == "no_tests_discovered"
+    assert "no tests discovered" in metrics_u.summary
+
+    # pytest with 0 items
+    stdout_pytest = (
+        "collected 0 items\n\n"
+        "==================== no tests ran in 0.01s ====================\n"
+    )
+    metrics_p = TestOutputParser.parse(stdout_pytest, "", exit_code=0)
+    assert metrics_p.total == 0
+    assert metrics_p.failure_type == "no_tests_discovered"
+
+
+@pytest.mark.anyio
+async def test_proof_engine_zero_tests_baseline_inconclusive(tmp_path):
+    """When baseline discovers 0 tests, verdict must be INCONCLUSIVE."""
+    scratch = str(tmp_path / "scratch")
+    runner = MockSandboxRunner(
+        simulated_state=SandboxExecutionState.PASSED,
+        simulated_exit_code=0,
+        simulated_stdout="Ran 0 tests in 0.000s\n\nOK\n",
+        scratch_root=scratch,
+    )
+    engine = ProofOfFixEngine(runner=runner, scratch_root=scratch)
+
+    req = ProofOfFixRequest(
+        repository_id=1,
+        commit_sha=SAMPLE_COMMIT_SHA,
+        issue_number=1,
+        test_command=["python", "-m", "unittest", "tests/nonexistent.py"],
+        patches=[PatchProposal(file_path="src/calculator.py", diff=CALC_FIX_PATCH)],
+        files=PASSING_FIXTURE_FILES,
+    )
+
+    result = await engine.verify(req)
+    assert result.verdict == ProofVerdict.INCONCLUSIVE
+    assert "0 tests" in result.summary
+
+
+@pytest.mark.anyio
+async def test_proof_engine_zero_tests_patched_inconclusive(tmp_path):
+    """When patched execution discovers 0 tests, it strictly CANNOT produce VERIFIED_FIX."""
+    from repopilot_api.fixture_registry import DEMO_CALC_FILES, DEMO_CALC_FIX_PATCH
+
+    scratch = str(tmp_path / "scratch")
+    call_count = 0
+
+    class ZeroPatchedMockRunner(MockSandboxRunner):
+        async def run(self, workspace_path, request):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Baseline fails (bug reproduced)
+                return await MockSandboxRunner(
+                    simulated_state=SandboxExecutionState.FAILED,
+                    simulated_exit_code=1,
+                    simulated_stdout="Ran 2 tests in 0.01s\n\nFAILED (failures=1)\n",
+                    scratch_root=scratch,
+                ).run(workspace_path, request)
+            else:
+                # Patched exits 0 but discovered 0 tests
+                return await MockSandboxRunner(
+                    simulated_state=SandboxExecutionState.PASSED,
+                    simulated_exit_code=0,
+                    simulated_stdout="Ran 0 tests in 0.000s\n\nOK\n",
+                    scratch_root=scratch,
+                ).run(workspace_path, request)
+
+    engine = ProofOfFixEngine(
+        runner=ZeroPatchedMockRunner(scratch_root=scratch), scratch_root=scratch
+    )
+
+    req = ProofOfFixRequest(
+        repository_id=1,
+        commit_sha=SAMPLE_COMMIT_SHA,
+        issue_number=1,
+        test_command=["python", "-m", "unittest", "tests/test_calculator.py"],
+        patches=[PatchProposal(file_path="src/calculator.py", diff=DEMO_CALC_FIX_PATCH)],
+        files=DEMO_CALC_FILES,
+    )
+
+    result = await engine.verify(req)
+    # Strictly must NOT be VERIFIED_FIX
+    assert result.verdict == ProofVerdict.INCONCLUSIVE
+    assert "0 tests" in result.summary

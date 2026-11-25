@@ -1063,3 +1063,349 @@ def test_guest_demo_complete_workflow_and_isolation(test_session, monkeypatch):
     assert res_gh_status.json()["initialized"] is True
     assert res_gh_status.json()["repository_id"] == gh_repo_id
 
+
+def test_stage5_and_stage7_verification_consistency(test_session, monkeypatch):
+    """Regression test for Stage 5 and Stage 7 verification consistency.
+
+    Verifies:
+    1. Demo init provides authoritative pinned image and unittest test command.
+    2. Submitting prefix 'python:3.11-slim' is canonicalized to fixture's pinned digest.
+    3. Submitting an unapproved test command (e.g. pytest) fails closed with 422.
+    4. Submitting an unallowlisted/arbitrary image fails closed with 422.
+    5. Spec hash uses the canonical pinned image.
+    6. Tampering with execution spec after approval triggers specification mismatch error.
+    7. Evidence report retains authoritative canonical image.
+    """
+    import hashlib
+    import tempfile
+
+    import anyio
+
+    from repopilot_api.verification_service import VerificationSpecificationMismatchError
+
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+    client = get_client(test_session)
+    db = test_session()
+    user, headers = create_authenticated_user(db)
+
+    # 1. Initialize demo
+    res_init = client.post("/api/demo/initialize", headers=headers)
+    assert res_init.status_code == 200
+    init_data = res_init.json()
+    repo_id = init_data["repository"]["id"]
+
+    assert init_data["test_command"] == DEMO_CALC_TEST_CMD
+    assert init_data["sandbox_image"] == DEFAULT_SANDBOX_IMAGE
+    assert "@sha256:" in init_data["sandbox_image"]
+
+    # 2. Reject unapproved test command (e.g. pytest) during execution via policy guard
+    from repopilot_api.fixture_registry import FixtureRegistryError
+    res_bad_cmd = client.post(
+        f"/api/repositories/{repo_id}/verifications",
+        json={
+            "commit_sha": DEMO_CALC_COMMIT_SHA,
+            "issue_number": 1,
+            "test_command": ["python", "-m", "unittest", "tests/unapproved_test.py"],
+            "patches": [{"file_path": "src/calculator.py", "diff": DEMO_CALC_FIX_PATCH}],
+            "hypothesis": "Test invalid command rejection",
+            "sandbox_image": DEFAULT_SANDBOX_IMAGE,
+            "auto_submit_approval": True,
+        },
+        headers=headers,
+    )
+    assert res_bad_cmd.status_code == 201
+    bad_run_id = res_bad_cmd.json()["id"]
+    client.post(
+        f"/api/repositories/{repo_id}/verifications/{bad_run_id}/approve",
+        json={"expected_spec_hash": res_bad_cmd.json()["spec_hash"]},
+        headers=headers,
+    )
+    db.expire_all()
+
+    async def try_unapproved_cmd():
+        with pytest.raises(FixtureRegistryError) as exc_info:
+            await VerificationJobManager.execute_job(db=db, run_id=bad_run_id, user_id=user.id)
+        assert "not approved for fixture" in str(exc_info.value).lower()
+
+    anyio.run(try_unapproved_cmd)
+
+    # 3. Reject arbitrary unapproved image for fixture
+    res_bad_img = client.post(
+        f"/api/repositories/{repo_id}/verifications",
+        json={
+            "commit_sha": DEMO_CALC_COMMIT_SHA,
+            "issue_number": 1,
+            "test_command": DEMO_CALC_TEST_CMD,
+            "patches": [{"file_path": "src/calculator.py", "diff": DEMO_CALC_FIX_PATCH}],
+            "hypothesis": "Test arbitrary image rejection",
+            "sandbox_image": "debian:bullseye",
+        },
+        headers=headers,
+    )
+    assert res_bad_img.status_code == 422
+    assert "does not match fixture" in res_bad_img.json()["detail"].lower()
+
+    # 4. Canonicalize unpinned tag prefix 'python:3.11-slim' to authoritative digest
+    res_create = client.post(
+        f"/api/repositories/{repo_id}/verifications",
+        json={
+            "commit_sha": DEMO_CALC_COMMIT_SHA,
+            "issue_number": 1,
+            "test_command": DEMO_CALC_TEST_CMD,
+            "patches": [{"file_path": "src/calculator.py", "diff": DEMO_CALC_FIX_PATCH}],
+            "hypothesis": "Fix power calculation with canonical image",
+            "sandbox_image": "python:3.11-slim",
+            "auto_submit_approval": True,
+        },
+        headers=headers,
+    )
+    assert res_create.status_code == 201
+    run_data = res_create.json()
+    run_id = run_data["id"]
+    assert run_data["sandbox_image"] == DEFAULT_SANDBOX_IMAGE
+    assert run_data["status"] == "pending_approval"
+
+    # Verify spec hash was computed with canonical image
+    patch_hash = hashlib.sha256(DEMO_CALC_FIX_PATCH.strip().encode("utf-8")).hexdigest()
+    expected_hash = compute_spec_hash(
+        DEMO_CALC_COMMIT_SHA, patch_hash, DEMO_CALC_TEST_CMD, DEFAULT_SANDBOX_IMAGE
+    )
+    assert run_data["spec_hash"] == expected_hash
+
+    # 5. Approve specification
+    res_approve = client.post(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/approve",
+        json={"expected_spec_hash": expected_hash, "comment": "Approved consistent spec"},
+        headers=headers,
+    )
+    assert res_approve.status_code == 200
+    approved_data = res_approve.json()
+    assert approved_data["status"] == "queued"
+    assert approved_data["approved_spec_hash"] == expected_hash
+
+    # 6. Tamper check: modifying run in DB invalidates approval and rejects execution
+    run_record = db.get(VerificationRun, run_id)
+    original_image = run_record.sandbox_image
+    tampered_digest = "0" * 64
+    run_record.sandbox_image = f"python:3.10-slim@sha256:{tampered_digest}"
+    db.commit()
+
+    async def try_tampered():
+        with pytest.raises(VerificationSpecificationMismatchError):
+            await VerificationJobManager.execute_job(db=db, run_id=run_id, user_id=user.id)
+
+    anyio.run(try_tampered)
+
+    # Restore canonical image and re-approve
+    run_record.sandbox_image = original_image
+    run_record.status = "pending_approval"
+    run_record.approved_spec_hash = None
+    db.commit()
+
+    res_reapprove = client.post(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/approve",
+        json={"expected_spec_hash": expected_hash, "comment": "Fresh approval after spec fix"},
+        headers=headers,
+    )
+    assert res_reapprove.status_code == 200
+    db.expire_all()
+
+    # 7. Execute with MockSandboxRunner
+    class ConsistentMockRunner(MockSandboxRunner):
+        def __init__(self, scratch: str):
+            super().__init__(scratch_root=scratch, image=DEFAULT_SANDBOX_IMAGE)
+            self._call_count = 0
+
+        async def run(self, workspace_path: str, request):
+            self._call_count += 1
+            if self._call_count == 1:
+                self.simulated_exit_code = 1
+                self.simulated_stdout = "FAILED (failures=2)\nRan 6 tests in 0.05s"
+            else:
+                self.simulated_exit_code = 0
+                self.simulated_stdout = "Ran 6 tests in 0.04s\n\nOK\n"
+            return await super().run(workspace_path, request)
+
+    with tempfile.TemporaryDirectory() as scratch_dir:
+        mock_runner = ConsistentMockRunner(scratch_dir)
+
+        async def run_exec():
+            return await VerificationJobManager.execute_job(
+                db=db,
+                run_id=run_id,
+                runner=mock_runner,
+                scratch_root=scratch_dir,
+                user_id=user.id,
+            )
+
+        result = anyio.run(run_exec)
+        assert result.verdict == ProofVerdict.VERIFIED_FIX
+        assert result.evidence.sandbox_image == DEFAULT_SANDBOX_IMAGE
+        assert result.evidence.test_command == DEMO_CALC_TEST_CMD
+
+
+def test_unverified_verdict_blocks_pr_and_patch_export(test_session, monkeypatch):
+    """Ensure PR creation and patch export are blocked if verification is not VERIFIED_FIX."""
+    from repopilot_api.models import ProofReport, VerificationRun
+
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+    client = get_client(test_session)
+    db = test_session()
+    user, headers = create_authenticated_user(db)
+
+    res_init = client.post("/api/demo/initialize", headers=headers)
+    assert res_init.status_code == 200
+    repo_id = res_init.json()["repository"]["id"]
+
+    res_create = client.post(
+        f"/api/repositories/{repo_id}/verifications",
+        json={
+            "commit_sha": DEMO_CALC_COMMIT_SHA,
+            "issue_number": 1,
+            "test_command": DEMO_CALC_TEST_CMD,
+            "patches": [{"file_path": "src/calculator.py", "diff": DEMO_CALC_FIX_PATCH}],
+            "hypothesis": "Test unverified gating",
+            "sandbox_image": DEFAULT_SANDBOX_IMAGE,
+            "auto_submit_approval": True,
+        },
+        headers=headers,
+    )
+    assert res_create.status_code == 201
+    run_id = res_create.json()["id"]
+
+    # Approve
+    client.post(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/approve",
+        json={"expected_spec_hash": res_create.json()["spec_hash"]},
+        headers=headers,
+    )
+
+    # Simulate completed run with UNREPRODUCED verdict
+    run = db.get(VerificationRun, run_id)
+    run.status = "completed"
+    report = ProofReport(
+        verification_run_id=run.id,
+        verdict="unreproduced",
+        hypothesis="Original bug not reproducible",
+        summary="Baseline passed without reproducing bug",
+        baseline_summary="Passed",
+        patched_summary="Pending",
+        confidence="low",
+        evidence_json="{}",
+    )
+    db.add(report)
+    db.commit()
+
+    # PR creation must be blocked
+    res_pr = client.post(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/create-pr",
+        json={"custom_title": "Blocked PR"},
+        headers=headers,
+    )
+    assert res_pr.status_code == 400
+    assert "Only verified fixes ('verified_fix') qualify for PR creation" in res_pr.json()["detail"]
+
+    # Patch export must be blocked
+    res_export = client.get(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/export-patch",
+        headers=headers,
+    )
+    assert res_export.status_code == 400
+    assert "Only verified fixes qualify for verified patch export" in res_export.json()["detail"]
+
+
+@pytest.mark.docker
+def test_demo_real_docker_verification_e2e(test_session, monkeypatch):
+    """Execute end-to-end demo verification workflow using real Docker containers."""
+    import anyio
+
+    from repopilot_api.sandbox import check_docker_daemon_status
+
+    docker_ok, reason = check_docker_daemon_status()
+    if not docker_ok:
+        pytest.skip(f"Docker daemon unavailable: {reason}")
+
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+    client = get_client(test_session)
+    db = test_session()
+    user, headers = create_authenticated_user(db)
+
+    # Step 1: Initialize demo repository
+    res_init = client.post("/api/demo/initialize", headers=headers)
+    assert res_init.status_code == 200
+    repo_id = res_init.json()["repository"]["id"]
+
+    # Step 2: Create verification run
+    res_create = client.post(
+        f"/api/repositories/{repo_id}/verifications",
+        json={
+            "commit_sha": DEMO_CALC_COMMIT_SHA,
+            "issue_number": 1,
+            "test_command": DEMO_CALC_TEST_CMD,
+            "patches": [{"file_path": "src/calculator.py", "diff": DEMO_CALC_FIX_PATCH}],
+            "hypothesis": "Fix power operator bug from multiplication to exponentiation",
+            "sandbox_image": DEFAULT_SANDBOX_IMAGE,
+            "auto_submit_approval": True,
+        },
+        headers=headers,
+    )
+    assert res_create.status_code == 201
+    run_id = res_create.json()["id"]
+    spec_hash = res_create.json()["spec_hash"]
+
+    # Step 3: Human operator approval
+    res_approve = client.post(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/approve",
+        json={"expected_spec_hash": spec_hash, "comment": "Operator verified approval"},
+        headers=headers,
+    )
+    assert res_approve.status_code == 200
+
+    # Step 4: Execute real Docker verification (uses auto-detected DockerSandboxRunner)
+    async def do_execute():
+        return await VerificationJobManager.execute_job(db=db, run_id=run_id, user_id=user.id)
+
+    result = anyio.run(do_execute)
+
+    # Assert exact deterministic evidence-based outcomes
+    assert result.verdict == ProofVerdict.VERIFIED_FIX
+    assert result.evidence is not None
+    assert result.evidence.baseline_exit_code == 1
+    assert result.evidence.patched_exit_code == 0
+    assert result.evidence.baseline_metrics.total == 6
+    assert result.evidence.baseline_metrics.failed == 2
+    assert result.evidence.baseline_metrics.passed == 4
+    assert result.evidence.patched_metrics.total == 6
+    assert result.evidence.patched_metrics.failed == 0
+    assert result.evidence.patched_metrics.passed == 6
+    assert len(result.evidence.resolved_test_ids) == 2
+    assert len(result.evidence.new_failed_test_ids) == 0
+
+    # Step 5: Check Report API
+    res_report = client.get(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/report",
+        headers=headers,
+    )
+    assert res_report.status_code == 200
+    assert res_report.json()["verdict"] == "verified_fix"
+
+    # Step 6: Export Patch succeeds for verified fix
+    res_export = client.get(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/export-patch",
+        headers=headers,
+    )
+    assert res_export.status_code == 200
+    assert "return base ** exponent" in res_export.json()["patch_diff"]
+
+    # Step 7: Simulated PR succeeds for verified fix
+    res_pr = client.post(
+        f"/api/repositories/{repo_id}/verifications/{run_id}/create-pr",
+        json={"custom_title": "Fix power calculation in calculator"},
+        headers=headers,
+    )
+    assert res_pr.status_code == 200
+    assert res_pr.json()["pr_number"] == 101
+    assert res_pr.json()["success"] is True
+
+
+

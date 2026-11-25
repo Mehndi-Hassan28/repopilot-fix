@@ -41,6 +41,7 @@ from repopilot_api.models import (
     IndexedFile,
     IndexingJob,
     ProofReport,
+    Repository,
     VerificationRun,
 )
 from repopilot_api.proof_engine import (
@@ -387,9 +388,18 @@ class WorkerLoop:
         # Runner Check & Docker Restriction Enforcement
         # ----------------------------------------------------------------------
         active_runner = self.runner or get_sandbox_runner(worker_id=self.worker_id)
-        allow_docker = os.getenv(
-            "ALLOW_DOCKER_VERIFICATION_EXECUTION", "false"
-        ).lower() in ("true", "1")
+        allow_docker_env = os.getenv("ALLOW_DOCKER_VERIFICATION_EXECUTION", "").strip().lower()
+        if allow_docker_env in ("true", "1"):
+            allow_docker = True
+        elif allow_docker_env in ("false", "0"):
+            allow_docker = False
+        else:
+            from repopilot_api.demo import is_internal_demo_repository
+
+            with self.session_factory() as check_db:
+                repo = check_db.get(Repository, proof_request.repository_id)
+                allow_docker = is_internal_demo_repository(check_db, repo, user_id=None)
+
         is_docker_runner = (
             hasattr(active_runner, "run")
             and getattr(active_runner, "__class__", None).__name__ == "DockerSandboxRunner"

@@ -39,8 +39,11 @@ describe("Verification PR & Export Utilities", () => {
 
     it("returns false if verdict is not verified_fix", () => {
       const run = { status: "completed" as const, approved_spec_hash: "spec123" };
-      const report = { verdict: "fix_failed" as const };
-      assert.equal(isPullRequestEligible(run, report), false);
+      assert.equal(isPullRequestEligible(run, { verdict: "fix_failed" as const }), false);
+      assert.equal(isPullRequestEligible(run, { verdict: "unreproduced" as const }), false);
+      assert.equal(isPullRequestEligible(run, { verdict: "inconclusive" as const }), false);
+      assert.equal(isPullRequestEligible(run, { verdict: "timeout" as const }), false);
+      assert.equal(isPullRequestEligible(run, { verdict: "error" as const }), false);
     });
 
     it("returns false if run status is running or pending_approval", () => {

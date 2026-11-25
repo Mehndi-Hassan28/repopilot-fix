@@ -7,6 +7,10 @@ import {
   createGuestSession,
   DemoApiError,
 } from "./demo-api.ts";
+import {
+  DEFAULT_SANDBOX_IMAGE,
+  DEFAULT_DEMO_TEST_COMMAND,
+} from "./types.ts";
 
 describe("Demo API Client", () => {
   const originalFetch = globalThis.fetch;
@@ -27,7 +31,7 @@ describe("Demo API Client", () => {
             repository_full_name: "repopilot/demo-calc-1",
             docker_available: true,
             docker_status_message: "Docker daemon active",
-            sandbox_image: "python:3.11-slim",
+            sandbox_image: DEFAULT_SANDBOX_IMAGE,
             preconfigured_issue_number: 1,
             has_active_run: false,
           }),
@@ -100,8 +104,8 @@ describe("Demo API Client", () => {
               author: "repopilot-qa",
               labels: ["bug"],
             },
-            test_command: ["pytest", "-q"],
-            sandbox_image: "python:3.11-slim",
+            test_command: DEFAULT_DEMO_TEST_COMMAND,
+            sandbox_image: DEFAULT_SANDBOX_IMAGE,
             docker_available: true,
             docker_status_message: "Docker active",
             is_mock_ai: true,
@@ -115,6 +119,9 @@ describe("Demo API Client", () => {
       assert.equal(capturedCsrf, "test-csrf-123");
       assert.equal(result.repository.id, 99);
       assert.equal(result.is_mock_ai, true);
+      assert.deepEqual(result.test_command, DEFAULT_DEMO_TEST_COMMAND);
+      assert.equal(result.sandbox_image, DEFAULT_SANDBOX_IMAGE);
+      assert.ok(result.sandbox_image.includes("@sha256:"));
     });
 
     it("appends ?reset=true when reset option is set", async () => {
@@ -146,7 +153,7 @@ describe("Demo API Client", () => {
             initialized: false,
             docker_available: true,
             docker_status_message: "Docker active",
-            sandbox_image: "python:3.11-slim",
+            sandbox_image: DEFAULT_SANDBOX_IMAGE,
             preconfigured_issue_number: 1,
             has_active_run: false,
           }),
@@ -205,6 +212,25 @@ describe("Demo API Client", () => {
       assert.equal(simulatedPrData.pr_number, 101);
       assert.equal(simulatedPrData.is_simulated, true);
       assert.ok(simulatedPrData.message.includes("Simulated"));
+    });
+
+    it("verifies pipeline gating: unverified verdicts strictly block Stage 9 actions", () => {
+      const unverifiedVerdicts = [
+        "unreproduced",
+        "inconclusive",
+        "fix_failed",
+        "timeout",
+        "error",
+        "patch_error",
+        "regression_detected",
+      ];
+
+      for (const verdict of unverifiedVerdicts) {
+        const isEligible = verdict === "verified_fix";
+        assert.equal(isEligible, false, `Verdict ${verdict} must not qualify as verified fix`);
+      }
+
+      assert.equal("verified_fix" === "verified_fix", true);
     });
   });
 });

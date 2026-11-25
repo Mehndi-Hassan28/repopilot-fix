@@ -9,6 +9,8 @@ import {
   DemoStatusResponse,
   DemoInitializeResponse,
   IndexedFileItem,
+  DEFAULT_SANDBOX_IMAGE,
+  DEFAULT_DEMO_TEST_COMMAND,
 } from "../lib/types";
 import {
   VerificationRunRead,
@@ -99,6 +101,10 @@ export function InteractiveDemoWorkspace({
 
   const reportEvidence = (proofReport?.evidence || {}) as Partial<ProofEvidence>;
   const autoRunAbortRef = useRef<boolean>(false);
+  const analysisResultRef = useRef<IssueAnalysisResponse | null>(null);
+  const demoInitRef = useRef<DemoInitializeResponse | null>(null);
+  const demoStatusRef = useRef<DemoStatusResponse | null>(null);
+  const verificationRunRef = useRef<VerificationRunRead | null>(null);
 
   useEffect(() => {
     if (csrfToken) {
@@ -113,6 +119,7 @@ export function InteractiveDemoWorkspace({
     try {
       const status = await getDemoStatus();
       setDemoStatus(status);
+      demoStatusRef.current = status;
       return status;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to query demo status.";
@@ -167,7 +174,6 @@ export function InteractiveDemoWorkspace({
   // Stage 1: Initialize Demo Repository
   const handleStep1Initialize = async () => {
     setLoadingStep(1);
-    setStepError(null);
     try {
       let tokenToUse = activeCsrf || csrfToken;
       if (!tokenToUse) {
@@ -183,8 +189,10 @@ export function InteractiveDemoWorkspace({
       }
       const initResponse = await initializeDemo(false, tokenToUse);
       setDemoInit(initResponse);
+      demoInitRef.current = initResponse;
       setActiveRepo(initResponse.repository);
       onSelectRepo(initResponse.repository);
+      setStepError((prev) => (prev?.step === 1 ? null : prev));
       setMaxCompletedStep((prev) => Math.max(prev, 1));
       await refreshDemoStatus();
       return initResponse;
@@ -201,13 +209,12 @@ export function InteractiveDemoWorkspace({
 
   // Stage 2: Codebase Indexing
   const handleStep2Index = async (repoId?: number) => {
-    const targetId = repoId || activeRepo?.id || demoInit?.repository.id;
+    const targetId = repoId || activeRepo?.id || demoInitRef.current?.repository.id || demoInit?.repository.id;
     if (!targetId) {
       setStepError({ step: 2, message: "No active repository found. Run Stage 1 first." });
       return;
     }
     setLoadingStep(2);
-    setStepError(null);
     try {
       // Fetch indexed files and symbols
       const filesRes = await apiRequest(`/api/repositories/${targetId}/files`, { cache: "no-store" });
@@ -215,6 +222,7 @@ export function InteractiveDemoWorkspace({
         const files = (await filesRes.json()) as IndexedFileItem[];
         setIndexedFiles(files);
       }
+      setStepError((prev) => (prev?.step === 2 ? null : prev));
       setMaxCompletedStep((prev) => Math.max(prev, 2));
       await refreshDemoStatus();
     } catch (err) {
@@ -230,13 +238,12 @@ export function InteractiveDemoWorkspace({
 
   // Stage 3: Issue Investigation
   const handleStep3Investigate = async (repoId?: number) => {
-    const targetId = repoId || activeRepo?.id || demoInit?.repository.id;
+    const targetId = repoId || activeRepo?.id || demoInitRef.current?.repository.id || demoInit?.repository.id;
     if (!targetId) {
       setStepError({ step: 3, message: "No repository loaded. Run previous stages first." });
       return;
     }
     setLoadingStep(3);
-    setStepError(null);
     try {
       const res = await apiRequest(
         `/api/repositories/${targetId}/issues/analyze`,
@@ -253,7 +260,9 @@ export function InteractiveDemoWorkspace({
       }
       const data = (await res.json()) as IssueAnalysisResponse;
       setAnalysisResult(data);
+      analysisResultRef.current = data;
       if (onAnalysisLoaded) onAnalysisLoaded(data);
+      setStepError((prev) => (prev?.step === 3 ? null : prev));
       setMaxCompletedStep((prev) => Math.max(prev, 3));
       await refreshDemoStatus();
       return data;
@@ -269,45 +278,60 @@ export function InteractiveDemoWorkspace({
   };
 
   // Stage 4: Root Cause Explanation (Marks step completed)
-  const handleStep4RootCause = async () => {
-    if (!analysisResult) {
+  const handleStep4RootCause = async (analysisParam?: IssueAnalysisResponse | null) => {
+    const analysis = analysisParam || analysisResultRef.current || analysisResult;
+    if (!analysis) {
       setStepError({ step: 4, message: "Issue analysis not available. Run Stage 3 first." });
       return;
     }
+    setStepError((prev) => (prev?.step === 4 ? null : prev));
     setMaxCompletedStep((prev) => Math.max(prev, 4));
   };
 
   // Stage 5: Patch Diff Review (Marks step completed)
-  const handleStep5PatchReview = async () => {
-    if (!analysisResult || !analysisResult.analysis.proposed_fix.patches.length) {
+  const handleStep5PatchReview = async (analysisParam?: IssueAnalysisResponse | null) => {
+    const analysis = analysisParam || analysisResultRef.current || analysisResult;
+    if (!analysis || !analysis.analysis.proposed_fix.patches.length) {
       setStepError({ step: 5, message: "Patch proposal not available." });
       return;
     }
+    setStepError((prev) => (prev?.step === 5 ? null : prev));
     setMaxCompletedStep((prev) => Math.max(prev, 5));
   };
 
   // Stage 6: Human Approval Gate
-  const handleStep6Approve = async () => {
-    const targetId = activeRepo?.id || demoInit?.repository.id;
-    if (!targetId || !analysisResult) {
+  const handleStep6Approve = async (analysisParam?: IssueAnalysisResponse | null) => {
+    const targetId = activeRepo?.id || demoInitRef.current?.repository.id || demoInit?.repository.id;
+    const analysis = analysisParam || analysisResultRef.current || analysisResult;
+    if (!targetId || !analysis) {
       setStepError({ step: 6, message: "Target repository or patch not ready." });
       return;
     }
     setLoadingStep(6);
-    setStepError(null);
     try {
+      const authoritativeImage =
+        demoInitRef.current?.sandbox_image ||
+        demoInit?.sandbox_image ||
+        demoStatusRef.current?.sandbox_image ||
+        demoStatus?.sandbox_image ||
+        DEFAULT_SANDBOX_IMAGE;
+      const authoritativeTestCmd =
+        demoInitRef.current?.test_command ||
+        demoInit?.test_command ||
+        DEFAULT_DEMO_TEST_COMMAND;
+
       // 1. Create verification run request if not exists
-      let run = verificationRun;
+      let run = verificationRunRef.current || verificationRun;
       if (!run) {
         run = await createVerification(
           targetId,
           {
-            commit_sha: analysisResult.commit_sha,
-            issue_number: analysisResult.issue_number,
-            patches: analysisResult.analysis.proposed_fix.patches,
-            hypothesis: analysisResult.analysis.root_cause_hypothesis,
-            test_command: ["pytest", "-q", "tests/test_calculator.py"],
-            sandbox_image: "python:3.11-slim",
+            commit_sha: analysis.commit_sha,
+            issue_number: analysis.issue_number,
+            patches: analysis.analysis.proposed_fix.patches,
+            hypothesis: analysis.analysis.root_cause_hypothesis,
+            test_command: authoritativeTestCmd,
+            sandbox_image: authoritativeImage,
           },
           activeCsrf || csrfToken
         );
@@ -332,7 +356,9 @@ export function InteractiveDemoWorkspace({
       }
 
       setVerificationRun(run);
+      verificationRunRef.current = run;
       setAwaitingApproval(false);
+      setStepError((prev) => (prev?.step === 6 ? null : prev));
       setMaxCompletedStep((prev) => Math.max(prev, 6));
       await refreshDemoStatus();
       return run;
@@ -353,11 +379,19 @@ export function InteractiveDemoWorkspace({
       const run = await handleStep6Approve();
       if (!run) return;
       setCurrentStep(7);
-      await handleStep7Verify();
+      const report = await handleStep7Verify();
       setCurrentStep(8);
-      await handleStep8Evidence();
-      setCurrentStep(9);
-      setMaxCompletedStep(9);
+      const finalReport = report || (await handleStep8Evidence());
+      // STRICT GATING: Only advance to Stage 9 if verdict is verified_fix
+      if (finalReport?.verdict === "verified_fix") {
+        setCurrentStep(9);
+        setMaxCompletedStep(9);
+      } else {
+        // Fix is NOT verified (UNREPRODUCED, FIX_FAILED, INCONCLUSIVE, etc.)
+        // Remain at Stage 8 evidence report
+        setCurrentStep(8);
+        setMaxCompletedStep((prev) => Math.min(Math.max(prev, 8), 8));
+      }
     } catch {
       // Errors caught and set by step handlers
     }
@@ -365,8 +399,8 @@ export function InteractiveDemoWorkspace({
 
   // Stage 7: Isolated Docker Verification
   const handleStep7Verify = async () => {
-    const targetId = activeRepo?.id || demoInit?.repository.id;
-    const runId = verificationRun?.id;
+    const targetId = activeRepo?.id || demoInitRef.current?.repository.id || demoInit?.repository.id;
+    const runId = verificationRunRef.current?.id || verificationRun?.id;
     if (!targetId || !runId) {
       setStepError({ step: 7, message: "Approved verification run required. Complete Stage 6 first." });
       return;
@@ -383,7 +417,6 @@ export function InteractiveDemoWorkspace({
     }
 
     setLoadingStep(7);
-    setStepError(null);
     try {
       // Execute verified job
       await executeVerification(targetId, runId, activeCsrf || csrfToken);
@@ -391,10 +424,12 @@ export function InteractiveDemoWorkspace({
       // Fetch updated run details and report
       const updatedRun = await getVerification(targetId, runId);
       setVerificationRun(updatedRun);
+      verificationRunRef.current = updatedRun;
 
       const report = await getVerificationReport(targetId, runId);
       setProofReport(report);
 
+      setStepError((prev) => (prev?.step === 7 ? null : prev));
       setMaxCompletedStep((prev) => Math.max(prev, 7));
       await refreshDemoStatus();
       return report;
@@ -411,17 +446,17 @@ export function InteractiveDemoWorkspace({
 
   // Stage 8: Evidence Report (Fetch if not already loaded)
   const handleStep8Evidence = async () => {
-    const targetId = activeRepo?.id || demoInit?.repository.id;
-    const runId = verificationRun?.id;
+    const targetId = activeRepo?.id || demoInitRef.current?.repository.id || demoInit?.repository.id;
+    const runId = verificationRunRef.current?.id || verificationRun?.id;
     if (!targetId || !runId) {
       setStepError({ step: 8, message: "Verification run not available." });
       return;
     }
     setLoadingStep(8);
-    setStepError(null);
     try {
       const report = await getVerificationReport(targetId, runId);
       setProofReport(report);
+      setStepError((prev) => (prev?.step === 8 ? null : prev));
       setMaxCompletedStep((prev) => Math.max(prev, 8));
       return report;
     } catch (err) {
@@ -436,9 +471,18 @@ export function InteractiveDemoWorkspace({
 
   // Stage 9: Export Patch or Simulate PR
   const handleExportPatch = async () => {
-    const targetId = activeRepo?.id || demoInit?.repository.id;
-    const runId = verificationRun?.id;
+    const targetId = activeRepo?.id || demoInitRef.current?.repository.id || demoInit?.repository.id;
+    const runId = verificationRunRef.current?.id || verificationRun?.id;
     if (!targetId || !runId) return;
+
+    if (proofReport?.verdict !== "verified_fix") {
+      setStepError({
+        step: 9,
+        message: `Patch export blocked: verification verdict is '${proofReport?.verdict || "pending"}'. Only verified fixes qualify for patch export.`,
+      });
+      return;
+    }
+
     setLoadingStep(9);
     try {
       const exported = await exportPatch(targetId, runId);
@@ -455,6 +499,7 @@ export function InteractiveDemoWorkspace({
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
+      setStepError((prev) => (prev?.step === 9 ? null : prev));
       setMaxCompletedStep((prev) => Math.max(prev, 9));
     } catch (err) {
       setStepError({
@@ -467,11 +512,19 @@ export function InteractiveDemoWorkspace({
   };
 
   const handleSimulatePR = async () => {
-    const targetId = activeRepo?.id || demoInit?.repository.id;
-    const runId = verificationRun?.id;
+    const targetId = activeRepo?.id || demoInitRef.current?.repository.id || demoInit?.repository.id;
+    const runId = verificationRunRef.current?.id || verificationRun?.id;
     if (!targetId || !runId) return;
+
+    if (proofReport?.verdict !== "verified_fix") {
+      setStepError({
+        step: 9,
+        message: `PR simulation blocked: verification verdict is '${proofReport?.verdict || "pending"}'. Only verified fixes qualify for PR creation.`,
+      });
+      return;
+    }
+
     setSimulatingPR(true);
-    setStepError(null);
     try {
       const res = await createPullRequest(
         targetId,
@@ -484,6 +537,7 @@ export function InteractiveDemoWorkspace({
         activeCsrf || csrfToken
       );
       setSimulatedPR(res);
+      setStepError((prev) => (prev?.step === 9 ? null : prev));
       setMaxCompletedStep((prev) => Math.max(prev, 9));
     } catch (err) {
       setStepError({
@@ -500,7 +554,6 @@ export function InteractiveDemoWorkspace({
     setAutoRunning(true);
     setAwaitingApproval(false);
     autoRunAbortRef.current = false;
-    setStepError(null);
 
     try {
       // Step 1: Initialize
@@ -520,12 +573,12 @@ export function InteractiveDemoWorkspace({
 
       // Step 4: Root Cause
       setCurrentStep(4);
-      await handleStep4RootCause();
+      await handleStep4RootCause(analysis);
       if (autoRunAbortRef.current) return;
 
       // Step 5: Patch Review
       setCurrentStep(5);
-      await handleStep5PatchReview();
+      await handleStep5PatchReview(analysis);
       if (autoRunAbortRef.current) return;
 
       // Step 6: Human Approval Governance Gate - MANDATORY PAUSE
@@ -533,7 +586,16 @@ export function InteractiveDemoWorkspace({
       // specification, advances to Stage 6, and PAUSES. Operator approval cannot be bypassed.
       setCurrentStep(6);
       const targetId = init.repository.id;
-      let run = verificationRun;
+      const authoritativeImage =
+        init.sandbox_image ||
+        demoStatusRef.current?.sandbox_image ||
+        demoStatus?.sandbox_image ||
+        DEFAULT_SANDBOX_IMAGE;
+      const authoritativeTestCmd =
+        init.test_command ||
+        DEFAULT_DEMO_TEST_COMMAND;
+
+      let run = verificationRunRef.current || verificationRun;
       if (!run && analysis) {
         run = await createVerification(
           targetId,
@@ -542,8 +604,8 @@ export function InteractiveDemoWorkspace({
             issue_number: analysis.issue_number,
             patches: analysis.analysis.proposed_fix.patches,
             hypothesis: analysis.analysis.root_cause_hypothesis,
-            test_command: ["pytest", "-q", "tests/test_calculator.py"],
-            sandbox_image: "python:3.11-slim",
+            test_command: authoritativeTestCmd,
+            sandbox_image: authoritativeImage,
           },
           activeCsrf || csrfToken
         );
@@ -553,7 +615,9 @@ export function InteractiveDemoWorkspace({
       }
       if (run) {
         setVerificationRun(run);
+        verificationRunRef.current = run;
       }
+      setStepError((prev) => (prev?.step && prev.step <= 6 ? null : prev));
       setMaxCompletedStep((prev) => Math.max(prev, 5));
       setAutoRunning(false);
       setAwaitingApproval(true);
@@ -570,18 +634,21 @@ export function InteractiveDemoWorkspace({
     setAutoRunning(false);
     autoRunAbortRef.current = true;
     setLoadingStep(1);
-    setStepError(null);
 
     try {
       await resetDemo(activeCsrf || csrfToken);
       setDemoInit(null);
+      demoInitRef.current = null;
       setActiveRepo(null);
       setIndexedFiles([]);
       setAnalysisResult(null);
+      analysisResultRef.current = null;
       setVerificationRun(null);
+      verificationRunRef.current = null;
       setProofReport(null);
       setExportedPatch(null);
       setSimulatedPR(null);
+      setStepError(null);
       setMaxCompletedStep(0);
       setCurrentStep(1);
       await refreshDemoStatus();
@@ -693,11 +760,13 @@ export function InteractiveDemoWorkspace({
             const isActive = currentStep === stg.id;
             const isCompleted = maxCompletedStep >= stg.id;
 
+            const isGated = stg.id === 9 && proofReport?.verdict !== "verified_fix";
+
             return (
               <button
                 key={stg.id}
                 onClick={() => setCurrentStep(stg.id)}
-                disabled={autoRunning || (!isCompleted && stg.id > maxCompletedStep + 1)}
+                disabled={autoRunning || isGated || (!isCompleted && stg.id > maxCompletedStep + 1)}
                 className={`flex items-center gap-2 rounded-lg px-3 py-1.5 transition-all text-xs ${
                   isActive
                     ? "bg-[#BFFF00]/10 border border-[#BFFF00]/50 text-white shadow-sm"
@@ -791,8 +860,10 @@ export function InteractiveDemoWorkspace({
 
                 <div className="rounded-xl border border-white/5 bg-[#141822] p-4">
                   <p className="text-[10px] font-mono uppercase text-zinc-400">Execution Sandbox</p>
-                  <p className="mt-1 font-mono text-sm font-semibold text-purple-300">python:3.11-slim</p>
-                  <p className="mt-0.5 text-[11px] text-zinc-500 font-sans">Allowlisted test image</p>
+                  <p className="mt-1 font-mono text-xs font-semibold text-purple-300 truncate" title={demoInit?.sandbox_image || demoStatus?.sandbox_image || DEFAULT_SANDBOX_IMAGE}>
+                    {demoInit?.sandbox_image || demoStatus?.sandbox_image || DEFAULT_SANDBOX_IMAGE}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-zinc-500 font-sans">Authoritative pinned image</p>
                 </div>
               </div>
 
@@ -1286,17 +1357,21 @@ export function InteractiveDemoWorkspace({
 
                 <div className="rounded-lg bg-[#0a0d14] p-3 font-mono text-xs text-[#BFFF00] break-all border border-white/5">
                   {verificationRun?.spec_hash ||
-                    "sha256:7f9b8c3a1e2d4f5b6a7c8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b"}
+                    "Pending specification generation"}
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs font-mono">
                   <div className="rounded bg-white/5 p-2.5">
-                    <span className="text-zinc-500 block">Allowlisted Test Command:</span>
-                    <span className="text-zinc-200">pytest -q tests/test_calculator.py</span>
+                    <span className="text-zinc-500 block">Authoritative Test Command:</span>
+                    <span className="text-zinc-200">
+                      {(verificationRun?.test_command || demoInit?.test_command || DEFAULT_DEMO_TEST_COMMAND).join(" ")}
+                    </span>
                   </div>
                   <div className="rounded bg-white/5 p-2.5">
-                    <span className="text-zinc-500 block">Isolated Sandbox Container:</span>
-                    <span className="text-purple-300">python:3.11-slim</span>
+                    <span className="text-zinc-500 block">Authoritative Sandbox Container:</span>
+                    <span className="text-purple-300 truncate block" title={verificationRun?.sandbox_image || demoInit?.sandbox_image || demoStatus?.sandbox_image || DEFAULT_SANDBOX_IMAGE}>
+                      {verificationRun?.sandbox_image || demoInit?.sandbox_image || demoStatus?.sandbox_image || DEFAULT_SANDBOX_IMAGE}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -1396,7 +1471,7 @@ export function InteractiveDemoWorkspace({
                         Executes test suite on unmodified code to prove reproducible defect failure.
                       </p>
                       <div className="rounded bg-[#090b0e] p-2.5 font-mono text-[11px] text-zinc-300">
-                        Exit Code: {verificationRun?.baseline_exit_code !== null ? verificationRun?.baseline_exit_code : "1 (FAILING)"}
+                        Exit Code: {verificationRun?.baseline_exit_code !== null && verificationRun?.baseline_exit_code !== undefined ? `${verificationRun.baseline_exit_code} (${verificationRun.baseline_exit_code === 0 ? "PASSING" : "FAILING"})` : "Pending execution"}
                       </div>
                     </div>
 
@@ -1412,7 +1487,7 @@ export function InteractiveDemoWorkspace({
                         Applies approved patch and executes test suite to confirm zero regressions.
                       </p>
                       <div className="rounded bg-[#090b0e] p-2.5 font-mono text-[11px] text-zinc-300">
-                        Exit Code: {verificationRun?.patched_exit_code !== null ? verificationRun?.patched_exit_code : "0 (PASSING)"}
+                        Exit Code: {verificationRun?.patched_exit_code !== null && verificationRun?.patched_exit_code !== undefined ? `${verificationRun.patched_exit_code} (${verificationRun.patched_exit_code === 0 ? "PASSING" : "FAILING"})` : "Pending execution"}
                       </div>
                     </div>
                   </div>
@@ -1467,7 +1542,7 @@ export function InteractiveDemoWorkspace({
                   </p>
                 </div>
                 <span className="shrink-0 rounded-lg border border-[#BFFF00]/50 bg-[#BFFF00]/10 px-3 py-1 text-xs font-mono font-bold text-[#BFFF00]">
-                  VERDICT: VERIFIED FIX
+                  VERDICT: {proofReport?.verdict ? proofReport.verdict.toUpperCase().replace(/_/g, " ") : "PENDING EXECUTION"}
                 </span>
               </div>
 
@@ -1477,13 +1552,15 @@ export function InteractiveDemoWorkspace({
                   <p className="text-[10px] font-mono uppercase text-zinc-400">Baseline Exit</p>
                   <p className="mt-1 text-2xl font-bold font-mono text-rose-400">
                     {reportEvidence.baseline_exit_code !== null && reportEvidence.baseline_exit_code !== undefined
-                      ? `${reportEvidence.baseline_exit_code} (Fail)`
+                      ? `${reportEvidence.baseline_exit_code} (${reportEvidence.baseline_exit_code === 0 ? "Pass" : "Fail"})`
                       : verificationRun?.baseline_exit_code !== null && verificationRun?.baseline_exit_code !== undefined
-                      ? `${verificationRun.baseline_exit_code} (Fail)`
-                      : "1 (Fail)"}
+                      ? `${verificationRun.baseline_exit_code} (${verificationRun.baseline_exit_code === 0 ? "Pass" : "Fail"})`
+                      : "Pending"}
                   </p>
                   <p className="text-[10px] text-zinc-500">
-                    {reportEvidence.baseline_metrics?.failed || 2} tests failed
+                    {reportEvidence.baseline_metrics?.failed !== undefined
+                      ? `${reportEvidence.baseline_metrics.failed} tests failed`
+                      : "Pending execution"}
                   </p>
                 </div>
 
@@ -1491,23 +1568,27 @@ export function InteractiveDemoWorkspace({
                   <p className="text-[10px] font-mono uppercase text-zinc-400">Patched Exit</p>
                   <p className="mt-1 text-2xl font-bold font-mono text-[#BFFF00]">
                     {reportEvidence.patched_exit_code !== null && reportEvidence.patched_exit_code !== undefined
-                      ? `${reportEvidence.patched_exit_code} (Pass)`
+                      ? `${reportEvidence.patched_exit_code} (${reportEvidence.patched_exit_code === 0 ? "Pass" : "Fail"})`
                       : verificationRun?.patched_exit_code !== null && verificationRun?.patched_exit_code !== undefined
-                      ? `${verificationRun.patched_exit_code} (Pass)`
-                      : "0 (Pass)"}
+                      ? `${verificationRun.patched_exit_code} (${verificationRun.patched_exit_code === 0 ? "Pass" : "Fail"})`
+                      : "Pending"}
                   </p>
                   <p className="text-[10px] text-zinc-500">
-                    {reportEvidence.patched_metrics?.passed || 6} tests passed
+                    {reportEvidence.patched_metrics?.passed !== undefined
+                      ? `${reportEvidence.patched_metrics.passed} tests passed`
+                      : "Pending execution"}
                   </p>
                 </div>
 
                 <div className="rounded-xl border border-white/5 bg-[#141822] p-4">
                   <p className="text-[10px] font-mono uppercase text-zinc-400">Resolved Failures</p>
                   <p className="mt-1 text-2xl font-bold font-mono text-cyan-300">
-                    {reportEvidence.resolved_test_ids ? `${reportEvidence.resolved_test_ids.length} Resolved` : "2 Resolved"}
+                    {reportEvidence.resolved_test_ids
+                      ? `${reportEvidence.resolved_test_ids.length} Resolved`
+                      : "Pending"}
                   </p>
                   <p className="text-[10px] text-zinc-500">
-                    {reportEvidence.new_failed_test_ids?.length || 0} regressions
+                    {reportEvidence.new_failed_test_ids ? `${reportEvidence.new_failed_test_ids.length} regressions` : "0 regressions"}
                   </p>
                 </div>
 
@@ -1518,7 +1599,7 @@ export function InteractiveDemoWorkspace({
                       ? `${Number(reportEvidence.duration_seconds).toFixed(2)}s`
                       : verificationRun?.duration_seconds !== undefined
                       ? `${Number(verificationRun.duration_seconds).toFixed(2)}s`
-                      : "2.40s"}
+                      : "Pending"}
                   </p>
                   <p className="text-[10px] text-zinc-500">Dual container run</p>
                 </div>
@@ -1527,7 +1608,7 @@ export function InteractiveDemoWorkspace({
               {/* Resolved Test Cases List */}
               <div className="rounded-xl border border-white/10 bg-[#12151c] p-4 space-y-2">
                 <p className="text-xs font-mono uppercase text-zinc-400 tracking-wider">
-                  Resolved Defect Tests ({reportEvidence.resolved_test_ids?.length || 2}):
+                  Resolved Defect Tests {reportEvidence.resolved_test_ids ? `(${reportEvidence.resolved_test_ids.length})` : ""}:
                 </p>
                 <div className="space-y-1.5 font-mono text-xs">
                   {reportEvidence.resolved_test_ids && reportEvidence.resolved_test_ids.length > 0 ? (
@@ -1539,18 +1620,7 @@ export function InteractiveDemoWorkspace({
                       </div>
                     ))
                   ) : (
-                    <>
-                      <div className="flex items-center gap-2 text-emerald-300">
-                        <span>✓</span>
-                        <span>tests/test_calculator.py::test_power_basic</span>
-                        <span className="text-[10px] text-zinc-500">(2 ** 3 == 8 resolved)</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-emerald-300">
-                        <span>✓</span>
-                        <span>tests/test_calculator.py::test_power_zero_exp</span>
-                        <span className="text-[10px] text-zinc-500">(5 ** 0 == 1 resolved)</span>
-                      </div>
-                    </>
+                    <p className="text-zinc-500 text-xs italic">Pending execution results.</p>
                   )}
                 </div>
               </div>
@@ -1560,19 +1630,19 @@ export function InteractiveDemoWorkspace({
                 <div className="flex items-center justify-between text-zinc-400">
                   <span>Repository Revision Commit:</span>
                   <span className="text-zinc-200">
-                    {reportEvidence.commit_sha || verificationRun?.commit_sha || "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+                    {reportEvidence.commit_sha || verificationRun?.commit_sha || "Pending"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-zinc-400">
                   <span>Patch SHA-256 Digest:</span>
                   <span className="text-zinc-200 truncate max-w-xs">
-                    {reportEvidence.patch_hash || verificationRun?.patch_hash || "1280bb1507df1821cf3e..."}
+                    {reportEvidence.patch_hash || verificationRun?.patch_hash || "Pending"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-zinc-400">
                   <span>Approved Spec Digest:</span>
                   <span className="text-[#BFFF00] truncate max-w-xs">
-                    {reportEvidence.approved_spec_hash || verificationRun?.approved_spec_hash || "4f0b2ce7614d99a2..."}
+                    {reportEvidence.approved_spec_hash || verificationRun?.approved_spec_hash || "Pending"}
                   </span>
                 </div>
               </div>
@@ -1585,12 +1655,29 @@ export function InteractiveDemoWorkspace({
                 >
                   ← Back
                 </button>
-                <button
-                  onClick={() => setCurrentStep(9)}
-                  className="rounded-xl bg-[#BFFF00] px-5 py-2.5 text-xs font-bold text-black hover:brightness-110 transition-all font-sans"
-                >
-                  Proceed to Export & PR Preview →
-                </button>
+                {proofReport?.verdict === "verified_fix" ? (
+                  <button
+                    onClick={() => {
+                      setMaxCompletedStep((prev) => Math.max(prev, 9));
+                      setCurrentStep(9);
+                    }}
+                    className="rounded-xl bg-[#BFFF00] px-5 py-2.5 text-xs font-bold text-black hover:brightness-110 transition-all font-sans"
+                  >
+                    Proceed to Export & PR Preview →
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-mono text-amber-400">
+                      Fix not verified ({proofReport?.verdict ? proofReport.verdict.toUpperCase().replace(/_/g, " ") : "PENDING"}) — PR simulation & export gated
+                    </span>
+                    <button
+                      onClick={() => setCurrentStep(7)}
+                      className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-mono text-amber-300 hover:bg-amber-500/20 transition-colors"
+                    >
+                      Re-run Verification
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1636,10 +1723,14 @@ export function InteractiveDemoWorkspace({
                   </div>
                   <button
                     onClick={handleExportPatch}
-                    disabled={loadingStep === 9}
-                    className="w-full rounded-xl border border-[#BFFF00]/40 bg-[#BFFF00]/10 px-4 py-2.5 text-xs font-bold text-[#BFFF00] hover:bg-[#BFFF00] hover:text-black transition-all font-sans"
+                    disabled={loadingStep === 9 || proofReport?.verdict !== "verified_fix"}
+                    className="w-full rounded-xl border border-[#BFFF00]/40 bg-[#BFFF00]/10 px-4 py-2.5 text-xs font-bold text-[#BFFF00] hover:bg-[#BFFF00] hover:text-black disabled:opacity-40 disabled:cursor-not-allowed transition-all font-sans"
                   >
-                    {loadingStep === 9 ? "Exporting…" : "⬇ Download .patch File"}
+                    {loadingStep === 9
+                      ? "Exporting…"
+                      : proofReport?.verdict !== "verified_fix"
+                      ? "Export Blocked (Fix Unverified)"
+                      : "⬇ Download .patch File"}
                   </button>
                 </div>
 
@@ -1660,13 +1751,15 @@ export function InteractiveDemoWorkspace({
                   </div>
                   <button
                     onClick={handleSimulatePR}
-                    disabled={simulatingPR || simulatedPR !== null}
-                    className="w-full rounded-xl bg-gradient-to-r from-[#BFFF00] to-emerald-400 px-4 py-2.5 text-xs font-bold text-black hover:brightness-110 disabled:opacity-50 transition-all font-sans"
+                    disabled={simulatingPR || simulatedPR !== null || proofReport?.verdict !== "verified_fix"}
+                    className="w-full rounded-xl bg-gradient-to-r from-[#BFFF00] to-emerald-400 px-4 py-2.5 text-xs font-bold text-black hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-all font-sans"
                   >
                     {simulatingPR
                       ? "Generating PR Preview…"
                       : simulatedPR
                       ? "PR #101 Simulated"
+                      : proofReport?.verdict !== "verified_fix"
+                      ? "PR Simulation Blocked (Fix Unverified)"
                       : "⚡ Simulate Pull Request"}
                   </button>
                 </div>
@@ -1716,19 +1809,33 @@ export function InteractiveDemoWorkspace({
                 </div>
               )}
 
-              {/* Completion Celebration Banner */}
-              <div className="rounded-xl border border-white/10 bg-gradient-to-r from-[#0d1612] via-[#09151c] to-[#0c1017] p-5 space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="size-2 rounded-full bg-[#BFFF00]" />
-                  <p className="text-xs font-bold font-mono uppercase text-[#BFFF00]">
-                    Interactive Proof-of-Fix Pipeline Complete
+              {/* Completion Celebration or Incomplete Banner */}
+              {proofReport?.verdict === "verified_fix" ? (
+                <div className="rounded-xl border border-white/10 bg-gradient-to-r from-[#0d1612] via-[#09151c] to-[#0c1017] p-5 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="size-2 rounded-full bg-[#BFFF00]" />
+                    <p className="text-xs font-bold font-mono uppercase text-[#BFFF00]">
+                      Interactive Proof-of-Fix Pipeline Complete
+                    </p>
+                  </div>
+                  <p className="text-xs text-zinc-300 leading-relaxed font-sans">
+                    You have successfully observed the end-to-end evidence-driven repair lifecycle:
+                    Issue Discovery → AST Grounding → Patch Synthesis → Mandatory Operator Approval → Isolated Dual-Sandbox Execution → Cryptographic Proof-of-Fix Verification.
                   </p>
                 </div>
-                <p className="text-xs text-zinc-300 leading-relaxed font-sans">
-                  You have successfully observed the end-to-end evidence-driven repair lifecycle:
-                  Issue Discovery → AST Grounding → Patch Synthesis → Mandatory Operator Approval → Isolated Dual-Sandbox Execution → Cryptographic Proof-of-Fix Verification.
-                </p>
-              </div>
+              ) : (
+                <div className="rounded-xl border border-rose-500/30 bg-rose-950/20 p-5 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="size-2 rounded-full bg-rose-400" />
+                    <p className="text-xs font-bold font-mono uppercase text-rose-400">
+                      Pipeline Incomplete — Fix Not Verified ({proofReport?.verdict ? proofReport.verdict.toUpperCase().replace(/_/g, " ") : "PENDING"})
+                    </p>
+                  </div>
+                  <p className="text-xs text-zinc-300 leading-relaxed font-sans">
+                    Dual-sandbox verification did not establish a proven fix. Exporting verified patches and simulating pull requests are strictly blocked until an authentic fix is verified.
+                  </p>
+                </div>
+              )}
 
               {/* Action Buttons */}
               <div className="flex items-center justify-between pt-2">

@@ -387,7 +387,13 @@ class TrustedFixture:
     def matches_repo(self, owner: str, name: str) -> bool:
         if self.repository_owner != "*" and self.repository_owner.lower() != owner.lower():
             return False
-        if self.repository_name != "*" and self.repository_name.lower() != name.lower():
+        if self.repository_name != "*":
+            if self.repository_name.lower() == name.lower():
+                return True
+            if self.repository_name == "demo-calculator" and (
+                name.lower() == "demo-calculator" or name.lower().startswith("demo-calc-")
+            ):
+                return True
             return False
         return True
 
@@ -459,6 +465,10 @@ class TrustedFixtureRegistry:
 
     def list_fixtures(self) -> list[TrustedFixture]:
         return list(self._fixtures.values())
+
+    @classmethod
+    def get_default_registry(cls) -> "TrustedFixtureRegistry":
+        return get_default_fixture_registry()
 
     def find_fixture(
         self,
@@ -550,17 +560,13 @@ class TrustedFixtureRegistry:
                 description=(
                     "Modular calculator with regression tests and power bug in src/calculator.py"
                 ),
-                repository_owner="*",
+                repository_owner="repopilot",
                 repository_name="*",
                 commit_sha=sample_sha,
                 files=DEMO_CALC_FILES,
                 approved_test_commands=[
                     ["python", "-m", "unittest", "tests/test_calculator.py"],
                     ["python", "-m", "unittest", "discover", "tests"],
-                    ["pytest", "tests/test_calculator.py"],
-                    ["pytest", "-q", "tests/test_calculator.py"],
-                    ["pytest", "-q"],
-                    ["pytest"],
                 ],
                 sandbox_image=DEFAULT_SANDBOX_IMAGE,
                 allowed_commit_shas=common_shas,

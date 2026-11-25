@@ -127,7 +127,9 @@ export function EvidenceReportView({ run, report, csrfToken = "" }: EvidenceRepo
         <div className="flex flex-wrap items-center gap-2 shrink-0">
           <button
             onClick={() => setIsExportModalOpen(true)}
-            className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-mono text-zinc-300 hover:text-white hover:bg-white/10 transition-colors"
+            disabled={!isVerified}
+            title={!isVerified ? "Only verified fixes qualify for patch export." : "Export verified patch for offline CLI application."}
+            className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-mono text-zinc-300 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Export Patch (Offline)
           </button>
