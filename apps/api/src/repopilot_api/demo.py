@@ -41,11 +41,11 @@ from repopilot_api.models import (
 from repopilot_api.sandbox import DEFAULT_SANDBOX_IMAGE, check_docker_daemon_status
 from repopilot_api.schemas import RepositoryRead
 from repopilot_api.security import AuthContext, get_optional_auth, require_csrf
+from repopilot_api.verification_service import check_rate_limit
 from repopilot_api.worker_dispatch import (
     dispatch_cloud_worker,
     get_cloud_worker_status,
 )
-from repopilot_api.verification_service import check_rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -329,7 +329,8 @@ async def dispatch_demo_worker(
     if not check_rate_limit(f"dispatch_worker:{auth.user.id}", max_requests=3, window_seconds=60):
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
-            "Worker dispatch rate limit exceeded. Please wait a moment before requesting another worker.",
+            "Worker dispatch rate limit exceeded. "
+            "Please wait a moment before requesting another worker.",
         )
 
     repo = _get_user_demo_repository(db, auth.user.id)
@@ -342,9 +343,10 @@ async def dispatch_demo_worker(
         .order_by(VerificationRun.id.desc())
     )
     if not latest_run or latest_run.status not in ("queued", "approved"):
+        status_desc = latest_run.status if latest_run else "none"
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            f"No queued verification run available to dispatch (current status: '{latest_run.status if latest_run else 'none'}').",
+            f"No queued verification run available to dispatch (current status: '{status_desc}').",
         )
 
     dispatched = await dispatch_cloud_worker(run_id=latest_run.id, repository_id=repo.id, db=db)
@@ -355,7 +357,10 @@ async def dispatch_demo_worker(
         "message": (
             "GitHub Actions verification worker dispatched successfully."
             if dispatched
-            else "Worker dispatch request accepted (token not configured; workflow can be triggered manually in GitHub Actions)."
+            else (
+                "Worker dispatch request accepted (token not configured; "
+                "workflow can be triggered manually in GitHub Actions)."
+            )
         ),
     }
 

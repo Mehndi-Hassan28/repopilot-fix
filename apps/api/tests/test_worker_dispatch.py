@@ -1,12 +1,11 @@
 """Unit tests for on-demand cloud worker dispatch, security guards, and status monitoring."""
 
-import os
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from repopilot_api.database import Base

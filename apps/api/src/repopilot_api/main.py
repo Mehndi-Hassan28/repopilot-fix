@@ -826,12 +826,14 @@ def ask_chat(
         from repopilot_api.chat import MockProvider, get_provider
         from repopilot_api.models import OAuthIdentity
 
-        # Usage limit & public AI protection: guest users use mock provider unless ALLOW_PUBLIC_AI=true
+        # Usage limit & public AI protection: guest users use mock provider unless ALLOW_PUBLIC_AI=1
         allow_public_ai = (
             os.getenv("ALLOW_PUBLIC_AI", "false").lower() in ("true", "1")
             or "pytest" in sys.modules
         )
-        is_guest = db.scalar(select(OAuthIdentity).where(OAuthIdentity.user_id == auth.user.id)) is None
+        is_guest = (
+            db.scalar(select(OAuthIdentity).where(OAuthIdentity.user_id == auth.user.id)) is None
+        )
 
         if is_guest and not allow_public_ai:
             provider = MockProvider()

@@ -4,14 +4,13 @@ Enables secure, bounded verification runs for trusted deterministic demo fixture
 without exposing Docker sockets, worker credentials, or database secrets to untrusted visitors.
 """
 
-import asyncio
 import logging
 import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from repopilot_api.models import Repository, VerificationRun
@@ -26,7 +25,10 @@ GITHUB_API_TIMEOUT_SECONDS = 10.0
 
 def is_cloud_worker_dispatch_configured() -> bool:
     """Check if GitHub Actions workflow dispatch credentials are configured."""
-    token = os.getenv("GITHUB_WORKER_DISPATCH_TOKEN", "").strip() or os.getenv("GITHUB_TOKEN", "").strip()
+    token = (
+        os.getenv("GITHUB_WORKER_DISPATCH_TOKEN", "").strip()
+        or os.getenv("GITHUB_TOKEN", "").strip()
+    )
     return bool(token)
 
 
@@ -51,7 +53,7 @@ def validate_worker_dispatch_eligibility(
     1. Run exists in database.
     2. Run is in 'queued' or 'approved' state.
     3. Run has an immutable approved specification hash.
-    4. Target repository is an internal demo fixture OR matches a known trusted deterministic fixture.
+    4. Target repository is an internal demo fixture OR matches a known trusted fixture.
     5. Run does not already have an active unexpired worker lease (replay prevention).
     """
     run = db.get(VerificationRun, run_id)
@@ -69,8 +71,13 @@ def validate_worker_dispatch_eligibility(
 
     # Prevent duplicate dispatch if worker is already executing with valid lease
     now = datetime.now(UTC)
-    if run.status == VerificationJobStatus.RUNNING.value and run.lease_expires_at and run.lease_expires_at > now:
-        return False, f"Run #{run_id} is already actively executing (leased to worker '{run.worker_id}')."
+    is_running = run.status == VerificationJobStatus.RUNNING.value
+    has_active_lease = run.lease_expires_at is not None and run.lease_expires_at > now
+    if is_running and has_active_lease:
+        return (
+            False,
+            f"Run #{run_id} is already actively executing (leased to worker '{run.worker_id}').",
+        )
 
     # Enforce trusted fixture-only execution: repository must be verified as trusted demo fixture
     from repopilot_api.fixture_registry import get_default_fixture_registry
@@ -91,7 +98,10 @@ def validate_worker_dispatch_eligibility(
     )
 
     if not is_trusted:
-        return False, "Cloud verification worker execution is strictly restricted to trusted demo fixtures."
+        return (
+            False,
+            "Cloud verification worker execution is strictly restricted to trusted demo fixtures.",
+        )
 
     return True, "Eligible"
 
@@ -104,9 +114,12 @@ async def dispatch_cloud_worker(
     """Dispatch an on-demand GitHub Actions verification worker workflow.
 
     Uses GitHub workflow_dispatch (requiring only Actions:write scope) to trigger
-    the bounded verification-worker.yml workflow in an isolated runner with native Docker daemon access.
+    the bounded verification worker workflow in a runner with native Docker daemon access.
     """
-    token = os.getenv("GITHUB_WORKER_DISPATCH_TOKEN", "").strip() or os.getenv("GITHUB_TOKEN", "").strip()
+    token = (
+        os.getenv("GITHUB_WORKER_DISPATCH_TOKEN", "").strip()
+        or os.getenv("GITHUB_TOKEN", "").strip()
+    )
     if not token:
         logger.info("GITHUB_WORKER_DISPATCH_TOKEN not configured; skipping cloud worker dispatch.")
         return False
@@ -149,7 +162,8 @@ async def dispatch_cloud_worker(
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code == 204:
                 logger.info(
-                    "Successfully dispatched GitHub Actions verification worker for run %s via workflow_dispatch on %s.",
+                    "Successfully dispatched GitHub Actions verification worker for run %s "
+                    "via workflow_dispatch on %s.",
                     run_id,
                     repo,
                 )
@@ -201,7 +215,8 @@ def get_cloud_worker_status(db: Session) -> dict[str, Any]:
             "cloud_worker_available": True,
             "cloud_worker_dispatch_configured": True,
             "worker_status_message": (
-                "On-demand GitHub Actions verification worker ready (Docker dual-sandbox execution)."
+                "On-demand GitHub Actions verification worker ready "
+                "(Docker dual-sandbox execution)."
             ),
         }
 

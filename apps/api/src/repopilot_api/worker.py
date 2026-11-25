@@ -667,7 +667,8 @@ class WorkerLoop:
         self._is_running = True
         jobs_processed = 0
         logger.info(
-            "WorkerLoop '%s' started. poll_interval=%.2fs, lease_duration=%.1fs, max_jobs=%s, target_run_id=%s",
+            "WorkerLoop '%s' started. poll_interval=%.2fs, lease_duration=%.1fs, "
+            "max_jobs=%s, target_run_id=%s",
             self.worker_id,
             self.poll_interval,
             self.lease_duration,

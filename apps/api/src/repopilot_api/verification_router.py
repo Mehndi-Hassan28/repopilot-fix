@@ -3,7 +3,16 @@
 import json
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Response, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Response,
+    status,
+)
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -305,13 +314,14 @@ async def dispatch_verification_worker(
     if not (repo and is_internal_demo_repository(db, repo, auth.user.id)):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            "Cloud verification worker is strictly restricted to trusted internal demo repositories.",
+            "Cloud verification worker is restricted to trusted internal demo repositories.",
         )
 
     if not check_rate_limit(f"dispatch_worker:{auth.user.id}", max_requests=3, window_seconds=60):
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
-            "Worker dispatch rate limit exceeded. Please wait a moment before requesting another worker.",
+            "Worker dispatch rate limit exceeded. "
+            "Please wait a moment before requesting another worker.",
         )
 
     run = _get_run_or_404(db, repository_id, verification_id)
@@ -321,7 +331,9 @@ async def dispatch_verification_worker(
             f"Run #{verification_id} is in status '{run.status}', not queued/approved.",
         )
 
-    dispatched = await dispatch_cloud_worker(run_id=verification_id, repository_id=repository_id, db=db)
+    dispatched = await dispatch_cloud_worker(
+        run_id=verification_id, repository_id=repository_id, db=db
+    )
     return {
         "dispatched": dispatched,
         "run_id": verification_id,
