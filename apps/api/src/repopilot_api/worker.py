@@ -413,8 +413,8 @@ class WorkerLoop:
                     self._fail_security(
                         db,
                         run,
-                        "Real Docker execution is strictly restricted to registered demo fixtures "
-                        "with ALLOW_DOCKER_VERIFICATION_EXECUTION=true.",
+                        "Real Docker execution is disabled: strictly restricted to registered "
+                        "demo fixtures with ALLOW_DOCKER_VERIFICATION_EXECUTION=true.",
                         effective_fencing_token,
                     )
             return None

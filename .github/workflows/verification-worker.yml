@@ -15,8 +15,8 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "Target Verification Run ID (optional, claims oldest queued run if omitted)"
-        required: false
+        description: "Target Verification Run ID (required: positive integer of approved demo run)"
+        required: true
         type: string
 
 concurrency:
@@ -63,14 +63,15 @@ jobs:
             echo "::error::DATABASE_URL secret is not configured in repository secrets."
             exit 1
           fi
-          RUN_ARGS=("--once" "--max-jobs" "1" "--lease-seconds" "60")
-          if [ -n "$TARGET_RUN_ID" ]; then
-            if ! [[ "$TARGET_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
-              echo "::error::Invalid run_id: '$TARGET_RUN_ID'. Must be a strictly positive integer."
-              exit 1
-            fi
-            RUN_ARGS+=("--run-id" "$TARGET_RUN_ID")
+          if [ -z "$TARGET_RUN_ID" ]; then
+            echo "::error::run_id is required. Manual dispatch must specify an explicit demo run ID."
+            exit 1
           fi
+          if ! [[ "$TARGET_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid run_id: '$TARGET_RUN_ID'. Must be a strictly positive integer."
+            exit 1
+          fi
+          RUN_ARGS=("--once" "--max-jobs" "1" "--lease-seconds" "60" "--run-id" "$TARGET_RUN_ID")
           python -m repopilot_api.worker "${RUN_ARGS[@]}"
 
       - name: Clean up temporary containers
