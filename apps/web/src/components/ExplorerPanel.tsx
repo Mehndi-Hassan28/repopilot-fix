@@ -120,8 +120,10 @@ export function ExplorerPanel({
           <div key={node.fullPath} className="select-none">
             <button
               onClick={() => toggleFolder(node.fullPath)}
+              aria-expanded={isOpen}
+              aria-label={`Toggle folder ${node.name}`}
               style={{ paddingLeft: `${depth * 12 + 8}px` }}
-              className="flex w-full items-center gap-1.5 py-1 text-left text-xs text-zinc-300 hover:bg-white/5 transition-colors"
+              className="flex w-full items-center gap-1.5 py-1 text-left text-xs text-zinc-300 hover:bg-white/5 transition-colors focus-visible:ring-1 focus-visible:ring-[#BFFF00]"
             >
               <span className="text-[10px] text-zinc-500 font-mono">
                 {isOpen ? "▾" : "▸"}
@@ -164,7 +166,9 @@ export function ExplorerPanel({
                   e.stopPropagation();
                   toggleFileSymbols(node.fullPath);
                 }}
-                className="shrink-0 rounded px-1 text-[10px] text-zinc-500 hover:text-cyan-300"
+                aria-expanded={isSymbolsOpen}
+                aria-label={`${fileItem?.symbols?.length} AST symbols in ${node.name}`}
+                className="shrink-0 rounded px-1 text-[10px] text-zinc-500 hover:text-cyan-300 focus-visible:ring-1 focus-visible:ring-cyan-400"
                 title={`${fileItem?.symbols?.length} symbols (click to toggle)`}
               >
                 {fileItem?.symbols?.length}s
@@ -204,7 +208,8 @@ export function ExplorerPanel({
       <div className="flex h-full flex-col items-center border-r border-white/10 bg-[#0c0e12] py-3 w-8 select-none">
         <button
           onClick={onToggleCollapse}
-          className="text-xs text-zinc-400 hover:text-white transition-colors"
+          aria-label="Expand Explorer Panel"
+          className="text-xs text-zinc-400 hover:text-white transition-colors focus-visible:ring-1 focus-visible:ring-[#BFFF00] p-1"
           title="Expand Explorer Panel"
         >
           ▸
@@ -223,7 +228,8 @@ export function ExplorerPanel({
           </span>
           <button
             onClick={onToggleCollapse}
-            className="text-zinc-500 hover:text-white text-xs"
+            aria-label="Collapse Explorer"
+            className="text-zinc-500 hover:text-white text-xs p-1 focus-visible:ring-1 focus-visible:ring-[#BFFF00]"
             title="Collapse Explorer"
           >
             ◂
@@ -232,6 +238,7 @@ export function ExplorerPanel({
 
         {/* Repository Selector */}
         <select
+          aria-label="Select active repository"
           value={activeRepo?.id || ""}
           onChange={(e) => {
             const found = repositories.find((r) => r.id === Number(e.target.value));
@@ -308,6 +315,7 @@ export function ExplorerPanel({
         <div className="relative">
           <input
             type="text"
+            aria-label="Filter indexed files"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Filter files or symbols…"

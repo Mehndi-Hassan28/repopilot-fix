@@ -215,6 +215,9 @@ export function CommandPalette({
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command Palette"
       className="fixed inset-0 z-50 flex items-start justify-center pt-20 px-4 bg-black/75 backdrop-blur-sm"
       onClick={onClose}
     >
@@ -224,23 +227,29 @@ export function CommandPalette({
         onKeyDown={handleKeyDown}
       >
         <div className="flex items-center gap-3 border-b border-white/10 px-4 py-3 bg-[#12141a]">
-          <span className="text-[#00F0FF] text-lg">⌘</span>
+          <span className="text-[#00F0FF] text-lg" aria-hidden="true">⌘</span>
           <input
             autoFocus
             type="text"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="command-listbox"
+            aria-autocomplete="list"
+            aria-activedescendant={filtered[selectedIndex]?.id}
+            aria-label="Type a command, search files, or switch repositories"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Type a command, search files, switch repos, or press Esc…"
             className="w-full bg-transparent text-sm text-[#F5F5F5] placeholder-zinc-500 outline-none font-sans"
           />
-          <kbd className="rounded border border-white/10 bg-zinc-900/80 px-2 py-0.5 text-[10px] font-mono text-zinc-400">
+          <kbd className="rounded border border-white/10 bg-zinc-900/80 px-2 py-0.5 text-[10px] font-mono text-zinc-400" aria-hidden="true">
             ESC
           </kbd>
         </div>
 
-        <div className="max-h-96 overflow-y-auto p-2">
+        <div id="command-listbox" role="listbox" aria-label="Commands and files" className="max-h-96 overflow-y-auto p-2">
           {filtered.length === 0 ? (
-            <div className="py-8 text-center text-xs text-zinc-500 font-sans">
+            <div className="py-8 text-center text-xs text-zinc-500 font-sans" role="status">
               No matching commands or files found for &ldquo;{query}&rdquo;
             </div>
           ) : (
@@ -250,6 +259,9 @@ export function CommandPalette({
                 return (
                   <button
                     key={item.id}
+                    id={item.id}
+                    role="option"
+                    aria-selected={isSelected}
                     onClick={item.action}
                     onMouseEnter={() => setSelectedIndex(idx)}
                     className={`w-full flex items-center justify-between rounded-xl px-3 py-2.5 text-left text-xs transition-colors ${

@@ -63,6 +63,18 @@ function MainWorkspace() {
   const [modalImporting, setModalImporting] = useState(false);
   const [modalImportError, setModalImportError] = useState("");
 
+  useEffect(() => {
+    if (!isImportModalOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !modalImporting) {
+        setIsImportModalOpen(false);
+        setModalImportError("");
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isImportModalOpen, modalImporting]);
+
   // Files & Code Viewer State
   const [indexedFiles, setIndexedFiles] = useState<IndexedFileItem[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
@@ -653,7 +665,7 @@ function MainWorkspace() {
             )}
 
             {/* Center Workspace Area */}
-            <main className="flex-1 flex flex-col min-w-0 overflow-hidden bg-[#07090c]">
+            <main id="main-content" tabIndex={-1} className="flex-1 flex flex-col min-w-0 overflow-hidden bg-[#07090c] focus:outline-none">
               {currentView === "overview" && (
                 <DashboardOverview
                   currentUser={currentUser}
@@ -849,16 +861,24 @@ function MainWorkspace() {
 
       {/* Quick Global Import Modal */}
       {isImportModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="import-modal-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+        >
           <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0e1117] p-6 shadow-2xl space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-zinc-100">Import Public GitHub Repository</h3>
+              <h3 id="import-modal-title" className="text-sm font-semibold text-zinc-100">
+                Import Public GitHub Repository
+              </h3>
               <button
                 onClick={() => {
                   setIsImportModalOpen(false);
                   setModalImportError("");
                 }}
-                className="text-xs text-zinc-400 hover:text-white font-mono"
+                aria-label="Close dialog"
+                className="text-xs text-zinc-400 hover:text-white font-mono p-1 rounded focus-visible:ring-2 focus-visible:ring-[#BFFF00]"
               >
                 ✕
               </button>
@@ -870,13 +890,14 @@ function MainWorkspace() {
               <input
                 type="url"
                 required
+                aria-label="Public GitHub repository URL"
                 value={modalImportUrl}
                 onChange={(e) => setModalImportUrl(e.target.value)}
                 placeholder="https://github.com/owner/repository"
                 className="w-full rounded-xl border border-white/10 bg-[#141822] px-3.5 py-2.5 text-xs text-zinc-200 placeholder-zinc-500 outline-none focus:border-[#BFFF00]/50 font-mono"
               />
               {modalImportError && (
-                <p className="text-xs text-rose-300 font-mono">{modalImportError}</p>
+                <p role="alert" className="text-xs text-rose-300 font-mono">{modalImportError}</p>
               )}
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button

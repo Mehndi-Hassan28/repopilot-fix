@@ -382,6 +382,7 @@ class WorkerLoop:
                 files=file_map,
                 verification_run_id=run.id,
                 worker_id=self.worker_id,
+                approved_spec_hash=run.approved_spec_hash,
             )
 
         # ----------------------------------------------------------------------
@@ -495,6 +496,10 @@ class WorkerLoop:
                     if result.evidence.patched_metrics
                     else "Patched execution"
                 )
+
+                # Ensure cryptographic evidence spec binding is never null when run was approved
+                if not result.evidence.approved_spec_hash and run.approved_spec_hash:
+                    result.evidence.approved_spec_hash = run.approved_spec_hash
 
                 report = ProofReport(
                     verification_run_id=run.id,

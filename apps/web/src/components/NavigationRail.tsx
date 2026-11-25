@@ -93,22 +93,24 @@ export function NavigationRail({
       <div className="mb-6">
         <button
           onClick={() => onSelectView("overview")}
-          className="size-8 bg-white rounded-xl flex items-center justify-center shadow-2xl overflow-hidden group hover:scale-105 transition-transform"
+          className="size-8 bg-white rounded-xl flex items-center justify-center shadow-2xl overflow-hidden group motion-safe:hover:scale-105 transition-transform focus-visible:ring-2 focus-visible:ring-[#BFFF00]"
           title="RepoPilot Fix — Overview"
+          aria-label="RepoPilot Fix Overview"
         >
           <AnchorIcon className="text-black size-5" />
         </button>
       </div>
 
       {/* Main Navigation Items */}
-      <nav className="flex-1 flex flex-col gap-3 w-full items-center">
+      <nav aria-label="Main navigation" className="flex-1 flex flex-col gap-3 w-full items-center">
         {NAV_ITEMS.map((item) => {
           const isActive = currentView === item.id;
           return (
             <button
               key={item.id}
               onClick={() => onSelectView(item.id)}
-              className={`group relative p-2.5 rounded-xl transition-all ${
+              aria-current={isActive ? "page" : undefined}
+              className={`group relative p-2.5 rounded-xl transition-all focus-visible:ring-2 focus-visible:ring-[#BFFF00] focus-visible:outline-none ${
                 isActive
                   ? "bg-white/10 text-[#BFFF00] shadow-inner border border-white/10"
                   : "text-white/40 hover:text-white hover:bg-white/5 border border-transparent"
@@ -150,7 +152,8 @@ export function NavigationRail({
         {/* Settings View Trigger */}
         <button
           onClick={() => onSelectView("settings")}
-          className={`group relative p-2.5 rounded-xl transition-all ${
+          aria-current={currentView === "settings" ? "page" : undefined}
+          className={`group relative p-2.5 rounded-xl transition-all focus-visible:ring-2 focus-visible:ring-[#BFFF00] focus-visible:outline-none ${
             currentView === "settings"
               ? "bg-white/10 text-[#BFFF00] shadow-inner border border-white/10"
               : "text-white/40 hover:text-white hover:bg-white/5 border border-transparent"

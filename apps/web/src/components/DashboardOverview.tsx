@@ -121,7 +121,8 @@ export function DashboardOverview({
           </button>
           <button
             onClick={onRefresh}
-            className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-300 hover:text-white hover:border-white/20 transition-all font-mono"
+            aria-label="Refresh repository list"
+            className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-300 hover:text-white hover:border-white/20 transition-all font-mono focus-visible:ring-2 focus-visible:ring-[#BFFF00]"
             title="Refresh repository list"
           >
             ↻ Refresh
@@ -214,12 +215,20 @@ export function DashboardOverview({
 
       {/* Import Modal Dialog / Banner */}
       {showImportDialog && (
-        <div className="relative z-20 rounded-2xl border border-white/10 bg-[#0d1016] p-5 shadow-2xl space-y-3">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="overview-import-title"
+          className="relative z-20 rounded-2xl border border-white/10 bg-[#0d1016] p-5 shadow-2xl space-y-3"
+        >
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-zinc-200">Import Public GitHub Repository</h2>
+            <h2 id="overview-import-title" className="text-sm font-semibold text-zinc-200">
+              Import Public GitHub Repository
+            </h2>
             <button
               onClick={() => setShowImportDialog(false)}
-              className="text-xs text-zinc-400 hover:text-white font-mono"
+              aria-label="Close dialog"
+              className="text-xs text-zinc-400 hover:text-white font-mono p-1 rounded focus-visible:ring-1 focus-visible:ring-[#BFFF00]"
             >
               ✕ Close
             </button>
@@ -229,6 +238,7 @@ export function DashboardOverview({
             <input
               type="url"
               required
+              aria-label="Public GitHub repository URL"
               value={importUrl}
               onChange={(e) => setImportUrl(e.target.value)}
               placeholder="https://github.com/owner/repository"
@@ -432,6 +442,68 @@ export function DashboardOverview({
               Execute test suites in Docker containers.
             </span>
           </button>
+        </div>
+
+        {/* Persona-Specific Guided Workflows */}
+        <div className="mt-8 pt-6 border-t border-white/5">
+          <div className="flex items-center gap-2 mb-4">
+            <span className="size-2 rounded-full bg-cyan-400" />
+            <h3 className="text-xs font-mono uppercase tracking-widest text-zinc-400">
+              Role & Persona-Specific Workflows
+            </h3>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="rounded-xl border border-white/5 bg-[#0a0d12] p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-white font-mono">Software Engineer</span>
+                <span className="rounded bg-lime-500/10 text-[#BFFF00] border border-lime-500/20 px-1.5 py-0.5 text-[9px] font-mono">Fixer</span>
+              </div>
+              <p className="text-[11px] text-zinc-400 leading-relaxed font-sans">
+                Inspect AST blast radius, review candidate unified diffs, and generate verifiable bug repairs backed by line-grounded evidence.
+              </p>
+              <button
+                onClick={() => onSelectView("demo")}
+                className="text-[11px] text-[#BFFF00] hover:underline font-mono inline-flex items-center gap-1 pt-1"
+              >
+                <span>Launch Engineer Walkthrough</span>
+                <span>→</span>
+              </button>
+            </div>
+
+            <div className="rounded-xl border border-white/5 bg-[#0a0d12] p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-white font-mono">Security Auditor</span>
+                <span className="rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 px-1.5 py-0.5 text-[9px] font-mono">Governance</span>
+              </div>
+              <p className="text-[11px] text-zinc-400 leading-relaxed font-sans">
+                Verify air-gapped dual containers (<code className="text-cyan-300 text-[10px]">--network none</code>, read-only, non-root), SHA-256 spec hashes, and cryptographic human authorization gates.
+              </p>
+              <button
+                onClick={() => onSelectView("verification")}
+                className="text-[11px] text-cyan-300 hover:underline font-mono inline-flex items-center gap-1 pt-1"
+              >
+                <span>Inspect Audit Trail & Sandbox</span>
+                <span>→</span>
+              </button>
+            </div>
+
+            <div className="rounded-xl border border-white/5 bg-[#0a0d12] p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-white font-mono">QA & Release Lead</span>
+                <span className="rounded bg-purple-500/10 text-purple-300 border border-purple-500/20 px-1.5 py-0.5 text-[9px] font-mono">Verification</span>
+              </div>
+              <p className="text-[11px] text-zinc-400 leading-relaxed font-sans">
+                Validate delta test reproduction, require zero new regression failures, export signed patch files, and gate automated PR creation.
+              </p>
+              <button
+                onClick={() => onSelectView("issues")}
+                className="text-[11px] text-purple-300 hover:underline font-mono inline-flex items-center gap-1 pt-1"
+              >
+                <span>Explore Regression Suites</span>
+                <span>→</span>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

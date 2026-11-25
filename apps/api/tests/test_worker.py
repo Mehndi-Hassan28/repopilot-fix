@@ -692,3 +692,38 @@ def test_worker_cli_entrypoint(test_session, monkeypatch):
     )
     # With empty queue, main() finishes cleanly
     main()
+
+
+@pytest.mark.anyio
+async def test_worker_persists_approved_spec_hash_in_evidence(test_session):
+    """Regression test: Worker must persist approved_spec_hash into report evidence_json."""
+    with test_session() as db:
+        user = make_user(db)
+        repo = make_repo(db)
+        add_access(db, repo, user)
+        make_index(db, repo)
+
+        payload = sample_create_payload()
+        payload.auto_submit_approval = False
+        run, _ = VerificationJobManager.create_verification_request(
+            db, repo.id, user.id, payload
+        )
+        VerificationJobManager.submit_for_approval(db, run.id, user.id)
+        run_appr = VerificationJobManager.approve_verification(
+            db, run.id, user.id, auto_queue=True
+        )
+        expected_spec = run_appr.approved_spec_hash
+        assert expected_spec is not None
+
+    runner = StepRunner()
+    worker = WorkerLoop(session_factory=test_session, runner=runner)
+    processed = await worker.run_once()
+    assert processed is True
+
+    with test_session() as db:
+        run_db = db.get(VerificationRun, run.id)
+        assert run_db.status == VerificationJobStatus.COMPLETED.value
+        report = db.scalar(select(ProofReport).where(ProofReport.verification_run_id == run.id))
+        assert report is not None
+        ev = json.loads(report.evidence_json)
+        assert ev.get("approved_spec_hash") == expected_spec

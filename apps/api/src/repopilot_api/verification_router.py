@@ -483,6 +483,9 @@ def get_verification_report(
     except Exception:
         ev_dict = {}
 
+    if run.approved_spec_hash and not ev_dict.get("approved_spec_hash"):
+        ev_dict["approved_spec_hash"] = run.approved_spec_hash
+
     return ProofReportRead(
         id=report.id,
         verification_run_id=report.verification_run_id,

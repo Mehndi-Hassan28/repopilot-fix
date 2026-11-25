@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { VerificationRunRead } from "../lib/verification-types";
 
 interface ApprovalModalProps {
@@ -25,6 +25,17 @@ export function ApprovalModal({
   const [comment, setComment] = useState("");
   const [rejectionReason, setRejectionReason] = useState("");
   const [isRejecting, setIsRejecting] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !isSubmitting) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, isSubmitting, onClose]);
 
   if (!isOpen) return null;
 
@@ -61,7 +72,7 @@ export function ApprovalModal({
         </p>
 
         {error && (
-          <div className="mt-4 rounded-xl border border-rose-900/50 bg-rose-950/20 p-3 text-xs text-rose-300">
+          <div role="alert" className="mt-4 rounded-xl border border-rose-900/50 bg-rose-950/20 p-3 text-xs text-rose-300">
             {error}
           </div>
         )}

@@ -1,7 +1,7 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import { ProofReportRead, VerificationRunRead } from "../lib/verification-types";
+import { FormEvent, useEffect, useState } from "react";
+import { ProofEvidence, ProofReportRead, VerificationRunRead } from "../lib/verification-types";
 import { createPullRequest } from "../lib/verification-api";
 
 interface PullRequestModalProps {
@@ -34,10 +34,22 @@ export function PullRequestModal({
   const [error, setError] = useState<string | null>(null);
   const [successPr, setSuccessPr] = useState<{ url: string; number: number } | null>(null);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !isSubmitting) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, isSubmitting, onClose]);
+
   if (!isOpen) return null;
 
   const isVerified = report.verdict === "verified_fix";
-  const isApproved = Boolean(run.approved_spec_hash);
+  const evidenceSpec = (report.evidence as ProofEvidence)?.approved_spec_hash;
+  const isApproved = Boolean(run.approved_spec_hash || evidenceSpec);
   const isPrEligible = isVerified && isApproved && run.status === "completed";
 
   const handleSubmit = async (e: FormEvent) => {
@@ -76,18 +88,23 @@ export function PullRequestModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="pr-modal-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+    >
       <div className="relative w-full max-w-xl rounded-2xl border border-white/10 bg-[#0d1218] p-6 shadow-2xl flex flex-col">
         {/* Header */}
         <div className="flex items-start justify-between border-b border-white/10 pb-4">
           <div>
             <div className="flex items-center gap-2">
-              <span className="size-2 rounded-full bg-[#BFFF00] animate-pulse" />
+              <span className="size-2 rounded-full bg-[#BFFF00] animate-pulse" aria-hidden="true" />
               <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-[#BFFF00]">
                 Verified Pull Request Creation
               </span>
             </div>
-            <h3 className="mt-1 text-base font-semibold text-white">
+            <h3 id="pr-modal-title" className="mt-1 text-base font-semibold text-white">
               Create Pull Request for Issue #{run.issue_number}
             </h3>
             <p className="mt-1 text-xs text-zinc-400">
@@ -96,6 +113,7 @@ export function PullRequestModal({
           </div>
           <button
             onClick={onClose}
+            aria-label="Close dialog"
             className="rounded-lg p-1 text-zinc-400 hover:text-white hover:bg-white/5 transition-colors font-mono text-sm"
           >
             ✕

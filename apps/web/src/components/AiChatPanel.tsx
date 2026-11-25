@@ -69,8 +69,9 @@ export function AiChatPanel({
       <div className="flex h-full flex-col items-center border-l border-white/10 bg-[#090b0e] py-3 w-8 select-none">
         <button
           onClick={onToggleCollapse}
-          className="text-xs text-zinc-400 hover:text-white transition-colors"
+          className="text-xs text-zinc-400 hover:text-white transition-colors focus-visible:ring-2 focus-visible:ring-[#00F0FF]"
           title="Expand AI Assistant Panel"
+          aria-label="Expand AI Assistant panel"
         >
           ◂
         </button>
@@ -112,8 +113,9 @@ export function AiChatPanel({
             </button>
             <button
               onClick={onToggleCollapse}
-              className="text-zinc-500 hover:text-white text-xs px-1"
+              className="text-zinc-500 hover:text-white text-xs px-1 focus-visible:ring-2 focus-visible:ring-[#00F0FF]"
               title="Collapse Panel"
+              aria-label="Collapse AI Assistant panel"
             >
               ▸
             </button>
@@ -121,10 +123,12 @@ export function AiChatPanel({
         </div>
 
         {/* Mode Selector Tabs */}
-        <div className="grid grid-cols-4 gap-1 rounded-lg border border-white/10 bg-[#12151c] p-0.5 text-[10px] font-mono">
+        <div role="tablist" aria-label="AI operational modes" className="grid grid-cols-4 gap-1 rounded-lg border border-white/10 bg-[#12151c] p-0.5 text-[10px] font-mono">
           {(["auto", "general", "coding", "repository"] as const).map((mode) => (
             <button
               key={mode}
+              role="tab"
+              aria-selected={chatMode === mode}
               onClick={() => onChangeMode(mode)}
               className={`rounded py-1 text-center capitalize transition-colors ${
                 chatMode === mode
@@ -186,7 +190,7 @@ export function AiChatPanel({
       )}
 
       {/* Chat Messages Scroll Area */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3 font-sans">
+      <div role="log" aria-live="polite" aria-label="Conversation messages" className="flex-1 overflow-y-auto p-3 space-y-3 font-sans">
         {!activeSession ? (
           <div className="p-6 text-center text-xs text-zinc-500 font-sans">
             No active conversation. Click &ldquo;+ New&rdquo; above to start asking repository questions.
@@ -280,7 +284,7 @@ export function AiChatPanel({
 
         {/* Chat Error & Retry */}
         {chatError && (
-          <div className="rounded-xl border border-rose-900/40 bg-rose-950/20 p-3 text-xs text-rose-300 space-y-2 font-mono">
+          <div role="alert" className="rounded-xl border border-rose-900/40 bg-rose-950/20 p-3 text-xs text-rose-300 space-y-2 font-mono">
             <div>{chatError}</div>
             {lastFailedQuestion && (
               <button
@@ -301,6 +305,7 @@ export function AiChatPanel({
         <div className="relative">
           <textarea
             rows={2}
+            aria-label="Ask a question about the repository or code"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={(e) => {

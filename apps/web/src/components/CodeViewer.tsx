@@ -186,15 +186,23 @@ export function CodeViewer({
   return (
     <div className="flex h-full flex-col bg-[#07090c] overflow-hidden select-none">
       {/* Tab Bar */}
-      <div className="flex items-center border-b border-white/10 bg-[#0e1117] overflow-x-auto scrollbar-none">
+      <div role="tablist" aria-label="Open files" className="flex items-center border-b border-white/10 bg-[#0e1117] overflow-x-auto scrollbar-none">
         {openTabs.map((tab) => {
           const isActive = tab.path === activeTabPath;
           const name = tab.path.split("/").pop();
           return (
             <div
               key={tab.path}
+              role="tab"
+              aria-selected={isActive}
+              tabIndex={isActive ? 0 : -1}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  onSelectTab(tab.path);
+                }
+              }}
               onClick={() => onSelectTab(tab.path)}
-              className={`group flex items-center gap-2 border-r border-white/10 px-3.5 py-2 text-xs cursor-pointer transition-colors ${
+              className={`group flex items-center gap-2 border-r border-white/10 px-3.5 py-2 text-xs cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#BFFF00] ${
                 isActive
                   ? "bg-[#07090c] border-t-2 border-t-[#BFFF00] text-[#F5F5F5] font-medium"
                   : "bg-[#0e1117] text-zinc-400 hover:bg-white/5 hover:text-zinc-200 border-t-2 border-t-transparent"
@@ -202,7 +210,7 @@ export function CodeViewer({
             >
               <span className="font-mono text-[11px] truncate max-w-[160px]">{name}</span>
               {tab.loading && (
-                <span className="size-2 animate-spin rounded-full border border-cyan-400 border-t-transparent" />
+                <span className="size-2 animate-spin rounded-full border border-cyan-400 border-t-transparent" aria-hidden="true" />
               )}
               {tab.highlightRange && (
                 <span className="rounded bg-cyan-950/80 border border-cyan-500/30 px-1 text-[9px] font-mono text-cyan-300">
@@ -214,8 +222,9 @@ export function CodeViewer({
                   e.stopPropagation();
                   onCloseTab(tab.path);
                 }}
-                className="ml-1 text-zinc-500 hover:text-rose-400 text-xs transition-colors rounded p-0.5"
+                className="ml-1 text-zinc-500 hover:text-rose-400 text-xs transition-colors rounded p-0.5 focus-visible:ring-1 focus-visible:ring-rose-400"
                 title="Close tab"
+                aria-label={`Close tab ${name || tab.path}`}
               >
                 ×
               </button>
@@ -255,6 +264,7 @@ export function CodeViewer({
           {activeTab.content && (
             <button
               onClick={handleCopyCode}
+              aria-label="Copy file content to clipboard"
               className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-zinc-300 hover:bg-white/10 hover:text-white transition-colors"
               title="Copy code to clipboard"
             >
@@ -265,6 +275,8 @@ export function CodeViewer({
           {/* Toggle AST Outline */}
           <button
             onClick={() => setShowAstDrawer((prev) => !prev)}
+            aria-label="Toggle AST Symbol Outline"
+            aria-expanded={showAstDrawer}
             className={`flex items-center gap-1 rounded border px-2 py-0.5 transition-colors ${
               showAstDrawer
                 ? "border-[#BFFF00]/40 bg-[#BFFF00]/10 text-[#BFFF00]"

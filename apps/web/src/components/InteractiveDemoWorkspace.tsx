@@ -1022,6 +1022,7 @@ export function InteractiveDemoWorkspace({
               <button
                 key={stg.id}
                 onClick={() => setCurrentStep(stg.id)}
+                aria-current={isActive ? "step" : undefined}
                 disabled={autoRunning || isGated || (!isCompleted && stg.id > maxCompletedStep + 1)}
                 className={`flex items-center gap-2 rounded-lg px-3 py-1.5 transition-all text-xs ${
                   isActive
@@ -1054,14 +1055,15 @@ export function InteractiveDemoWorkspace({
 
       {/* Error Callout Banner if step error occurs */}
       {stepError && (
-        <div className="mx-6 mt-4 rounded-xl border border-rose-500/30 bg-rose-950/20 p-3.5 flex items-center justify-between gap-3 text-xs text-rose-300 font-mono">
+        <div role="alert" aria-live="assertive" className="mx-6 mt-4 rounded-xl border border-rose-500/30 bg-rose-950/20 p-3.5 flex items-center justify-between gap-3 text-xs text-rose-300 font-mono">
           <div className="flex items-center gap-2">
-            <span className="size-2 rounded-full bg-rose-500" />
+            <span className="size-2 rounded-full bg-rose-500" aria-hidden="true" />
             <span>[Stage {stepError.step} Error] {formatErrorMessage(stepError.message, "An unexpected error occurred.")}</span>
           </div>
           <button
             onClick={() => setStepError(null)}
-            className="text-zinc-400 hover:text-white"
+            aria-label="Dismiss stage error"
+            className="text-zinc-400 hover:text-white p-1 rounded focus-visible:ring-1 focus-visible:ring-rose-400"
           >
             ✕
           </button>

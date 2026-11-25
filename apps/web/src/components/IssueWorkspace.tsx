@@ -60,10 +60,11 @@ export function IssueWorkspace({
       <div className="rounded-xl border border-white/10 bg-[#0d1016] p-4 shadow-xl">
         <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row items-end gap-3">
           <div className="w-full sm:w-1/2 space-y-1.5">
-            <label className="text-[11px] font-mono text-zinc-400 uppercase">
+            <label htmlFor="target-repo-select" className="text-[11px] font-mono text-zinc-400 uppercase">
               Target Repository
             </label>
             <select
+              id="target-repo-select"
               value={activeRepo?.id || ""}
               onChange={(e) => {
                 const found = repositories.find((r) => r.id === Number(e.target.value));
@@ -84,12 +85,13 @@ export function IssueWorkspace({
           </div>
 
           <div className="w-full sm:w-1/3 space-y-1.5">
-            <label className="text-[11px] font-mono text-zinc-400 uppercase">
+            <label htmlFor="github-issue-number" className="text-[11px] font-mono text-zinc-400 uppercase">
               GitHub Issue Number
             </label>
             <div className="relative">
-              <span className="absolute left-3 top-2 text-xs text-zinc-500 font-mono">#</span>
+              <span className="absolute left-3 top-2 text-xs text-zinc-500 font-mono" aria-hidden="true">#</span>
               <input
+                id="github-issue-number"
                 type="number"
                 min="1"
                 required
@@ -111,7 +113,7 @@ export function IssueWorkspace({
         </form>
 
         {analysisError && (
-          <div className="mt-3 rounded-lg border border-rose-500/30 bg-rose-950/20 p-3 text-xs text-rose-300 font-mono">
+          <div role="alert" className="mt-3 rounded-lg border border-rose-500/30 bg-rose-950/20 p-3 text-xs text-rose-300 font-mono">
             {analysisError}
           </div>
         )}

@@ -55,9 +55,10 @@ export function PatchReviewWorkspace({
 
         <div className="flex items-center gap-3">
           {/* Unified / Split Toggle */}
-          <div className="flex rounded-lg border border-white/10 bg-[#141822] p-0.5 text-xs font-mono">
+          <div role="group" aria-label="Diff view mode" className="flex rounded-lg border border-white/10 bg-[#141822] p-0.5 text-xs font-mono">
             <button
               onClick={() => setDiffMode("unified")}
+              aria-pressed={diffMode === "unified"}
               className={`rounded px-2.5 py-1 transition-colors ${
                 diffMode === "unified"
                   ? "bg-white/10 text-white font-semibold"
@@ -68,6 +69,7 @@ export function PatchReviewWorkspace({
             </button>
             <button
               onClick={() => setDiffMode("split")}
+              aria-pressed={diffMode === "split"}
               className={`rounded px-2.5 py-1 transition-colors ${
                 diffMode === "split"
                   ? "bg-white/10 text-white font-semibold"
@@ -96,7 +98,7 @@ export function PatchReviewWorkspace({
             Changed Files ({patches.length})
           </div>
 
-          <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          <div role="tablist" aria-label="Changed files" className="flex-1 overflow-y-auto p-2 space-y-1">
             {patches.map((patch, idx) => {
               const isSelected = idx === selectedPatchIndex;
               const addCount = patch.diff.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
@@ -105,6 +107,8 @@ export function PatchReviewWorkspace({
               return (
                 <button
                   key={idx}
+                  role="tab"
+                  aria-selected={isSelected}
                   onClick={() => setSelectedPatchIndex(idx)}
                   className={`w-full flex items-center justify-between rounded-lg p-2.5 text-left text-xs transition-colors ${
                     isSelected

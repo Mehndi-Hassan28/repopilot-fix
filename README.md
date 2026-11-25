@@ -5,7 +5,7 @@
 [![Node: 22+](https://img.shields.io/badge/node-22+-green.svg)](package.json)
 [![Next.js: 15.5](https://img.shields.io/badge/Next.js-15.5-black.svg)](apps/web/package.json)
 [![FastAPI: 0.115](https://img.shields.io/badge/FastAPI-0.115-teal.svg)](apps/api/pyproject.toml)
-[![Test Coverage: 372 Total Tests](https://img.shields.io/badge/Tests-372%20Passed-brightgreen.svg)](#11-benchmark-results--verified-metrics)
+[![Test Coverage: 385 Total Tests](https://img.shields.io/badge/Tests-385%20Passed-brightgreen.svg)](#11-benchmark-results--verified-metrics)
 
 > **Autonomous software repair backed by AST code intelligence, dual-sandbox Docker reproduction, and cryptographic human-in-the-loop gating.**
 
@@ -13,7 +13,16 @@
 
 ## 1. RepoPilot Fix — Evidence-Driven AI Software Repair Agent
 
+> **Challenge Vertical:** Autonomous Software Engineering & Developer Tools (Automated Defect Diagnosis & Repair)
+
 **RepoPilot Fix** is an open-source, evidence-driven autonomous software engineering agent that diagnoses, repairs, and rigorously validates bug fixes in complex codebases. Unlike conversational code assistants that hallucinate ungrounded suggestions, RepoPilot Fix operates on verifiable evidence: it extracts AST symbol dependencies, performs static bug blast radius analysis, independently synthesizes minimal unified diff patches, reproduces defects inside isolated dual Docker sandboxes, and mathematically proves fix correctness before a single line of code touches production.
+
+### Target Personas & Context-Aware Workflows
+
+- **Core Software Engineer (Fixer Persona):** Uses repository-wide AST symbol indexing, static caller/callee traversal, and line-grounded code intelligence to rapidly diagnose complex defects without context window limits.
+- **Security & Compliance Auditor (Governance Persona):** Enforces cryptographic human-in-the-loop gating with immutable SHA-256 specification hashes ($\text{SHA256}(\text{Commit} \parallel \text{Diff} \parallel \text{Cmd} \parallel \text{Image})$) and hardened container sandboxing (`--network none`, `--read-only`, non-root user `1000:1000`).
+- **QA & Reliability Specialist (Verification Persona):** Relies on deterministic before-and-after test execution delta analysis (`new_failed_test_ids == 0`), preventing catastrophic regressions and ensuring defect reproduction.
+- **Open-Source Maintainer (Release Persona):** Exports authenticated, signed patch files or triggers idempotent GitHub pull request creation with zero risk of duplicate branch sprawl.
 
 ---
 
@@ -255,10 +264,10 @@ RepoPilot Fix was rigorously benchmarked across 20 curated standalone defect-pat
 
 | Test Category | Passed | Skipped | Notes |
 |:---|:---:|:---:|:---|
-| **Backend Unit & Integration Tests** | **327** | 10 | Includes 28 mocked sandbox tests, 0 failures |
+| **Backend Unit & Integration Tests** | **336** | 10 | Includes 28 mocked sandbox tests, 0 failures, 22 deselected |
 | **Real Docker Sandbox Tests** | **3** | 19 | Real container creation, air-gapping, execution (e2e demo) |
-| **Frontend Web Unit Tests** | **42** | 0 | Node test runner covering AST, API, error parsing, and PR utilities |
-| **Total Automated Tests** | **372** | 29 | 100% Green in Local & GitHub Actions CI |
+| **Frontend Web Unit Tests** | **49** | 0 | Node test runner covering AST, API, error parsing, and PR utilities |
+| **Total Automated Tests** | **385** | 29 | 100% Green in Local & GitHub Actions CI |
 
 ---
 

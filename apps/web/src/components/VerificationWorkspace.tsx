@@ -78,8 +78,9 @@ export function VerificationWorkspace({
 
       {/* Repository Selector */}
       <div className="flex items-center gap-3">
-        <label className="text-xs font-mono text-zinc-400">Target Repository:</label>
+        <label htmlFor="verification-repo-select" className="text-xs font-mono text-zinc-400">Target Repository:</label>
         <select
+          id="verification-repo-select"
           value={activeRepo?.id || ""}
           onChange={(e) => {
             const found = repositories.find((r) => r.id === Number(e.target.value));
@@ -140,7 +141,7 @@ export function VerificationWorkspace({
                 Loading verification history…
               </div>
             ) : historyError ? (
-              <div className="p-4 rounded-lg border border-rose-900/40 bg-rose-950/20 text-xs text-rose-300 font-mono">
+              <div role="alert" className="p-4 rounded-lg border border-rose-900/40 bg-rose-950/20 text-xs text-rose-300 font-mono">
                 {historyError}
               </div>
             ) : pastRuns.length === 0 ? (

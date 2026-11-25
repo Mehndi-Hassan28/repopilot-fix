@@ -32,20 +32,20 @@ export function Header({
           RepoPilot Workspace
         </h1>
         {backendStatus === "ready" && (
-          <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-lime-500/10 border border-lime-500/20 text-[#BFFF00] text-[10px] font-mono font-semibold uppercase tracking-wider rounded-md">
-            <span className="size-1.5 rounded-full bg-[#BFFF00] animate-pulse" />
+          <span role="status" aria-live="polite" className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-lime-500/10 border border-lime-500/20 text-[#BFFF00] text-[10px] font-mono font-semibold uppercase tracking-wider rounded-md">
+            <span className="size-1.5 rounded-full bg-[#BFFF00] animate-pulse" aria-hidden="true" />
             Engine Ready
           </span>
         )}
         {backendStatus === "connecting" && (
-          <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-mono font-semibold uppercase tracking-wider rounded-md">
-            <span className="size-1.5 rounded-full bg-amber-400 animate-pulse" />
+          <span role="status" aria-live="polite" className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-mono font-semibold uppercase tracking-wider rounded-md">
+            <span className="size-1.5 rounded-full bg-amber-400 animate-pulse" aria-hidden="true" />
             Connecting…
           </span>
         )}
         {backendStatus === "offline" && (
-          <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-[10px] font-mono font-semibold uppercase tracking-wider rounded-md">
-            <span className="size-1.5 rounded-full bg-rose-500" />
+          <span role="status" aria-live="polite" className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-[10px] font-mono font-semibold uppercase tracking-wider rounded-md">
+            <span className="size-1.5 rounded-full bg-rose-500" aria-hidden="true" />
             Engine Offline
           </span>
         )}
@@ -60,26 +60,15 @@ export function Header({
       {/* Right Search, Actions, and AI Drawer Trigger */}
       <div className="flex items-center gap-3 md:gap-5">
         {/* Search / Command Palette Input Pill */}
-        <div
+        <button
+          type="button"
           onClick={onOpenCommandPalette}
-          className="relative flex items-center cursor-pointer group"
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              onOpenCommandPalette();
-            }
-          }}
-          aria-label="Open command palette"
+          className="relative flex items-center cursor-pointer group bg-white/5 border border-white/10 rounded-full py-1.5 md:py-2 pl-10 pr-14 md:pr-16 w-44 sm:w-64 md:w-80 lg:w-96 text-left group-hover:border-white/20 transition-all font-sans select-none focus-visible:ring-2 focus-visible:ring-[#BFFF00]"
+          aria-label="Search codebase or press Command K"
         >
-          <SearchIcon className="absolute left-3.5 text-white/30 group-hover:text-white/60 transition-colors size-4" />
-          <input
-            type="text"
-            readOnly
-            placeholder="Search codebase or files..."
-            className="cursor-pointer bg-white/5 border border-white/10 rounded-full py-1.5 md:py-2 pl-10 pr-14 md:pr-16 w-44 sm:w-64 md:w-80 lg:w-96 text-xs md:text-sm text-zinc-200 placeholder:text-white/20 focus:outline-none group-hover:border-white/20 transition-all font-sans select-none"
-          />
-          <div className="absolute right-3 flex items-center gap-1 pointer-events-none">
+          <SearchIcon className="absolute left-3.5 text-white/30 group-hover:text-white/60 transition-colors size-4" aria-hidden="true" />
+          <span className="text-xs md:text-sm text-white/40 truncate">Search codebase or files...</span>
+          <div className="absolute right-3 flex items-center gap-1 pointer-events-none" aria-hidden="true">
             <kbd className="bg-white/10 text-white/50 px-1.5 py-0.5 rounded text-[10px] font-mono">
               ⌘
             </kbd>
@@ -87,7 +76,7 @@ export function Header({
               K
             </kbd>
           </div>
-        </div>
+        </button>
 
         {/* Import Repository Action Button */}
         <button
@@ -110,6 +99,7 @@ export function Header({
           }`}
           title={isAiPanelOpen ? "Close AI Assistant drawer" : "Open AI Assistant drawer"}
           aria-label="Toggle AI drawer"
+          aria-expanded={isAiPanelOpen}
         >
           <BotIcon className="size-4 md:size-4.5" />
         </button>

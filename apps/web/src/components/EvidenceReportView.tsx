@@ -29,7 +29,7 @@ export function EvidenceReportView({ run, report, csrfToken = "" }: EvidenceRepo
   const patchedPassed = evidence.patched_exit_code === 0;
 
   const isVerified = report.verdict === "verified_fix";
-  const isApproved = Boolean(run.approved_spec_hash);
+  const isApproved = Boolean(run.approved_spec_hash || evidence?.approved_spec_hash);
   const isPrEligible = isVerified && isApproved && run.status === "completed";
 
   useEffect(() => {
@@ -310,14 +310,16 @@ export function EvidenceReportView({ run, report, csrfToken = "" }: EvidenceRepo
           </span>
           <button
             onClick={() => setShowLogs(!showLogs)}
-            className="rounded-lg border border-[var(--line)] px-3 py-1 text-xs text-[var(--muted)] hover:text-white"
+            aria-expanded={showLogs}
+            aria-controls="sandbox-execution-logs"
+            className="rounded-lg border border-[var(--line)] px-3 py-1 text-xs text-[var(--muted)] hover:text-white focus-visible:ring-2 focus-visible:ring-[#BFFF00]"
           >
             {showLogs ? "Hide Logs" : "Show Full Output"}
           </button>
         </div>
 
         {showLogs && (
-          <div className="mt-4 space-y-4">
+          <div id="sandbox-execution-logs" className="mt-4 space-y-4">
             <div>
               <p className="text-xs font-mono text-[var(--muted)] mb-1">Baseline Sandbox Output:</p>
               <pre className="max-h-60 overflow-y-auto rounded-xl border border-[var(--line)] bg-[#060a0e] p-3 text-xs font-mono text-slate-300">

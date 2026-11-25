@@ -30,7 +30,9 @@ export function BottomPanel({
         <div className="flex items-center gap-4">
           <button
             onClick={onToggleExpand}
-            className="flex items-center gap-1.5 text-zinc-300 hover:text-white transition-colors"
+            aria-label={isExpanded ? "Collapse terminal panel" : "Expand terminal panel"}
+            aria-expanded={isExpanded}
+            className="flex items-center gap-1.5 text-zinc-300 hover:text-white transition-colors focus-visible:ring-1 focus-visible:ring-[#BFFF00] rounded p-0.5"
           >
             <span>{isExpanded ? "▾" : "▴"}</span>
             <span className="font-sans font-semibold text-[10px] uppercase tracking-wider text-zinc-400">
@@ -39,8 +41,10 @@ export function BottomPanel({
           </button>
 
           {isExpanded && (
-            <div className="flex items-center gap-1">
+            <div role="tablist" aria-label="Terminal panels" className="flex items-center gap-1">
               <button
+                role="tab"
+                aria-selected={activeTab === "logs"}
                 onClick={() => setActiveTab("logs")}
                 className={`rounded px-2 py-0.5 transition-colors ${
                   activeTab === "logs" ? "bg-white/10 text-white font-semibold" : "hover:text-white"
@@ -49,6 +53,8 @@ export function BottomPanel({
                 Sandbox Logs
               </button>
               <button
+                role="tab"
+                aria-selected={activeTab === "diagnostics"}
                 onClick={() => setActiveTab("diagnostics")}
                 className={`rounded px-2 py-0.5 transition-colors ${
                   activeTab === "diagnostics" ? "bg-white/10 text-white font-semibold" : "hover:text-white"
@@ -57,6 +63,8 @@ export function BottomPanel({
                 Diagnostics ({diagnostics.length})
               </button>
               <button
+                role="tab"
+                aria-selected={activeTab === "status"}
                 onClick={() => setActiveTab("status")}
                 className={`rounded px-2 py-0.5 transition-colors ${
                   activeTab === "status" ? "bg-white/10 text-white font-semibold" : "hover:text-white"

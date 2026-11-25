@@ -29,10 +29,16 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={{ toasts, showToast, removeToast }}>
       {children}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm pointer-events-none">
+      <div
+        role="region"
+        aria-label="Notifications"
+        aria-live="polite"
+        className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm pointer-events-none"
+      >
         {toasts.map((toast) => (
           <div
             key={toast.id}
+            role={toast.type === "error" ? "alert" : "status"}
             className={`pointer-events-auto flex items-start gap-3 rounded-lg border px-4 py-3 text-xs shadow-xl backdrop-blur-md transition-all duration-200 animate-slide-in ${
               toast.type === "success"
                 ? "border-lime-500/30 bg-[#0f1f12]/90 text-lime-300"
@@ -41,14 +47,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 : "border-cyan-500/30 bg-[#0d1825]/90 text-cyan-300"
             }`}
           >
-            <span className="mt-0.5 text-sm">
+            <span className="mt-0.5 text-sm" aria-hidden="true">
               {toast.type === "success" ? "✓" : toast.type === "error" ? "✕" : "ℹ"}
             </span>
             <div className="flex-1 font-sans leading-relaxed">{toast.message}</div>
             <button
               onClick={() => removeToast(toast.id)}
-              className="text-white/40 hover:text-white ml-2 transition-colors"
-              aria-label="Dismiss"
+              className="text-white/40 hover:text-white ml-2 transition-colors focus-visible:ring-2 focus-visible:ring-[#BFFF00] rounded p-0.5"
+              aria-label="Dismiss notification"
             >
               ×
             </button>

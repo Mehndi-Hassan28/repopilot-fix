@@ -37,6 +37,17 @@ export function PatchExportModal({ isOpen, onClose, run }: PatchExportModalProps
       });
   }, [isOpen, run.repository_id, run.id]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !loading) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, loading, onClose]);
+
   if (!isOpen) return null;
 
   const handleCopyDiff = async () => {
@@ -76,18 +87,23 @@ export function PatchExportModal({ isOpen, onClose, run }: PatchExportModalProps
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="patch-modal-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+    >
       <div className="relative w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0d1218] p-6 shadow-2xl max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-start justify-between border-b border-white/10 pb-4">
           <div>
             <div className="flex items-center gap-2">
-              <span className="size-2 rounded-full bg-cyan-400" />
+              <span className="size-2 rounded-full bg-cyan-400" aria-hidden="true" />
               <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-cyan-400">
                 Offline & Demo Fallback
               </span>
             </div>
-            <h3 className="mt-1 text-base font-semibold text-white">
+            <h3 id="patch-modal-title" className="mt-1 text-base font-semibold text-white">
               Export Verified Patch · Issue #{run.issue_number}
             </h3>
             <p className="mt-1 text-xs text-zinc-400">
@@ -96,6 +112,7 @@ export function PatchExportModal({ isOpen, onClose, run }: PatchExportModalProps
           </div>
           <button
             onClick={onClose}
+            aria-label="Close dialog"
             className="rounded-lg p-1 text-zinc-400 hover:text-white hover:bg-white/5 transition-colors font-mono text-sm"
           >
             ✕

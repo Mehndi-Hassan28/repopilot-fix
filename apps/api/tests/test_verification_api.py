@@ -687,3 +687,37 @@ def test_rate_limiter_blocks_excessive_traffic():
         assert check_rate_limit(key, max_requests=5, window_seconds=10) is True
     # 6th request is blocked
     assert check_rate_limit(key, max_requests=5, window_seconds=10) is False
+
+
+def test_get_report_backfills_approved_spec_hash_when_missing_in_evidence(test_session):
+    """Regression test: /report endpoint ensures approved_spec_hash is populated from run."""
+    with test_session() as db:
+        user = make_user(db)
+        repo = make_repo(db)
+        add_access(db, repo, user)
+        auth = make_auth(user)
+
+        run = create_verification(
+            repo.id, sample_create_payload(auto_submit=False), Response(), None, db, auth
+        )
+        submit_verification(repo.id, run.id, db, auth)
+        run_appr = approve_verification(repo.id, run.id, VerificationApprovalRequest(), db, auth)
+        spec = run_appr.approved_spec_hash
+        assert spec is not None
+
+        # Simulate legacy report with evidence lacking approved_spec_hash
+        report = ProofReport(
+            verification_run_id=run.id,
+            verdict="verified_fix",
+            hypothesis="Test fix",
+            summary="Fixed defect cleanly",
+            baseline_summary="Failed",
+            patched_summary="Passed",
+            confidence="high",
+            evidence_json=json.dumps({"commit_sha": run.commit_sha, "patch_hash": "abc"}),
+        )
+        db.add(report)
+        db.commit()
+
+        read_report = get_verification_report(repo.id, run.id, db, auth)
+        assert read_report.evidence.get("approved_spec_hash") == spec

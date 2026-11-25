@@ -307,8 +307,10 @@ export function DependencyGraphWorkspace({
         <div className="flex-1 flex flex-col min-w-0 border-r border-white/10 overflow-hidden">
           {/* Sub Navigation Bar */}
           <div className="border-b border-white/10 bg-[#0a0d14] px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-1 bg-white/5 p-1 rounded-lg border border-white/10">
+            <div role="tablist" aria-label="Code Intelligence Views" className="flex items-center gap-1 bg-white/5 p-1 rounded-lg border border-white/10">
               <button
+                role="tab"
+                aria-selected={activeTab === "graph"}
                 onClick={() => setActiveTab("graph")}
                 className={`px-3 py-1 rounded-md font-mono text-xs transition-colors ${
                   activeTab === "graph"
@@ -319,6 +321,8 @@ export function DependencyGraphWorkspace({
                 Dependency Graph
               </button>
               <button
+                role="tab"
+                aria-selected={activeTab === "symbols"}
                 onClick={() => setActiveTab("symbols")}
                 className={`px-3 py-1 rounded-md font-mono text-xs transition-colors ${
                   activeTab === "symbols"
@@ -329,6 +333,8 @@ export function DependencyGraphWorkspace({
                 AST Symbols ({symbols.length})
               </button>
               <button
+                role="tab"
+                aria-selected={activeTab === "impact"}
                 onClick={() => setActiveTab("impact")}
                 className={`px-3 py-1 rounded-md font-mono text-xs transition-colors ${
                   activeTab === "impact"
@@ -347,6 +353,7 @@ export function DependencyGraphWorkspace({
                 {(["all", "source", "tests", "circular"] as const).map((mode) => (
                   <button
                     key={mode}
+                    aria-pressed={nodeFilter === mode}
                     onClick={() => setNodeFilter(mode)}
                     className={`rounded px-2.5 py-0.5 text-[11px] font-mono transition-colors ${
                       nodeFilter === mode
