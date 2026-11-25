@@ -389,16 +389,18 @@ class WorkerLoop:
         # ----------------------------------------------------------------------
         active_runner = self.runner or get_sandbox_runner(worker_id=self.worker_id)
         allow_docker_env = os.getenv("ALLOW_DOCKER_VERIFICATION_EXECUTION", "").strip().lower()
-        if allow_docker_env in ("true", "1"):
-            allow_docker = True
-        elif allow_docker_env in ("false", "0"):
-            allow_docker = False
-        else:
-            from repopilot_api.demo import is_internal_demo_repository
 
-            with self.session_factory() as check_db:
-                repo = check_db.get(Repository, proof_request.repository_id)
-                allow_docker = is_internal_demo_repository(check_db, repo, user_id=None)
+        # Enforce that real Docker execution strictly requires:
+        # 1. Explicit activation flag (ALLOW_DOCKER_VERIFICATION_EXECUTION=true)
+        # 2. Target repository must be an authentic internal demo fixture
+        from repopilot_api.demo import is_internal_demo_repository
+
+        with self.session_factory() as check_db:
+            repo = check_db.get(Repository, proof_request.repository_id)
+            is_demo = is_internal_demo_repository(check_db, repo, user_id=None)
+
+        docker_enabled_flag = allow_docker_env in ("true", "1")
+        allow_docker = docker_enabled_flag and is_demo
 
         is_docker_runner = (
             hasattr(active_runner, "run")
@@ -411,8 +413,8 @@ class WorkerLoop:
                     self._fail_security(
                         db,
                         run,
-                        "Real Docker execution is disabled in normal worker flows. "
-                        "Set ALLOW_DOCKER_VERIFICATION_EXECUTION=true after security review.",
+                        "Real Docker execution is strictly restricted to registered demo fixtures "
+                        "with ALLOW_DOCKER_VERIFICATION_EXECUTION=true.",
                         effective_fencing_token,
                     )
             return None

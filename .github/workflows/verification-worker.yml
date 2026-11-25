@@ -63,11 +63,15 @@ jobs:
             echo "::error::DATABASE_URL secret is not configured in repository secrets."
             exit 1
           fi
-          RUN_ARG=""
+          RUN_ARGS=("--once" "--max-jobs" "1" "--lease-seconds" "60")
           if [ -n "$TARGET_RUN_ID" ]; then
-            RUN_ARG="--run-id $TARGET_RUN_ID"
+            if ! [[ "$TARGET_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::Invalid run_id: '$TARGET_RUN_ID'. Must be a strictly positive integer."
+              exit 1
+            fi
+            RUN_ARGS+=("--run-id" "$TARGET_RUN_ID")
           fi
-          python -m repopilot_api.worker --once --max-jobs 1 --lease-seconds 60 $RUN_ARG
+          python -m repopilot_api.worker "${RUN_ARGS[@]}"
 
       - name: Clean up temporary containers
         if: always()
