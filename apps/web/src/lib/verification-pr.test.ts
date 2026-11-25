@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { ProofReportRead, VerificationRunRead } from "./verification-types.ts";
+import { formatApiDetail, formatErrorMessage } from "./error-utils.ts";
 
 function isPullRequestEligible(
   run: Pick<VerificationRunRead, "status" | "approved_spec_hash">,
@@ -72,6 +73,72 @@ describe("Verification PR & Export Utilities", () => {
         formatBranchName(42, 7, "custom/hotfix-branch"),
         "custom/hotfix-branch"
       );
+    });
+  });
+
+  describe("formatApiDetail", () => {
+    it("returns string detail unchanged", () => {
+      assert.equal(formatApiDetail("Authentication failed"), "Authentication failed");
+    });
+
+    it("formats FastAPI 422 validation error arrays cleanly without [object Object]", () => {
+      const fastApiDetail = [
+        {
+          type: "value_error",
+          loc: ["body", "custom_branch_name"],
+          msg: "Value error, Invalid Git branch name: 'fix/issue-1-power-calc'",
+          input: "fix/issue-1-power-calc",
+        },
+      ];
+      const result = formatApiDetail(fastApiDetail);
+      assert.equal(
+        result,
+        "custom_branch_name: Value error, Invalid Git branch name: 'fix/issue-1-power-calc'"
+      );
+      assert.ok(!result.includes("[object Object]"));
+    });
+
+    it("formats multiple validation errors delimited by semicolon", () => {
+      const fastApiDetail = [
+        { loc: ["body", "title"], msg: "Field required" },
+        { loc: ["body", "branch"], msg: "Invalid branch" },
+      ];
+      const result = formatApiDetail(fastApiDetail);
+      assert.equal(result, "title: Field required; branch: Invalid branch");
+    });
+
+    it("formats object detail with msg or message safely", () => {
+      assert.equal(formatApiDetail({ msg: "Custom error message" }), "Custom error message");
+      assert.equal(formatApiDetail({ message: "Second message format" }), "Second message format");
+    });
+  });
+
+  describe("formatErrorMessage", () => {
+    it("extracts clean message from Error instance", () => {
+      const err = new Error("Something went wrong");
+      assert.equal(formatErrorMessage(err, "Fallback"), "Something went wrong");
+    });
+
+    it("replaces [object Object] message with detail array from error object", () => {
+      const err = new Error("[object Object]") as Error & { detail?: unknown };
+      err.detail = [
+        { loc: ["body", "custom_branch_name"], msg: "Invalid Git branch name" },
+      ];
+      const result = formatErrorMessage(err, "Fallback");
+      assert.equal(result, "custom_branch_name: Invalid Git branch name");
+      assert.ok(!result.includes("[object Object]"));
+    });
+
+    it("formats plain object error with detail", () => {
+      const objErr = {
+        detail: [{ loc: ["body", "token"], msg: "Token expired" }],
+      };
+      assert.equal(formatErrorMessage(objErr, "Fallback"), "token: Token expired");
+    });
+
+    it("uses fallback string when error is empty or undefined", () => {
+      assert.equal(formatErrorMessage(null, "Safe fallback"), "Safe fallback");
+      assert.equal(formatErrorMessage(undefined, "Safe fallback"), "Safe fallback");
     });
   });
 });

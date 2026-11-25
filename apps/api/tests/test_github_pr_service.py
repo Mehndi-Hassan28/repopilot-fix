@@ -512,3 +512,139 @@ def test_create_pr_external_api_idempotency_when_pr_exists_on_github(test_sessio
 
         methods = [m for m, _ in called_endpoints]
         assert "POST" not in methods
+
+
+def test_branch_name_validation_allows_valid_and_blocks_invalid():
+    """Branch validation allows valid branches with hyphens and blocks invalid characters."""
+    valid_branches = [
+        "fix/issue-1-power-calc",
+        "repopilot/fix-issue-42-7",
+        "main",
+        "feat/calc_fix_v2",
+        "patch-1",
+    ]
+    for b in valid_branches:
+        req = PullRequestCreateRequest(custom_branch_name=b)
+        assert req.custom_branch_name == b
+
+    invalid_branches = [
+        "-starts-with-dash",
+        "/starts-with-slash",
+        ".starts-with-dot",
+        "ends-with-slash/",
+        "ends-with-dot.",
+        "branch.lock",
+        "has space",
+        "bad~tilde",
+        "bad^caret",
+        "bad:colon",
+        "bad?question",
+        "bad*star",
+        "bad[bracket",
+        "bad\\backslash",
+        "bad..double-dot",
+        "bad//double-slash",
+        "bad@{brace",
+        "@",
+    ]
+    for b in invalid_branches:
+        with pytest.raises(Exception) as exc_info:
+            PullRequestCreateRequest(custom_branch_name=b)
+        assert "Invalid Git branch name" in str(exc_info.value)
+
+
+def test_demo_repository_creates_simulated_pr_and_is_idempotent(test_session):
+    """Internal demo repository creates simulated PR #101 safely with idempotency."""
+    from repopilot_api.demo import (
+        DEMO_FIXTURE_DESCRIPTION_PREFIX,
+        DEMO_GITHUB_BASE_ID,
+        DEMO_PROVENANCE_TAG_PREFIX,
+    )
+
+    with test_session() as session:
+        user, auth, repo, run, report = _setup_verified_repo_and_run(session)
+        # Transform repo into an internal demo repository fixture with exact provenance
+        repo.owner = "repopilot"
+        repo.name = f"demo-calc-{user.id}"
+        repo.full_name = f"repopilot/demo-calc-{user.id}"
+        repo.github_id = DEMO_GITHUB_BASE_ID + user.id
+        repo.url = "https://github.com/repopilot/demo-calculator"
+        repo.default_branch = "main"
+        repo.description = (
+            f"{DEMO_FIXTURE_DESCRIPTION_PREFIX} "
+            f"{DEMO_PROVENANCE_TAG_PREFIX}{user.id}:demo-calculator]"
+        )
+        session.commit()
+
+        payload = PullRequestCreateRequest(
+            custom_title="Fix power calculation for negative base or zero exponent",
+            custom_body="Automated PR description",
+            custom_branch_name="fix/issue-1-power-calc",
+        )
+
+        # 1. First call creates simulated PR #101
+        resp = GitHubPullRequestService.create_pull_request(
+            db=session,
+            repository_id=repo.id,
+            verification_id=run.id,
+            user_id=user.id,
+            payload=payload,
+        )
+
+        assert resp.success is True
+        assert resp.pr_number == 101
+        assert resp.is_simulated is True
+        assert resp.status == "created"
+        assert resp.branch_name == "fix/issue-1-power-calc"
+        assert f"repopilot/{repo.name}/pull/101" in (resp.pr_url or "")
+
+        # Verify DB record
+        pr_records = session.scalars(
+            select(GitHubPullRequest).where(GitHubPullRequest.verification_run_id == run.id)
+        ).all()
+        assert len(pr_records) == 1
+        assert pr_records[0].pr_number == 101
+
+        # 2. Repeated call returns existing PR idempotently without duplicate records
+        resp2 = GitHubPullRequestService.create_pull_request(
+            db=session,
+            repository_id=repo.id,
+            verification_id=run.id,
+            user_id=user.id,
+            payload=payload,
+        )
+
+        assert resp2.success is True
+        assert resp2.pr_number == 101
+        assert resp2.is_simulated is True
+        assert resp2.status == "already_exists"
+
+        # Verify still exactly 1 record in DB
+        pr_records_after = session.scalars(
+            select(GitHubPullRequest).where(GitHubPullRequest.verification_run_id == run.id)
+        ).all()
+        assert len(pr_records_after) == 1
+
+
+def test_guest_user_cannot_create_real_github_pr(test_session):
+    """Guest users are forbidden from creating real GitHub PRs on external repositories."""
+    with test_session() as session:
+        user, auth, repo, run, report = _setup_verified_repo_and_run(session)
+        user.is_guest = True
+        session.commit()
+
+        payload = PullRequestCreateRequest(
+            custom_branch_name="fix/external-fix",
+            github_token="ghp_mock_token_12345",
+        )
+
+        with pytest.raises(GitHubPermissionError) as exc_info:
+            GitHubPullRequestService.create_pull_request(
+                db=session,
+                repository_id=repo.id,
+                verification_id=run.id,
+                user_id=user.id,
+                payload=payload,
+            )
+        assert "Guest users cannot create external GitHub pull requests" in str(exc_info.value)
+

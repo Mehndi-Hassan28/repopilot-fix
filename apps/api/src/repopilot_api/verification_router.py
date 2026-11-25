@@ -15,6 +15,7 @@ from repopilot_api.github_pr_service import (
 )
 from repopilot_api.models import (
     ProofReport,
+    Repository,
     RepositoryAccess,
     VerificationAuditEvent,
     VerificationRun,
@@ -471,6 +472,21 @@ def create_pull_request(
             status.HTTP_403_FORBIDDEN,
             "Unauthorized to create pull requests for this repository.",
         )
+
+    repo = db.get(Repository, repository_id)
+    if repo is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Repository not found.")
+
+    from repopilot_api.demo import is_internal_demo_repository
+
+    is_demo = is_internal_demo_repository(db, repo, user_id=auth.user.id)
+    if getattr(auth.user, "is_guest", False) and not is_demo:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Guest users cannot create external GitHub pull requests. "
+            "Please log in with a GitHub account.",
+        )
+
     try:
         return GitHubPullRequestService.create_pull_request(
             db=db,

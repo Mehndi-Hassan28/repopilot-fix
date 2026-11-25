@@ -544,12 +544,16 @@ class PullRequestCreateRequest(BaseModel):
         clean = value.strip()
         if not clean:
             return None
-        disallowed = " ~^:?*[\x00-\x1f"
+        disallowed_chars = set(" ~^:?*[\x7f\\")
         if (
-            clean.startswith(("-", "."))
-            or ".." in clean
-            or any(c in clean for c in disallowed)
+            clean.startswith(("-", ".", "/"))
             or clean.endswith(("/", "."))
+            or clean.endswith(".lock")
+            or ".." in clean
+            or "//" in clean
+            or "@{" in clean
+            or clean == "@"
+            or any(ord(c) < 32 or c in disallowed_chars for c in clean)
         ):
             raise ValueError(f"Invalid Git branch name: '{value}'")
         return clean
