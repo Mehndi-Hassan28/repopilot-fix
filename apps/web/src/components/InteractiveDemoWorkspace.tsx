@@ -34,6 +34,7 @@ import {
   getVerification,
   createPullRequest,
   exportPatch,
+  formatErrorMessage,
 } from "../lib/verification-api";
 import { apiRequest } from "../lib/api";
 import {
@@ -199,7 +200,7 @@ export function InteractiveDemoWorkspace({
     } catch (err) {
       setStepError({
         step: 1,
-        message: err instanceof Error ? err.message : "Failed to initialize demo repository.",
+        message: formatErrorMessage(err, "Failed to initialize demo repository."),
       });
       throw err;
     } finally {
@@ -228,7 +229,7 @@ export function InteractiveDemoWorkspace({
     } catch (err) {
       setStepError({
         step: 2,
-        message: err instanceof Error ? err.message : "Failed to index demo codebase.",
+        message: formatErrorMessage(err, "Failed to index demo codebase."),
       });
       throw err;
     } finally {
@@ -269,7 +270,7 @@ export function InteractiveDemoWorkspace({
     } catch (err) {
       setStepError({
         step: 3,
-        message: err instanceof Error ? err.message : "Failed to investigate issue.",
+        message: formatErrorMessage(err, "Failed to investigate issue."),
       });
       throw err;
     } finally {
@@ -365,7 +366,7 @@ export function InteractiveDemoWorkspace({
     } catch (err) {
       setStepError({
         step: 6,
-        message: err instanceof Error ? err.message : "Human approval step failed.",
+        message: formatErrorMessage(err, "Human approval step failed."),
       });
       throw err;
     } finally {
@@ -436,7 +437,7 @@ export function InteractiveDemoWorkspace({
     } catch (err) {
       setStepError({
         step: 7,
-        message: err instanceof Error ? err.message : "Verification execution failed.",
+        message: formatErrorMessage(err, "Verification execution failed."),
       });
       throw err;
     } finally {
@@ -462,7 +463,7 @@ export function InteractiveDemoWorkspace({
     } catch (err) {
       setStepError({
         step: 8,
-        message: err instanceof Error ? err.message : "Could not fetch verification report.",
+        message: formatErrorMessage(err, "Could not fetch verification report."),
       });
     } finally {
       setLoadingStep(null);
@@ -504,7 +505,7 @@ export function InteractiveDemoWorkspace({
     } catch (err) {
       setStepError({
         step: 9,
-        message: err instanceof Error ? err.message : "Failed to export patch.",
+        message: formatErrorMessage(err, "Failed to export patch."),
       });
     } finally {
       setLoadingStep(null);
@@ -542,7 +543,7 @@ export function InteractiveDemoWorkspace({
     } catch (err) {
       setStepError({
         step: 9,
-        message: err instanceof Error ? err.message : "Failed to simulate GitHub Pull Request.",
+        message: formatErrorMessage(err, "Failed to simulate GitHub Pull Request."),
       });
     } finally {
       setSimulatingPR(false);
@@ -655,7 +656,7 @@ export function InteractiveDemoWorkspace({
     } catch (err) {
       setStepError({
         step: 1,
-        message: err instanceof Error ? err.message : "Failed to reset demo environment.",
+        message: formatErrorMessage(err, "Failed to reset demo environment."),
       });
     } finally {
       setLoadingStep(null);
@@ -801,7 +802,7 @@ export function InteractiveDemoWorkspace({
         <div className="mx-6 mt-4 rounded-xl border border-rose-500/30 bg-rose-950/20 p-3.5 flex items-center justify-between gap-3 text-xs text-rose-300 font-mono">
           <div className="flex items-center gap-2">
             <span className="size-2 rounded-full bg-rose-500" />
-            <span>[Stage {stepError.step} Error] {stepError.message}</span>
+            <span>[Stage {stepError.step} Error] {formatErrorMessage(stepError.message, "An unexpected error occurred.")}</span>
           </div>
           <button
             onClick={() => setStepError(null)}

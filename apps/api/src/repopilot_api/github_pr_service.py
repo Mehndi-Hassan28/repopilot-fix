@@ -480,6 +480,20 @@ class GitHubPullRequestService:
         """Create a dedicated GitHub branch, apply patch, and open a PR with strict safeguards."""
         run, report, repo = cls._validate_run_for_pr(db, repository_id, verification_id)
 
+        # Intercept deterministic demo repositories to prevent external GitHub write calls
+        from repopilot_api.demo import is_internal_demo_repository
+        from repopilot_api.models import User
+
+        is_demo_repo = is_internal_demo_repository(db, repo, user_id=user_id)
+
+        # Guest users are strictly restricted to local demo simulation; external writes forbidden
+        user = db.get(User, user_id)
+        if user and getattr(user, "is_guest", False) and not is_demo_repo:
+            raise GitHubPermissionError(
+                "Guest users cannot create external GitHub pull requests. "
+                "Please log in with a GitHub account."
+            )
+
         # Idempotency Check: Existing DB record
         existing_pr = db.scalar(
             select(GitHubPullRequest).where(GitHubPullRequest.verification_run_id == run.id)
@@ -493,12 +507,9 @@ class GitHubPullRequestService:
                 base_branch=existing_pr.base_branch,
                 status="already_exists",
                 message=f"Pull request #{existing_pr.pr_number} already exists for this run.",
+                is_simulated=is_demo_repo,
             )
 
-        # Intercept deterministic demo repositories to prevent external GitHub write calls
-        from repopilot_api.demo import is_internal_demo_repository
-
-        is_demo_repo = is_internal_demo_repository(db, repo, user_id=user_id)
         if is_demo_repo:
             pr_number = 101
             pr_url = f"https://github.com/{repo.owner}/{repo.name}/pull/{pr_number}"
