@@ -32,6 +32,7 @@ import {
   executeVerification,
   getVerificationReport,
   getVerification,
+  cancelVerification,
   createPullRequest,
   exportPatch,
   formatErrorMessage,
@@ -99,6 +100,7 @@ export function InteractiveDemoWorkspace({
   const [exportedPatch, setExportedPatch] = useState<PatchExportResponse | null>(null);
   const [simulatedPR, setSimulatedPR] = useState<PullRequestCreateResponse | null>(null);
   const [simulatingPR, setSimulatingPR] = useState<boolean>(false);
+  const [isCloudPreview, setIsCloudPreview] = useState<boolean>(false);
 
   const reportEvidence = (proofReport?.evidence || {}) as Partial<ProofEvidence>;
   const autoRunAbortRef = useRef<boolean>(false);
@@ -380,7 +382,24 @@ export function InteractiveDemoWorkspace({
       const run = await handleStep6Approve();
       if (!run) return;
       setCurrentStep(7);
+
+      const status = await refreshDemoStatus();
+      if (!status?.docker_available) {
+        // Real Docker execution is unavailable on this host (e.g. Render/Cloud)
+        // Strictly HALT at Stage 7. Do NOT blindly advance to Stage 8.
+        setStepError({
+          step: 7,
+          message: `Docker daemon unavailable: ${status?.docker_status_message || "Docker CLI executable not found on host PATH."}. Real verification requires an active Docker daemon. Explore Cloud Preview Mode to inspect the simulated repair workflow safely.`,
+        });
+        return;
+      }
+
       const report = await handleStep7Verify();
+      if (!report) {
+        // Verification was not completed or produced no report. Remain at Stage 7.
+        return;
+      }
+
       setCurrentStep(8);
       const finalReport = report || (await handleStep8Evidence());
       // STRICT GATING: Only advance to Stage 9 if verdict is verified_fix
@@ -412,7 +431,7 @@ export function InteractiveDemoWorkspace({
     if (currentStatus && !currentStatus.docker_available) {
       setStepError({
         step: 7,
-        message: `Docker daemon unavailable: ${currentStatus.docker_status_message}. Real verification requires an active Docker daemon.`,
+        message: `Docker daemon unavailable: ${currentStatus.docker_status_message}. Real verification requires an active Docker daemon. Explore Cloud Preview Mode below.`,
       });
       return;
     }
@@ -445,14 +464,122 @@ export function InteractiveDemoWorkspace({
     }
   };
 
+  // Cloud Preview Mode: Allows safe exploration of Stage 8 & Stage 9 without Docker
+  const handleEnterCloudPreview = () => {
+    setIsCloudPreview(true);
+    setStepError(null);
+    const simulatedSpecHash = verificationRunRef.current?.spec_hash || verificationRun?.spec_hash || "simulated_spec_preview_hash";
+    const simulatedPatchHash = verificationRunRef.current?.patch_hash || verificationRun?.patch_hash || "simulated_patch_preview_hash";
+
+    const previewReport: ProofReportRead = {
+      id: 9999,
+      verification_run_id: verificationRunRef.current?.id || verificationRun?.id || 1,
+      verdict: "inconclusive", // Strictly NEVER fake verified_fix
+      hypothesis: analysisResultRef.current?.analysis.root_cause_hypothesis || analysisResult?.analysis.root_cause_hypothesis || "Hypothesis: The power function was implemented using multiplication (*) instead of exponentiation (**).",
+      summary: "[Cloud Preview] Deterministic repair simulation. Real container verification requires an active Docker daemon.",
+      baseline_summary: "Baseline simulation: defect reproduced with exit code 1 (2 failures: test_power_positive, test_power_zero).",
+      patched_summary: "Patched simulation: candidate diff resolves 2 defect test failures without regressions.",
+      confidence: "low", // Clearly unverified
+      evidence: {
+        repository_id: activeRepo?.id || 1,
+        commit_sha: verificationRunRef.current?.commit_sha || "head",
+        issue_number: 1,
+        patch_hash: simulatedPatchHash,
+        approved_spec_hash: simulatedSpecHash,
+        sandbox_image: "python:3.11-slim (Simulated Cloud Walkthrough)",
+        test_command: ["pytest", "-q"],
+        baseline_exit_code: 1,
+        baseline_stdout: "FAILED tests/test_calculator.py::test_power_positive\nFAILED tests/test_calculator.py::test_power_zero\n2 failed, 4 passed in 0.05s",
+        baseline_stderr: "",
+        baseline_metrics: {
+          total: 6,
+          passed: 4,
+          failed: 2,
+          errors: 0,
+          failed_test_ids: ["test_power_positive", "test_power_zero"],
+          failure_type: "assertion_failure",
+          summary: "2 failed, 4 passed",
+        },
+        baseline_failure_type: "assertion_failure",
+        patched_exit_code: 0,
+        patched_stdout: "6 passed in 0.04s",
+        patched_stderr: "",
+        patched_metrics: {
+          total: 6,
+          passed: 6,
+          failed: 0,
+          errors: 0,
+          failed_test_ids: [],
+          failure_type: null,
+          summary: "6 passed",
+        },
+        patched_failure_type: null,
+        resolved_test_ids: ["test_power_positive", "test_power_zero"],
+        new_failed_test_ids: [],
+        unresolved_test_ids: [],
+        changed_files: ["src/calculator.py"],
+        duration_seconds: 0.0,
+        uncertainty_reasons: [
+          "Cloud Preview Mode: Docker daemon offline on this host. Authentic verification requires a private Docker worker.",
+        ],
+      },
+      created_at: new Date().toISOString(),
+    };
+
+    setProofReport(previewReport);
+    setMaxCompletedStep((prev) => Math.max(prev, 8));
+    setCurrentStep(8);
+  };
+
+  // Recovery: Cancel queued verification and reset demo
+  const handleCancelQueuedRun = async () => {
+    const targetId = activeRepo?.id || demoInitRef.current?.repository.id || demoInit?.repository.id;
+    const runId = verificationRunRef.current?.id || verificationRun?.id;
+    if (targetId && runId) {
+      try {
+        await cancelVerification(
+          targetId,
+          runId,
+          { reason: "User cancelled queued verification run in cloud preview" },
+          activeCsrf || csrfToken
+        );
+      } catch {
+        // Continue with reset
+      }
+    }
+    await handleResetDemo();
+  };
+
   // Stage 8: Evidence Report (Fetch if not already loaded)
   const handleStep8Evidence = async () => {
+    if (isCloudPreview) {
+      return proofReport;
+    }
+
     const targetId = activeRepo?.id || demoInitRef.current?.repository.id || demoInit?.repository.id;
     const runId = verificationRunRef.current?.id || verificationRun?.id;
     if (!targetId || !runId) {
       setStepError({ step: 8, message: "Verification run not available." });
       return;
     }
+
+    const currentRun = verificationRunRef.current || verificationRun;
+    if (currentRun?.status === "queued" || currentRun?.status === "running") {
+      setStepError({
+        step: 8,
+        message: `Verification run #${runId} is currently '${currentRun.status}' awaiting execution by a verification worker. Proof report is not yet generated.`,
+      });
+      return;
+    }
+
+    if (currentRun?.status !== "completed") {
+      setStepError({
+        step: 8,
+        message: `Verification run has not completed (status: '${currentRun?.status || "unknown"}').`,
+      });
+      return;
+    }
+
     setLoadingStep(8);
     try {
       const report = await getVerificationReport(targetId, runId);
@@ -472,6 +599,14 @@ export function InteractiveDemoWorkspace({
 
   // Stage 9: Export Patch or Simulate PR
   const handleExportPatch = async () => {
+    if (isCloudPreview) {
+      setStepError({
+        step: 9,
+        message: "Patch export is strictly disabled in Cloud Preview Mode. Authentic patch export requires verification executed inside an isolated Docker sandbox.",
+      });
+      return;
+    }
+
     const targetId = activeRepo?.id || demoInitRef.current?.repository.id || demoInit?.repository.id;
     const runId = verificationRunRef.current?.id || verificationRun?.id;
     if (!targetId || !runId) return;
@@ -513,6 +648,26 @@ export function InteractiveDemoWorkspace({
   };
 
   const handleSimulatePR = async () => {
+    if (isCloudPreview) {
+      setSimulatingPR(true);
+      setTimeout(() => {
+        setSimulatedPR({
+          success: true,
+          pr_number: 101,
+          pr_url: "https://github.com/repopilot/demo-calculator/pull/101",
+          branch_name: "fix/issue-1-power-calc",
+          base_branch: "main",
+          status: "created",
+          is_simulated: true,
+          message: "Simulated PR #101 preview generated for cloud demonstration (zero external GitHub mutations).",
+        });
+        setSimulatingPR(false);
+        setStepError((prev) => (prev?.step === 9 ? null : prev));
+        setMaxCompletedStep((prev) => Math.max(prev, 9));
+      }, 300);
+      return;
+    }
+
     const targetId = activeRepo?.id || demoInitRef.current?.repository.id || demoInit?.repository.id;
     const runId = verificationRunRef.current?.id || verificationRun?.id;
     if (!targetId || !runId) return;
@@ -649,6 +804,7 @@ export function InteractiveDemoWorkspace({
       setProofReport(null);
       setExportedPatch(null);
       setSimulatedPR(null);
+      setIsCloudPreview(false);
       setStepError(null);
       setMaxCompletedStep(0);
       setCurrentStep(1);
@@ -761,7 +917,7 @@ export function InteractiveDemoWorkspace({
             const isActive = currentStep === stg.id;
             const isCompleted = maxCompletedStep >= stg.id;
 
-            const isGated = stg.id === 9 && proofReport?.verdict !== "verified_fix";
+            const isGated = stg.id === 9 && !isCloudPreview && proofReport?.verdict !== "verified_fix";
 
             return (
               <button
@@ -1436,7 +1592,7 @@ export function InteractiveDemoWorkspace({
 
               {/* Live Docker Daemon Status Handling */}
               {demoStatus && !demoStatus.docker_available ? (
-                <div className="rounded-xl border border-amber-500/40 bg-amber-950/20 p-5 space-y-3">
+                <div className="rounded-xl border border-amber-500/40 bg-amber-950/20 p-5 space-y-4">
                   <div className="flex items-center gap-2 text-amber-300 font-mono text-xs font-bold uppercase">
                     <span>⚠ Docker Daemon Offline / Inaccessible</span>
                   </div>
@@ -1446,15 +1602,30 @@ export function InteractiveDemoWorkspace({
                   <p className="font-mono text-xs text-amber-200 bg-[#0c0e14] p-3 rounded-lg border border-amber-500/20">
                     {demoStatus.docker_status_message}
                   </p>
-                  <p className="text-[11px] text-zinc-400 font-sans">
-                    RepoPilot Fix strictly adheres to authentic evidence verification: successful verification is never fabricated or mocked when Docker is unavailable. Start Docker daemon or check socket permissions.
+                  <p className="text-[11px] text-zinc-400 font-sans leading-relaxed">
+                    RepoPilot Fix strictly adheres to authentic evidence verification: real execution is never fabricated when Docker is unavailable. You can safely explore the deterministic repair lifecycle via Cloud Preview Mode without container execution.
                   </p>
-                  <button
-                    onClick={() => void refreshDemoStatus()}
-                    className="rounded-lg bg-amber-400 text-black px-4 py-2 text-xs font-semibold hover:bg-amber-300 transition-colors"
-                  >
-                    Check Docker Status Again
-                  </button>
+                  <div className="flex flex-wrap items-center gap-3 pt-1">
+                    <button
+                      onClick={() => void refreshDemoStatus()}
+                      className="rounded-lg bg-white/10 text-zinc-200 border border-white/20 px-3 py-2 text-xs font-semibold hover:bg-white/20 transition-colors font-sans"
+                    >
+                      Check Docker Status Again
+                    </button>
+                    <button
+                      onClick={handleEnterCloudPreview}
+                      className="rounded-lg bg-amber-400 text-black px-4 py-2 text-xs font-bold hover:bg-amber-300 transition-colors font-sans flex items-center gap-1.5"
+                    >
+                      <span>Explore Cloud Preview Mode</span>
+                      <span>→</span>
+                    </button>
+                    <button
+                      onClick={handleCancelQueuedRun}
+                      className="rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 px-3 py-2 text-xs font-mono hover:bg-rose-500/30 transition-colors"
+                    >
+                      Cancel Queued Run & Reset
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -1503,16 +1674,27 @@ export function InteractiveDemoWorkspace({
                 >
                   ← Back
                 </button>
-                <button
-                  onClick={async () => {
-                    await handleStep7Verify();
-                    setCurrentStep(8);
-                  }}
-                  disabled={loadingStep === 7 || (demoStatus !== null && !demoStatus.docker_available)}
-                  className="rounded-xl bg-[#00F0FF] px-5 py-2.5 text-xs font-bold text-black hover:brightness-110 disabled:opacity-50 transition-all font-sans"
-                >
-                  {loadingStep === 7 ? "Executing Dual Sandboxes…" : "Launch Containers & Inspect Report →"}
-                </button>
+                {demoStatus && !demoStatus.docker_available ? (
+                  <button
+                    onClick={handleEnterCloudPreview}
+                    className="rounded-xl bg-amber-400 px-5 py-2.5 text-xs font-bold text-black hover:bg-amber-300 transition-all font-sans"
+                  >
+                    Explore Cloud Preview Mode →
+                  </button>
+                ) : (
+                  <button
+                    onClick={async () => {
+                      const report = await handleStep7Verify();
+                      if (report) {
+                        setCurrentStep(8);
+                      }
+                    }}
+                    disabled={loadingStep === 7}
+                    className="rounded-xl bg-[#00F0FF] px-5 py-2.5 text-xs font-bold text-black hover:brightness-110 disabled:opacity-50 transition-all font-sans"
+                  >
+                    {loadingStep === 7 ? "Executing Dual Sandboxes…" : "Launch Containers & Inspect Report →"}
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -1527,25 +1709,78 @@ export function InteractiveDemoWorkspace({
               <div className="flex items-start justify-between gap-4 border-b border-white/5 pb-4">
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="size-2 rounded-full bg-[#BFFF00]" />
-                    <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-[#BFFF00]">
+                    <span className={`size-2 rounded-full ${isCloudPreview ? "bg-amber-400" : "bg-[#BFFF00]"}`} />
+                    <span className={`text-[10px] font-mono font-bold uppercase tracking-widest ${isCloudPreview ? "text-amber-400" : "text-[#BFFF00]"}`}>
                       Stage 8 of 9
                     </span>
-                    <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-mono text-emerald-300">
-                      Authentic Evidence
-                    </span>
+                    {isCloudPreview ? (
+                      <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[9px] font-mono text-amber-300">
+                        Cloud Preview (Simulated)
+                      </span>
+                    ) : (
+                      <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-mono text-emerald-300">
+                        Authentic Evidence
+                      </span>
+                    )}
                   </div>
                   <h2 className="mt-1 text-xl font-bold text-white">
                     Differential Proof-of-Fix Evidence Report
                   </h2>
                   <p className="mt-1 text-xs text-zinc-400">
-                    Cryptographic report verifying baseline failure resolution, regression avoidance, and cryptographic patch bindings.
+                    {isCloudPreview
+                      ? "Interactive preview of the differential verification schema. Real execution is performed when connected to an isolated Docker worker."
+                      : "Cryptographic report verifying baseline failure resolution, regression avoidance, and cryptographic patch bindings."}
                   </p>
                 </div>
-                <span className="shrink-0 rounded-lg border border-[#BFFF00]/50 bg-[#BFFF00]/10 px-3 py-1 text-xs font-mono font-bold text-[#BFFF00]">
-                  VERDICT: {proofReport?.verdict ? proofReport.verdict.toUpperCase().replace(/_/g, " ") : "PENDING EXECUTION"}
+                <span className={`shrink-0 rounded-lg border px-3 py-1 text-xs font-mono font-bold ${
+                  isCloudPreview
+                    ? "border-amber-500/50 bg-amber-500/10 text-amber-300"
+                    : "border-[#BFFF00]/50 bg-[#BFFF00]/10 text-[#BFFF00]"
+                }`}>
+                  VERDICT: {isCloudPreview ? "SIMULATED PREVIEW (DOCKER OFFLINE)" : proofReport?.verdict ? proofReport.verdict.toUpperCase().replace(/_/g, " ") : "PENDING EXECUTION"}
                 </span>
               </div>
+
+              {/* Cloud Preview Mode Notice Banner */}
+              {isCloudPreview && (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-950/20 p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-amber-300 font-mono text-xs font-bold">
+                    <span>ℹ CLOUD PREVIEW MODE</span>
+                    <span className="rounded bg-amber-500/20 px-2 py-0.5 text-[10px]">Zero Live Execution</span>
+                  </div>
+                  <p className="text-xs text-zinc-300 leading-relaxed font-sans">
+                    Render Free Web Service hosts the public API without a background Docker container daemon. This preview allows exploring the deterministic repair workflow. No authentic cryptographic proof or VERIFIED_FIX claim is made without container execution.
+                  </p>
+                </div>
+              )}
+
+              {/* Queued Job Waiting Card (when not in cloud preview and verification is still queued/running) */}
+              {!isCloudPreview && (!proofReport || verificationRun?.status === "queued" || verificationRun?.status === "running") && (
+                <div className="rounded-xl border border-cyan-500/30 bg-cyan-950/20 p-5 space-y-3">
+                  <div className="flex items-center gap-2 text-cyan-300 font-mono text-xs font-bold uppercase">
+                    <span className="inline-block size-2 rounded-full bg-cyan-400 animate-pulse" />
+                    <span>Verification Run #{verificationRun?.id || 1} is Queued</span>
+                  </div>
+                  <p className="text-xs text-zinc-300 leading-relaxed font-sans">
+                    The verification job has been queued in the database. On this cloud deployment, no background Docker worker daemon is currently polling the queue. Real verification runs execute in a private Docker worker or local daemon.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3 pt-1">
+                    <button
+                      onClick={handleEnterCloudPreview}
+                      className="rounded-lg bg-amber-400 text-black px-4 py-2 text-xs font-bold hover:bg-amber-300 transition-colors font-sans flex items-center gap-1.5"
+                    >
+                      <span>Explore Cloud Preview Mode</span>
+                      <span>→</span>
+                    </button>
+                    <button
+                      onClick={handleCancelQueuedRun}
+                      className="rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 px-3 py-2 text-xs font-mono hover:bg-rose-500/30 transition-colors"
+                    >
+                      Cancel Queued Run & Reset
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Differential KPI Grid */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -1602,7 +1837,7 @@ export function InteractiveDemoWorkspace({
                       ? `${Number(verificationRun.duration_seconds).toFixed(2)}s`
                       : "Pending"}
                   </p>
-                  <p className="text-[10px] text-zinc-500">Dual container run</p>
+                  <p className="text-[10px] text-zinc-500">{isCloudPreview ? "Simulated workflow" : "Dual container run"}</p>
                 </div>
               </div>
 
@@ -1617,7 +1852,9 @@ export function InteractiveDemoWorkspace({
                       <div key={tid} className="flex items-center gap-2 text-emerald-300">
                         <span>✓</span>
                         <span className="truncate">{tid}</span>
-                        <span className="text-[10px] text-zinc-500">(resolved by verified patch)</span>
+                        <span className="text-[10px] text-zinc-500">
+                          {isCloudPreview ? "(simulated defect resolution)" : "(resolved by verified patch)"}
+                        </span>
                       </div>
                     ))
                   ) : (
@@ -1665,6 +1902,16 @@ export function InteractiveDemoWorkspace({
                     className="rounded-xl bg-[#BFFF00] px-5 py-2.5 text-xs font-bold text-black hover:brightness-110 transition-all font-sans"
                   >
                     Proceed to Export & PR Preview →
+                  </button>
+                ) : isCloudPreview ? (
+                  <button
+                    onClick={() => {
+                      setMaxCompletedStep((prev) => Math.max(prev, 9));
+                      setCurrentStep(9);
+                    }}
+                    className="rounded-xl bg-amber-400 px-5 py-2.5 text-xs font-bold text-black hover:bg-amber-300 transition-all font-sans"
+                  >
+                    Proceed to PR Preview Simulation →
                   </button>
                 ) : (
                   <div className="flex items-center gap-3">
@@ -1719,16 +1966,20 @@ export function InteractiveDemoWorkspace({
                       Download Verified Patch File
                     </h3>
                     <p className="mt-1 text-xs text-zinc-400">
-                      Exports standard <code className="text-zinc-300">.patch</code> diff file with manual CLI instructions (<code className="text-zinc-300">git apply</code>).
+                      {isCloudPreview
+                        ? "Patch export is strictly disabled in Cloud Preview Mode to prevent exporting unverified diffs without Docker container proof."
+                        : "Exports standard .patch diff file with manual CLI instructions (git apply)."}
                     </p>
                   </div>
                   <button
                     onClick={handleExportPatch}
-                    disabled={loadingStep === 9 || proofReport?.verdict !== "verified_fix"}
+                    disabled={loadingStep === 9 || isCloudPreview || proofReport?.verdict !== "verified_fix"}
                     className="w-full rounded-xl border border-[#BFFF00]/40 bg-[#BFFF00]/10 px-4 py-2.5 text-xs font-bold text-[#BFFF00] hover:bg-[#BFFF00] hover:text-black disabled:opacity-40 disabled:cursor-not-allowed transition-all font-sans"
                   >
                     {loadingStep === 9
                       ? "Exporting…"
+                      : isCloudPreview
+                      ? "Export Blocked (Cloud Preview Mode)"
                       : proofReport?.verdict !== "verified_fix"
                       ? "Export Blocked (Fix Unverified)"
                       : "⬇ Download .patch File"}
@@ -1747,18 +1998,22 @@ export function InteractiveDemoWorkspace({
                       </span>
                     </div>
                     <p className="mt-1 text-xs text-zinc-400">
-                      Creates simulated PR #101 stored safely in local database without touching GitHub API or modifying remote repositories.
+                      {isCloudPreview
+                        ? "Generates a simulated PR #101 preview without external GitHub mutations, allowing cloud previewers to inspect PR staging safely."
+                        : "Creates simulated PR #101 stored safely in local database without touching GitHub API or modifying remote repositories."}
                     </p>
                   </div>
                   <button
                     onClick={handleSimulatePR}
-                    disabled={simulatingPR || simulatedPR !== null || proofReport?.verdict !== "verified_fix"}
+                    disabled={simulatingPR || simulatedPR !== null || (!isCloudPreview && proofReport?.verdict !== "verified_fix")}
                     className="w-full rounded-xl bg-gradient-to-r from-[#BFFF00] to-emerald-400 px-4 py-2.5 text-xs font-bold text-black hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-all font-sans"
                   >
                     {simulatingPR
                       ? "Generating PR Preview…"
                       : simulatedPR
                       ? "PR #101 Simulated"
+                      : isCloudPreview
+                      ? "⚡ Simulate PR Preview (Cloud Mode)"
                       : proofReport?.verdict !== "verified_fix"
                       ? "PR Simulation Blocked (Fix Unverified)"
                       : "⚡ Simulate Pull Request"}
@@ -1822,6 +2077,18 @@ export function InteractiveDemoWorkspace({
                   <p className="text-xs text-zinc-300 leading-relaxed font-sans">
                     You have successfully observed the end-to-end evidence-driven repair lifecycle:
                     Issue Discovery → AST Grounding → Patch Synthesis → Mandatory Operator Approval → Isolated Dual-Sandbox Execution → Cryptographic Proof-of-Fix Verification.
+                  </p>
+                </div>
+              ) : isCloudPreview ? (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-950/20 p-5 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="size-2 rounded-full bg-amber-400" />
+                    <p className="text-xs font-bold font-mono uppercase text-amber-300">
+                      Cloud Interactive Preview Completed
+                    </p>
+                  </div>
+                  <p className="text-xs text-zinc-300 leading-relaxed font-sans">
+                    You have explored all 9 stages of the deterministic repair pipeline in Cloud Preview Mode. Authentic container execution, cryptographic hash chains, and patch export require an active Docker daemon (such as local CLI or a dedicated worker cluster).
                   </p>
                 </div>
               ) : (

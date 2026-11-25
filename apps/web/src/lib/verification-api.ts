@@ -41,23 +41,32 @@ export function formatApiDetail(detail: unknown): string {
 }
 
 export function formatErrorMessage(err: unknown, fallback: string): string {
+  let message = fallback;
   if (!err) return fallback;
-  if (typeof err === "string") return err;
-  if (err instanceof Error) {
+  if (typeof err === "string") {
+    message = err;
+  } else if (err instanceof Error) {
     if (err.message && err.message !== "[object Object]") {
-      return err.message;
+      message = err.message;
+    } else {
+      const anyErr = err as { detail?: unknown };
+      if (anyErr.detail) {
+        message = formatApiDetail(anyErr.detail);
+      }
     }
-    const anyErr = err as { detail?: unknown };
-    if (anyErr.detail) {
-      return formatApiDetail(anyErr.detail);
-    }
-  }
-  if (typeof err === "object") {
+  } else if (typeof err === "object") {
     const obj = err as Record<string, unknown>;
-    if (obj.detail) return formatApiDetail(obj.detail);
-    if (typeof obj.message === "string" && obj.message !== "[object Object]") return obj.message;
+    if (obj.detail) {
+      message = formatApiDetail(obj.detail);
+    } else if (typeof obj.message === "string" && obj.message !== "[object Object]") {
+      message = obj.message;
+    }
   }
-  return fallback;
+
+  if (message.includes("(current state: 'queued')")) {
+    return "Verification job is queued awaiting an available Docker worker. Start a private Docker worker or use Cloud Preview Mode.";
+  }
+  return message;
 }
 
 
