@@ -398,9 +398,21 @@ class WorkerLoop:
         with self.session_factory() as check_db:
             repo = check_db.get(Repository, proof_request.repository_id)
             is_demo = is_internal_demo_repository(check_db, repo, user_id=None)
+            is_trusted_fixture = (
+                self.fixture_registry.is_repository_trusted(
+                    repo.owner,
+                    repo.name,
+                    github_id=repo.github_id,
+                    repository=repo,
+                    db=check_db,
+                    user_id=effective_user_id,
+                )
+                if repo
+                else False
+            )
 
         docker_enabled_flag = allow_docker_env in ("true", "1")
-        allow_docker = docker_enabled_flag and is_demo
+        allow_docker = docker_enabled_flag and (is_demo or is_trusted_fixture)
 
         is_docker_runner = (
             hasattr(active_runner, "run")

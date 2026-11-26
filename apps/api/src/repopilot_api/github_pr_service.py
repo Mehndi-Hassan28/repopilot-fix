@@ -481,6 +481,91 @@ class GitHubPullRequestService:
         return patches
 
     @classmethod
+    def _create_simulated_demo_pr(
+        cls,
+        db: Session,
+        repo: Repository,
+        run: VerificationRun,
+        report: ProofReport,
+        user_id: int,
+        payload: PullRequestCreateRequest,
+    ) -> PullRequestCreateResponse:
+        pr_number = 101
+        pr_url = f"https://github.com/{repo.owner}/{repo.name}/pull/{pr_number}"
+        branch_name = (
+            payload.custom_branch_name or f"repopilot/fix-issue-{run.issue_number}-{run.id}"
+        ).strip()
+        title = (
+            payload.custom_title or "fix(calculator): resolve power operator multiplication bug"
+        )
+        body = payload.custom_body or (
+            f"## Automated Fix by RepoPilot Dual-Sandbox Engine\n\n"
+            f"- **Verdict**: `{report.verdict}`\n"
+            f"- **Verification Run**: `#{run.id}`\n"
+            f"- **Approved Spec Hash**: `{run.approved_spec_hash}`\n\n"
+            f"{report.summary}"
+        )
+        record = GitHubPullRequest(
+            repository_id=repo.id,
+            verification_run_id=run.id,
+            created_by_user_id=user_id,
+            issue_number=run.issue_number,
+            pr_number=pr_number,
+            pr_url=pr_url,
+            branch_name=branch_name,
+            base_branch=repo.default_branch or "main",
+            head_sha="mock_commit_sha_" + "a" * 24,
+            patch_hash=run.patch_hash or "",
+            title=title,
+            body=body,
+        )
+        try:
+            db.add(record)
+            log_audit_event(
+                db,
+                run_id=run.id,
+                event_type=VerificationAuditEventType.PR_CREATED.value,
+                actor_user_id=user_id,
+                from_status=run.status,
+                to_status=run.status,
+                details={
+                    "pr_number": pr_number,
+                    "pr_url": pr_url,
+                    "branch_name": branch_name,
+                    "base_branch": repo.default_branch or "main",
+                    "is_simulated": True,
+                },
+            )
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            existing_pr = db.scalar(
+                select(GitHubPullRequest).where(GitHubPullRequest.verification_run_id == run.id)
+            )
+            if existing_pr is not None:
+                return PullRequestCreateResponse(
+                    success=True,
+                    pr_number=existing_pr.pr_number,
+                    pr_url=existing_pr.pr_url,
+                    branch_name=existing_pr.branch_name,
+                    base_branch=existing_pr.base_branch,
+                    status="already_exists",
+                    message=f"Pull request #{existing_pr.pr_number} already exists for this run.",
+                    is_simulated=True,
+                )
+            raise
+        return PullRequestCreateResponse(
+            success=True,
+            pr_number=pr_number,
+            pr_url=pr_url,
+            branch_name=branch_name,
+            base_branch=repo.default_branch or "main",
+            status="created",
+            message=f"Simulated GitHub pull request #{pr_number} created for demo repository.",
+            is_simulated=True,
+        )
+
+    @classmethod
     def create_pull_request(
         cls,
         db: Session,
@@ -525,81 +610,13 @@ class GitHubPullRequestService:
             )
 
         if is_demo_repo:
-            pr_number = 101
-            pr_url = f"https://github.com/{repo.owner}/{repo.name}/pull/{pr_number}"
-            branch_name = (
-                payload.custom_branch_name or f"repopilot/fix-issue-{run.issue_number}-{run.id}"
-            ).strip()
-            title = (
-                payload.custom_title or "fix(calculator): resolve power operator multiplication bug"
-            )
-            body = payload.custom_body or (
-                f"## Automated Fix by RepoPilot Dual-Sandbox Engine\n\n"
-                f"- **Verdict**: `{report.verdict}`\n"
-                f"- **Verification Run**: `#{run.id}`\n"
-                f"- **Approved Spec Hash**: `{run.approved_spec_hash}`\n\n"
-                f"{report.summary}"
-            )
-            record = GitHubPullRequest(
-                repository_id=repository_id,
-                verification_run_id=run.id,
-                created_by_user_id=user_id,
-                issue_number=run.issue_number,
-                pr_number=pr_number,
-                pr_url=pr_url,
-                branch_name=branch_name,
-                base_branch=repo.default_branch or "main",
-                head_sha="mock_commit_sha_" + "a" * 24,
-                patch_hash=run.patch_hash or "",
-                title=title,
-                body=body,
-            )
-            try:
-                db.add(record)
-                log_audit_event(
-                    db,
-                    run_id=run.id,
-                    event_type=VerificationAuditEventType.PR_CREATED.value,
-                    actor_user_id=user_id,
-                    from_status=run.status,
-                    to_status=run.status,
-                    details={
-                        "pr_number": pr_number,
-                        "pr_url": pr_url,
-                        "branch_name": branch_name,
-                        "base_branch": repo.default_branch or "main",
-                        "is_simulated": True,
-                    },
-                )
-                db.commit()
-            except IntegrityError:
-                db.rollback()
-                existing_pr = db.scalar(
-                    select(GitHubPullRequest).where(GitHubPullRequest.verification_run_id == run.id)
-                )
-                if existing_pr is not None:
-                    return PullRequestCreateResponse(
-                        success=True,
-                        pr_number=existing_pr.pr_number,
-                        pr_url=existing_pr.pr_url,
-                        branch_name=existing_pr.branch_name,
-                        base_branch=existing_pr.base_branch,
-                        status="already_exists",
-                        message=(
-                            f"Pull request #{existing_pr.pr_number} already exists for this run."
-                        ),
-                        is_simulated=True,
-                    )
-                raise
-            return PullRequestCreateResponse(
-                success=True,
-                pr_number=pr_number,
-                pr_url=pr_url,
-                branch_name=branch_name,
-                base_branch=repo.default_branch or "main",
-                status="created",
-                message=f"Simulated GitHub pull request #{pr_number} created for demo repository.",
-                is_simulated=True,
+            return cls._create_simulated_demo_pr(
+                db=db,
+                repo=repo,
+                run=run,
+                report=report,
+                user_id=user_id,
+                payload=payload,
             )
 
         token = cls._resolve_token(payload, auth_token_header)
