@@ -495,9 +495,7 @@ class GitHubPullRequestService:
         branch_name = (
             payload.custom_branch_name or f"repopilot/fix-issue-{run.issue_number}-{run.id}"
         ).strip()
-        title = (
-            payload.custom_title or "fix(calculator): resolve power operator multiplication bug"
-        )
+        title = payload.custom_title or "fix(calculator): resolve power operator multiplication bug"
         body = payload.custom_body or (
             f"## Automated Fix by RepoPilot Dual-Sandbox Engine\n\n"
             f"- **Verdict**: `{report.verdict}`\n"
