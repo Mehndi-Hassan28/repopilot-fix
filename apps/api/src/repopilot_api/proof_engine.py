@@ -619,8 +619,7 @@ class ProofOfFixEngine:
             issue_number=request.issue_number,
             patch_hash=patch_hash,
             approved_spec_hash=(
-                request.approved_spec_hash
-                or (vrun.approved_spec_hash if vrun else None)
+                request.approved_spec_hash or (vrun.approved_spec_hash if vrun else None)
             ),
             sandbox_image=(
                 (vrun.sandbox_image if vrun and vrun.sandbox_image else None)

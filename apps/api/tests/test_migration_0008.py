@@ -9,12 +9,15 @@ Verifies:
 """
 
 import os
+from pathlib import Path
 from urllib.parse import urlparse
 
 import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
+
+ALEMBIC_INI_PATH = (Path(__file__).resolve().parents[1] / "alembic.ini").as_posix()
 
 
 def _get_scratch_url() -> str | None:
@@ -62,7 +65,7 @@ def test_alembic_migration_0008_lifecycle():
     try:
         # Configure Alembic to target the isolated test schema
         os.environ["DATABASE_URL"] = f"{SCRATCH_URL}?options=-csearch_path%3D{schema_name}"
-        cfg = Config("apps/api/alembic.ini")
+        cfg = Config(ALEMBIC_INI_PATH)
 
         # Upgrade through 0007
         command.upgrade(cfg, "0007_verification_worker_leases")
@@ -119,9 +122,9 @@ def test_alembic_migration_0008_lifecycle():
                     "ix_github_pull_requests_issue_number",
                     "ix_github_pull_requests_created_by_user_id",
                 }
-                assert expected_indexes.issubset(
-                    indexes
-                ), f"Missing indexes: {expected_indexes - indexes}"
+                assert expected_indexes.issubset(indexes), (
+                    f"Missing indexes: {expected_indexes - indexes}"
+                )
 
         # Test downgrade to 0007
         command.downgrade(cfg, "0007_verification_worker_leases")
@@ -129,9 +132,7 @@ def test_alembic_migration_0008_lifecycle():
         # Verify table is dropped after downgrade
         with psycopg.connect(raw_conn_url) as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT to_regclass(%s)", (f"{schema_name}.github_pull_requests",)
-                )
+                cur.execute("SELECT to_regclass(%s)", (f"{schema_name}.github_pull_requests",))
                 table = cur.fetchone()[0]
                 assert table is None, "github_pull_requests table still exists after downgrade!"
 
@@ -139,9 +140,7 @@ def test_alembic_migration_0008_lifecycle():
         command.upgrade(cfg, "head")
         with psycopg.connect(raw_conn_url) as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT to_regclass(%s)", (f"{schema_name}.github_pull_requests",)
-                )
+                cur.execute("SELECT to_regclass(%s)", (f"{schema_name}.github_pull_requests",))
                 table = cur.fetchone()[0]
                 assert table is not None, "github_pull_requests table missing after re-upgrade!"
 

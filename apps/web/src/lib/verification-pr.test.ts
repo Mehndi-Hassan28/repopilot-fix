@@ -43,7 +43,7 @@ describe("Verification PR & Export Utilities", () => {
       assert.equal(isPullRequestEligible(run, { verdict: "fix_failed" as const }), false);
       assert.equal(isPullRequestEligible(run, { verdict: "unreproduced" as const }), false);
       assert.equal(isPullRequestEligible(run, { verdict: "inconclusive" as const }), false);
-      assert.equal(isPullRequestEligible(run, { verdict: "timeout" as const }), false);
+      assert.equal(isPullRequestEligible(run, { verdict: "timed_out" as const }), false);
       assert.equal(isPullRequestEligible(run, { verdict: "error" as const }), false);
     });
 

@@ -225,9 +225,7 @@ async def test_unapproved_verification_rejected(test_session):
         # 1. Draft run
         payload = sample_create_payload()
         payload.auto_submit_approval = False
-        run, _ = VerificationJobManager.create_verification_request(
-            db, repo.id, user.id, payload
-        )
+        run, _ = VerificationJobManager.create_verification_request(db, repo.id, user.id, payload)
         assert run.status == VerificationJobStatus.DRAFT.value
 
         with pytest.raises(VerificationStateError) as exc_info:

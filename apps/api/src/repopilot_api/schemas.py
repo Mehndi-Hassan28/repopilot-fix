@@ -70,6 +70,7 @@ class ChatSessionCreate(BaseModel):
 class ChatQuestion(BaseModel):
     question: str
     mode: str | None = None
+    persona: Literal["software_engineer", "security_auditor", "qa_lead"] | None = None
 
 
 class CitationRead(BaseModel):

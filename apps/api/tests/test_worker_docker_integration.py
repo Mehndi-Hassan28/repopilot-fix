@@ -225,6 +225,7 @@ async def test_worker_docker_end_to_end_verification(test_session, tmp_path, mon
     # Verify container cleanup
     assert_no_repopilot_containers()
 
+
 # ==============================================================================
 # Step 4: Failure & Adversarial Tests
 # ==============================================================================
@@ -287,6 +288,7 @@ async def test_worker_docker_nonzero_patch_exit(test_session, tmp_path, monkeypa
         assert report.verdict == ProofVerdict.FIX_FAILED.value
 
     assert_no_repopilot_containers()
+
 
 @pytest.mark.anyio
 async def test_worker_docker_network_blocked_probe(test_session, tmp_path, monkeypatch):
@@ -358,6 +360,7 @@ async def test_worker_docker_network_blocked_probe(test_session, tmp_path, monke
         assert run_db.baseline_exit_code == 0
 
     assert_no_repopilot_containers()
+
 
 @pytest.mark.anyio
 async def test_worker_docker_non_root_and_readonly_restrictions(
@@ -436,6 +439,7 @@ async def test_worker_docker_non_root_and_readonly_restrictions(
 
     assert_no_repopilot_containers()
 
+
 @pytest.mark.anyio
 async def test_worker_docker_bounded_output_flooding(test_session, tmp_path, monkeypatch):
     """Test that heavy output flooding inside container is capped without OOM or crash."""
@@ -507,6 +511,7 @@ async def test_worker_docker_bounded_output_flooding(test_session, tmp_path, mon
         assert "truncated" in run_db.baseline_stdout
 
     assert_no_repopilot_containers()
+
 
 @pytest.mark.anyio
 async def test_worker_docker_timeout_handling(test_session, tmp_path, monkeypatch):
@@ -584,6 +589,7 @@ async def test_worker_docker_timeout_handling(test_session, tmp_path, monkeypatc
 
     assert_no_repopilot_containers()
 
+
 @pytest.mark.anyio
 async def test_worker_docker_stale_fencing_token_discarded(test_session, tmp_path, monkeypatch):
     """Test that a worker whose fencing token was invalidated cannot commit final results."""
@@ -641,6 +647,7 @@ async def test_worker_docker_stale_fencing_token_discarded(test_session, tmp_pat
         assert report is None
 
     assert_no_repopilot_containers()
+
 
 @pytest.mark.anyio
 async def test_worker_docker_cancellation_during_execution(test_session, tmp_path, monkeypatch):

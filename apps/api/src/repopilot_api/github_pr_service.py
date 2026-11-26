@@ -333,9 +333,9 @@ class GitHubPullRequestService:
     """Orchestrates human-approved, verified fix PR creation with strict idempotency."""
 
     @classmethod
-    def _validate_run_for_pr(
+    def _check_run_exists_and_completed(
         cls, db: Session, repository_id: int, verification_id: int
-    ) -> tuple[VerificationRun, ProofReport, Repository]:
+    ) -> tuple[VerificationRun, Repository]:
         run = db.get(VerificationRun, verification_id)
         if run is None or run.repository_id != repository_id:
             raise GitHubPRError("Verification run not found.", status_code=404)
@@ -349,13 +349,15 @@ class GitHubPullRequestService:
                 f"Cannot create PR: verification status is '{run.status}'. "
                 f"Run must be '{VerificationJobStatus.COMPLETED.value}'."
             )
+        return run, repo
 
+    @classmethod
+    def _verify_approval_integrity(cls, run: VerificationRun) -> None:
         if not run.approved_spec_hash or not run.approved_by_user_id:
             raise GitHubVerificationPrerequisiteError(
                 "Cannot create PR without prior explicit human approval of the exact patch."
             )
 
-        # Integrity Check: current spec must match approved spec hash
         try:
             test_cmd = json.loads(run.test_command)
         except Exception:
@@ -369,6 +371,8 @@ class GitHubPullRequestService:
                 "PR creation blocked."
             )
 
+    @classmethod
+    def _verify_report_verdict(cls, db: Session, run: VerificationRun) -> ProofReport:
         report = db.scalar(select(ProofReport).where(ProofReport.verification_run_id == run.id))
         if report is None:
             raise GitHubVerificationPrerequisiteError(
@@ -381,8 +385,10 @@ class GitHubPullRequestService:
                 f"Cannot create PR: ProofReport verdict is '{report.verdict}'. "
                 f"Only verified fixes ('{v_fix}') qualify for PR creation."
             )
+        return report
 
-        # Cryptographic Evidence Binding: verify evidence matches exact revision, patch, and spec
+    @classmethod
+    def _verify_evidence_binding(cls, run: VerificationRun, report: ProofReport) -> None:
         try:
             ev_data = json.loads(report.evidence_json or "{}")
         except Exception:
@@ -415,6 +421,14 @@ class GitHubPullRequestService:
                 "Cannot create PR: verification run contains an empty patch diff."
             )
 
+    @classmethod
+    def _validate_run_for_pr(
+        cls, db: Session, repository_id: int, verification_id: int
+    ) -> tuple[VerificationRun, ProofReport, Repository]:
+        run, repo = cls._check_run_exists_and_completed(db, repository_id, verification_id)
+        cls._verify_approval_integrity(run)
+        report = cls._verify_report_verdict(db, run)
+        cls._verify_evidence_binding(run, report)
         return run, report, repo
 
     validate_pr_prerequisites = _validate_run_for_pr

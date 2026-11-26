@@ -322,10 +322,7 @@ def test_demo_approval_enforcement_and_unapproved_rejection(test_session):
     async def try_unapproved():
         with pytest.raises((VerificationSecurityError, VerificationStateError)) as exc_info:
             await VerificationJobManager.execute_job(db=db, run_id=run.id, user_id=user.id)
-        assert (
-            "approval" in str(exc_info.value).lower()
-            or "state" in str(exc_info.value).lower()
-        )
+        assert "approval" in str(exc_info.value).lower() or "state" in str(exc_info.value).lower()
 
     anyio.run(try_unapproved)
 
@@ -811,9 +808,7 @@ def test_demo_provenance_full_canonical_validation(test_session, monkeypatch):
     assert is_internal_demo_repository(db, repo, user_id=user.id, verify_content=True) is True
 
     # Other user cannot claim provenance
-    assert not is_internal_demo_repository(
-        db, repo, user_id=user.id + 999, verify_content=True
-    )
+    assert not is_internal_demo_repository(db, repo, user_id=user.id + 999, verify_content=True)
 
     # Tamper with an indexed file in database
     job = db.scalar(
@@ -877,9 +872,7 @@ def test_concurrent_demo_initialization_thread_safe(test_session, monkeypatch):
     assert res_client_1.json()["repository"]["id"] == res_client_2.json()["repository"]["id"]
 
     # Exactly one repository exists for this user in DB
-    repos = db.scalars(
-        select(Repository).where(Repository.name == f"demo-calc-{user.id}")
-    ).all()
+    repos = db.scalars(select(Repository).where(Repository.name == f"demo-calc-{user.id}")).all()
     assert len(repos) == 1
 
 
@@ -1100,6 +1093,7 @@ def test_stage5_and_stage7_verification_consistency(test_session, monkeypatch):
 
     # 2. Reject unapproved test command (e.g. pytest) during execution via policy guard
     from repopilot_api.fixture_registry import FixtureRegistryError
+
     res_bad_cmd = client.post(
         f"/api/repositories/{repo_id}/verifications",
         json={
@@ -1406,6 +1400,3 @@ def test_demo_real_docker_verification_e2e(test_session, monkeypatch):
     assert res_pr.status_code == 200
     assert res_pr.json()["pr_number"] == 101
     assert res_pr.json()["success"] is True
-
-
-

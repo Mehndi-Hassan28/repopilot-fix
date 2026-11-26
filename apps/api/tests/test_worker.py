@@ -255,9 +255,7 @@ async def test_worker_successful_mock_verification(test_session):
 
         payload = sample_create_payload()
         payload.auto_submit_approval = False
-        run, _ = VerificationJobManager.create_verification_request(
-            db, repo.id, user.id, payload
-        )
+        run, _ = VerificationJobManager.create_verification_request(db, repo.id, user.id, payload)
         VerificationJobManager.submit_for_approval(db, run.id, user.id)
         VerificationJobManager.approve_verification(db, run.id, user.id, auto_queue=True)
 
@@ -282,9 +280,7 @@ async def test_worker_successful_mock_verification(test_session):
         assert run_db.duration_seconds > 0
 
         # Verify ProofReport was created
-        report = db.scalar(
-            select(ProofReport).where(ProofReport.verification_run_id == run.id)
-        )
+        report = db.scalar(select(ProofReport).where(ProofReport.verification_run_id == run.id))
         assert report is not None
         assert report.verdict == ProofVerdict.VERIFIED_FIX.value
         assert report.confidence == "high"
@@ -371,9 +367,7 @@ async def test_worker_specification_tampering_rejected(test_session):
 
         payload = sample_create_payload()
         payload.auto_submit_approval = False
-        run, _ = VerificationJobManager.create_verification_request(
-            db, repo.id, user.id, payload
-        )
+        run, _ = VerificationJobManager.create_verification_request(db, repo.id, user.id, payload)
         VerificationJobManager.submit_for_approval(db, run.id, user.id)
         VerificationJobManager.approve_verification(db, run.id, user.id, auto_queue=True)
 
@@ -410,9 +404,7 @@ async def test_worker_cancellation_while_queued(test_session):
 
         payload = sample_create_payload()
         payload.auto_submit_approval = False
-        run, _ = VerificationJobManager.create_verification_request(
-            db, repo.id, user.id, payload
-        )
+        run, _ = VerificationJobManager.create_verification_request(db, repo.id, user.id, payload)
         VerificationJobManager.submit_for_approval(db, run.id, user.id)
         VerificationJobManager.approve_verification(db, run.id, user.id, auto_queue=True)
 
@@ -440,9 +432,7 @@ async def test_worker_cancellation_inflight(test_session):
 
         payload = sample_create_payload()
         payload.auto_submit_approval = False
-        run, _ = VerificationJobManager.create_verification_request(
-            db, repo.id, user.id, payload
-        )
+        run, _ = VerificationJobManager.create_verification_request(db, repo.id, user.id, payload)
         VerificationJobManager.submit_for_approval(db, run.id, user.id)
         VerificationJobManager.approve_verification(db, run.id, user.id, auto_queue=True)
 
@@ -504,9 +494,7 @@ async def test_worker_exception_handled_safely(test_session):
 
         payload = sample_create_payload()
         payload.auto_submit_approval = False
-        run, _ = VerificationJobManager.create_verification_request(
-            db, repo.id, user.id, payload
-        )
+        run, _ = VerificationJobManager.create_verification_request(db, repo.id, user.id, payload)
         VerificationJobManager.submit_for_approval(db, run.id, user.id)
         VerificationJobManager.approve_verification(db, run.id, user.id, auto_queue=True)
 
@@ -557,9 +545,7 @@ async def test_worker_graceful_shutdown_during_job(test_session):
 
         payload = sample_create_payload()
         payload.auto_submit_approval = False
-        run, _ = VerificationJobManager.create_verification_request(
-            db, repo.id, user.id, payload
-        )
+        run, _ = VerificationJobManager.create_verification_request(db, repo.id, user.id, payload)
         VerificationJobManager.submit_for_approval(db, run.id, user.id)
         VerificationJobManager.approve_verification(db, run.id, user.id, auto_queue=True)
 
@@ -603,9 +589,7 @@ async def test_worker_audit_consistency(test_session):
 
         payload = sample_create_payload()
         payload.auto_submit_approval = False
-        run, _ = VerificationJobManager.create_verification_request(
-            db, repo.id, user.id, payload
-        )
+        run, _ = VerificationJobManager.create_verification_request(db, repo.id, user.id, payload)
         VerificationJobManager.submit_for_approval(db, run.id, user.id)
         VerificationJobManager.approve_verification(db, run.id, user.id, auto_queue=True)
 
@@ -656,9 +640,7 @@ async def test_worker_blocks_docker_when_disabled(test_session, monkeypatch):
 
         payload = sample_create_payload()
         payload.auto_submit_approval = False
-        run, _ = VerificationJobManager.create_verification_request(
-            db, repo.id, user.id, payload
-        )
+        run, _ = VerificationJobManager.create_verification_request(db, repo.id, user.id, payload)
         VerificationJobManager.submit_for_approval(db, run.id, user.id)
         VerificationJobManager.approve_verification(db, run.id, user.id, auto_queue=True)
 
@@ -687,9 +669,7 @@ def test_worker_cli_entrypoint(test_session, monkeypatch):
     from repopilot_api.worker import main
 
     monkeypatch.setattr("repopilot_api.worker.SessionLocal", test_session)
-    monkeypatch.setattr(
-        sys, "argv", ["repopilot_worker", "--once", "--poll-interval", "0.01"]
-    )
+    monkeypatch.setattr(sys, "argv", ["repopilot_worker", "--once", "--poll-interval", "0.01"])
     # With empty queue, main() finishes cleanly
     main()
 
@@ -705,13 +685,9 @@ async def test_worker_persists_approved_spec_hash_in_evidence(test_session):
 
         payload = sample_create_payload()
         payload.auto_submit_approval = False
-        run, _ = VerificationJobManager.create_verification_request(
-            db, repo.id, user.id, payload
-        )
+        run, _ = VerificationJobManager.create_verification_request(db, repo.id, user.id, payload)
         VerificationJobManager.submit_for_approval(db, run.id, user.id)
-        run_appr = VerificationJobManager.approve_verification(
-            db, run.id, user.id, auto_queue=True
-        )
+        run_appr = VerificationJobManager.approve_verification(db, run.id, user.id, auto_queue=True)
         expected_spec = run_appr.approved_spec_hash
         assert expected_spec is not None
 

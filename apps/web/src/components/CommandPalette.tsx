@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { Repository, WorkspaceView, IndexedFileItem } from "../lib/types";
+import { useFocusTrap } from "../lib/useFocusTrap";
 
 interface CommandPaletteProps {
   isOpen: boolean;
@@ -38,20 +39,20 @@ export function CommandPalette({
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
 
+  const modalRef = useFocusTrap({
+    isOpen,
+    onClose,
+    closeOnEscape: true,
+  });
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        if (isOpen) {
-          onClose();
-        } else {
-          // Open handled by parent or shortcut listener
-        }
-      }
-      if (e.key === "Escape" && isOpen) {
         onClose();
       }
     }
+    if (!isOpen) return;
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, onClose]);
@@ -222,6 +223,7 @@ export function CommandPalette({
       onClick={onClose}
     >
       <div
+        ref={modalRef}
         className="w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0e1014] shadow-2xl shadow-black/80 overflow-hidden"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}

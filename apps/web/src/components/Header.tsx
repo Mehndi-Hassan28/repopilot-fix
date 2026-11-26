@@ -1,12 +1,14 @@
 "use client";
 
-import { AuthUser } from "../lib/types";
+import { AuthUser, PERSONAS, PersonaType } from "../lib/types";
 import { SearchIcon, PlusIcon, BotIcon } from "./Icons";
 
 interface HeaderProps {
   currentUser: AuthUser | null;
   activeRepoName?: string;
   backendStatus?: "ready" | "connecting" | "offline";
+  activePersona?: PersonaType;
+  onSelectPersona?: (persona: PersonaType) => void;
   onOpenCommandPalette: () => void;
   onOpenImportModal: () => void;
   isAiPanelOpen: boolean;
@@ -18,6 +20,8 @@ export function Header({
   currentUser,
   activeRepoName,
   backendStatus = "ready",
+  activePersona = "software_engineer",
+  onSelectPersona,
   onOpenCommandPalette,
   onOpenImportModal,
   isAiPanelOpen,
@@ -55,6 +59,39 @@ export function Header({
             {activeRepoName}
           </span>
         )}
+
+        {/* Active Engineering Persona Switcher */}
+        <div
+          role="group"
+          aria-label="Active engineering persona selection"
+          className="hidden xl:flex items-center gap-1 rounded-full border border-white/10 bg-white/5 p-0.5 text-[10px] font-mono"
+        >
+          {(["software_engineer", "security_auditor", "qa_lead"] as const).map((p) => {
+            const meta = PERSONAS[p];
+            const isSelected = activePersona === p;
+            return (
+              <button
+                key={p}
+                onClick={() => onSelectPersona?.(p)}
+                className={`flex items-center gap-1 px-2.5 py-0.5 rounded-full transition-all ${
+                  isSelected
+                    ? `${meta.bgColor} ${meta.borderColor} border font-bold text-white shadow-sm`
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+                title={meta.description}
+                aria-pressed={isSelected}
+              >
+                <span
+                  className="size-1.5 rounded-full"
+                  style={{ backgroundColor: meta.accentColor }}
+                  aria-hidden="true"
+                />
+                <span>{meta.label}</span>
+                <span className="text-[9px] opacity-75">({meta.badge})</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Right Search, Actions, and AI Drawer Trigger */}

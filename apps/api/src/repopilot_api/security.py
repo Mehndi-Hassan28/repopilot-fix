@@ -85,9 +85,7 @@ def get_optional_auth(request: Request, db: Session = Depends(get_db)) -> AuthCo
         raise
 
 
-def require_csrf(
-    request: Request, auth: AuthContext = Depends(get_current_auth)
-) -> AuthContext:
+def require_csrf(request: Request, auth: AuthContext = Depends(get_current_auth)) -> AuthContext:
     origin = request.headers.get("origin", "").rstrip("/")
     supplied = request.headers.get(CSRF_HEADER_NAME, "")
     if origin not in configured_origins() or not supplied:

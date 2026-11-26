@@ -287,6 +287,4 @@ class GitHubPullRequest(Base):
     patch_hash: Mapped[str] = mapped_column(String(64))
     title: Mapped[str] = mapped_column(String(500))
     body: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

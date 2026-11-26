@@ -541,7 +541,6 @@ def retrieve_from_files(
     return sorted(evidence, key=lambda item: (-item.score, item.path))[:MAX_RESULTS]
 
 
-
 def classify_intent(query: str, history: list[dict[str, str]] | None = None) -> ChatMode:
     """Classify user intent into one of 4 operational modes.
 
@@ -737,11 +736,21 @@ class Provider:
         """Keep existing providers compatible while allowing bounded follow-up context."""
         return self.answer(question, evidence)
 
-    def answer_general(self, question: str, history: list[dict[str, str]] | None = None) -> str:
+    def answer_general(
+        self,
+        question: str,
+        history: list[dict[str, str]] | None = None,
+        persona: str | None = None,
+    ) -> str:
         """Answer general AI / conceptual / conversational questions."""
         return self.answer(question, [])
 
-    def answer_coding(self, question: str, history: list[dict[str, str]] | None = None) -> str:
+    def answer_coding(
+        self,
+        question: str,
+        history: list[dict[str, str]] | None = None,
+        persona: str | None = None,
+    ) -> str:
         """Answer coding, debugging, and programming questions."""
         return self.answer(question, [])
 
@@ -753,8 +762,33 @@ class MockProvider(Provider):
     def answer(self, question: str, evidence: list[Evidence]) -> str:
         return "The indexed source contains relevant evidence in [1]." if evidence else ""
 
-    def answer_general(self, question: str, history: list[dict[str, str]] | None = None) -> str:
+    def answer_general(
+        self,
+        question: str,
+        history: list[dict[str, str]] | None = None,
+        persona: str | None = None,
+    ) -> str:
         q_lower = question.lower().strip()
+        if persona == "security_auditor":
+            return (
+                "### 🔒 Security & Compliance Auditor Guidance\n\n"
+                "As the Security Auditor, I enforce cryptographic integrity and isolation:\n"
+                "- **Container Sandboxing**: Verified runs execute in air-gapped dual containers "
+                "(`--network none`, `--read-only`, non-root user `1000:1000`).\n"
+                "- **Cryptographic Spec Gating**: Candidate fixes require SHA-256 hash sealing "
+                "($\\text{SHA256}(\\text{Commit} \\parallel \\text{Diff} \\parallel "
+                "\\text{Cmd} \\parallel \\text{Image})$).\n"
+                "- **Audit Trail**: Verification reports record immutable execution evidence."
+            )
+        if persona == "qa_lead":
+            return (
+                "### 🧪 QA & Reliability Lead Guidance\n\n"
+                "As the QA Lead, I enforce reproduction and regression prevention:\n"
+                "- **Baseline Reproduction**: Defect must fail reproducibly on clean baseline.\n"
+                "- **Zero Regressions**: Candidate fixes must introduce zero new test failures "
+                "(`new_failed_test_ids == 0`).\n"
+                "- **Delta Analysis**: Reports record test execution delta metrics."
+            )
         if any(w in q_lower for w in ["hi", "hello", "hey", "greetings"]):
             return (
                 "Hello! I am RepoPilot Fix AI assistant. I can help you with general programming "
@@ -773,8 +807,37 @@ class MockProvider(Provider):
             "and development best practices."
         )
 
-    def answer_coding(self, question: str, history: list[dict[str, str]] | None = None) -> str:
+    def answer_coding(
+        self,
+        question: str,
+        history: list[dict[str, str]] | None = None,
+        persona: str | None = None,
+    ) -> str:
         q_lower = question.lower().strip()
+        if persona == "security_auditor":
+            return (
+                "### 🔒 Security Audit & Vulnerability Assessment\n\n"
+                "```python\n"
+                "# Hardened implementation with boundary checks and principle of least privilege\n"
+                "def secure_handler(payload: dict) -> bool:\n"
+                "    if not isinstance(payload, dict) or not payload:\n"
+                "        return False\n"
+                "    return True\n"
+                "```\n\n"
+                "**Security Assessment**: Air-gapped isolation verified, input bounded."
+            )
+        if persona == "qa_lead":
+            return (
+                "### 🧪 QA Test Case & Regression Matrix\n\n"
+                "```python\n"
+                "# Deterministic reproduction and regression test suite\n"
+                "def test_defect_reproduction_and_boundary():\n"
+                "    result = compute(10, 2)\n"
+                "    assert result == 5\n"
+                "    assert count_test_failures() == 0\n"
+                "```\n\n"
+                "**QA Assessment**: Baseline reproduction confirmed, test suite passes cleanly."
+            )
         if "binary search" in q_lower:
             return (
                 "### Binary Search\n\n"
@@ -1553,7 +1616,30 @@ class CompatibleCloudProvider(Provider):
             "Please try again."
         )
 
-    def answer_general(self, question: str, history: list[dict[str, str]] | None = None) -> str:
+    def answer_general(
+        self,
+        question: str,
+        history: list[dict[str, str]] | None = None,
+        persona: str | None = None,
+    ) -> str:
+        persona_clause = ""
+        if persona == "security_auditor":
+            persona_clause = (
+                " You are acting in the Security Auditor role. Emphasize container sandboxing "
+                "boundaries (--network none, read-only root, non-root user 1000:1000), "
+                "SHA-256 spec hash binding, secret redaction, and human authorization."
+            )
+        elif persona == "qa_lead":
+            persona_clause = (
+                " You are acting in the QA Lead role. Emphasize defect reproduction "
+                "on clean baseline code, verification on patched code, delta test execution, "
+                "zero regressions (new_failed_test_ids == 0), and regression test suites."
+            )
+        elif persona == "software_engineer":
+            persona_clause = (
+                " You are acting in the Software Engineer role. Emphasize AST symbol analysis, "
+                "caller/callee blast radius, minimal unified diffs, and idiomatic maintainability."
+            )
         system = (
             "You are RepoPilot Fix, a helpful and knowledgeable AI software engineering assistant. "
             "Answer the user's question clearly, accurately, and concisely. Provide helpful "
@@ -1565,7 +1651,7 @@ class CompatibleCloudProvider(Provider):
             "Do not invent or fabricate repository files, internal implementation details, "
             "or source citations for repositories. If asked about repository-specific files or "
             "code without provided source evidence, clearly state that you do not have indexed "
-            "repository source evidence for that question."
+            "repository source evidence for that question." + persona_clause
         )
         prior_turns = ""
         if history:
@@ -1583,7 +1669,30 @@ class CompatibleCloudProvider(Provider):
         answer = self._post_chat_completion(messages, temperature=0.2)
         return answer[:6000]
 
-    def answer_coding(self, question: str, history: list[dict[str, str]] | None = None) -> str:
+    def answer_coding(
+        self,
+        question: str,
+        history: list[dict[str, str]] | None = None,
+        persona: str | None = None,
+    ) -> str:
+        persona_clause = ""
+        if persona == "security_auditor":
+            persona_clause = (
+                " You are acting in the Security Auditor role. Emphasize container sandboxing "
+                "boundaries (--network none, read-only root, non-root user 1000:1000), "
+                "SHA-256 spec hash binding, secret redaction, and human authorization."
+            )
+        elif persona == "qa_lead":
+            persona_clause = (
+                " You are acting in the QA Lead role. Emphasize defect reproduction "
+                "on clean baseline code, verification on patched code, delta test execution, "
+                "zero regressions (new_failed_test_ids == 0), and regression test suites."
+            )
+        elif persona == "software_engineer":
+            persona_clause = (
+                " You are acting in the Software Engineer role. Emphasize AST symbol analysis, "
+                "caller/callee blast radius, minimal unified diffs, and idiomatic maintainability."
+            )
         system = (
             "You are RepoPilot Fix, an expert coding assistant and senior software engineer. "
             "Help the user understand code snippets, diagnose bugs, suggest improvements, write "
@@ -1596,7 +1705,7 @@ class CompatibleCloudProvider(Provider):
             "Do not invent or fabricate repository files, internal implementation details, "
             "or source citations for repositories. If asked about repository-specific files or "
             "code without provided source evidence, clearly state that you do not have indexed "
-            "repository source evidence for that question."
+            "repository source evidence for that question." + persona_clause
         )
         prior_turns = ""
         if history:
@@ -1809,12 +1918,8 @@ def recount_and_align_hunks(diff_text: str, file_content: str | None = None) -> 
             hunk_lines.append(lines[i])
             i += 1
 
-        actual_old = sum(
-            1 for item in hunk_lines if item.startswith((" ", "-")) or item == ""
-        )
-        actual_new = sum(
-            1 for item in hunk_lines if item.startswith((" ", "+")) or item == ""
-        )
+        actual_old = sum(1 for item in hunk_lines if item.startswith((" ", "-")) or item == "")
+        actual_new = sum(1 for item in hunk_lines if item.startswith((" ", "+")) or item == "")
 
         if file_lines is not None:
             old_content_items = [
@@ -1824,12 +1929,9 @@ def recount_and_align_hunks(diff_text: str, file_content: str | None = None) -> 
             ]
             if old_content_items:
                 curr_idx = max(0, old_start - 1)
-                matches_at_curr = (
-                    curr_idx + len(old_content_items) <= len(file_lines)
-                    and all(
-                        file_lines[curr_idx + k].strip() == item[1].strip()
-                        for k, item in enumerate(old_content_items)
-                    )
+                matches_at_curr = curr_idx + len(old_content_items) <= len(file_lines) and all(
+                    file_lines[curr_idx + k].strip() == item[1].strip()
+                    for k, item in enumerate(old_content_items)
                 )
                 matched = matches_at_curr
                 if not matches_at_curr:
@@ -2182,6 +2284,7 @@ def ask(
     question: str,
     provider: Provider | None = None,
     mode: str | None = None,
+    persona: str | None = None,
 ) -> ChatMessage:
     if not question.strip() or len(question) > MAX_QUESTION_CHARS:
         raise ValueError(f"Question must be 1–{MAX_QUESTION_CHARS} characters.")
@@ -2198,28 +2301,58 @@ def ask(
     citations = []
 
     if resolved_mode == ChatMode.GENERAL:
-        answer = effective_provider.answer_general(question, history)
+        answer = effective_provider.answer_general(question, history, persona=persona)
     elif resolved_mode == ChatMode.CODING:
-        answer = effective_provider.answer_coding(question, history)
+        answer = effective_provider.answer_coding(question, history, persona=persona)
     elif resolved_mode == ChatMode.VERIFIED_FIX:
         issue_match = re.search(r"#?(\d+)", question)
         issue_num_str = f" #{issue_match.group(1)}" if issue_match else ""
-        answer = (
-            f"### 🛡️ Verified Fix Agent — Issue Investigation\n\n"
-            f"I have detected a request to investigate GitHub Issue{issue_num_str}.\n\n"
-            f"RepoPilot Fix operates under our core evidence-first rule:\n"
-            f'> **"Don\'t just generate a fix. Prove what it fixes."**\n\n'
-            f"To safely investigate this issue:\n"
-            f"1. **Analyze Issue**: Use the **GitHub Issues** panel to select the issue and "
-            f"analyze relevant repository code.\n"
-            f"2. **Review Proposed Patch**: Inspect the deterministic unified diff.\n"
-            f"3. **Proof-of-Fix Verification**: Request verification in a secure Docker sandbox "
-            f"with explicit human approval.\n"
-            f"4. **Evidence Report**: Inspect dual sandbox execution metrics (Baseline vs Patched) "
-            f"to confirm the fix.\n\n"
-            f"*Patches are never applied or verified without explicit human approval and passing "
-            f"test evidence.*"
-        )
+        if persona == "security_auditor":
+            answer = (
+                f"### 🔒 Security Auditor — Verification Governance & Spec Hash Gating\n\n"
+                f"I have detected a request to evaluate GitHub Issue{issue_num_str} "
+                f"under Security Auditor governance.\n\n"
+                f"**Security & Compliance Invariants:**\n"
+                f"1. **Cryptographic Spec Hash Binding**: Every fix is sealed via "
+                f"$\\text{{SHA256}}(\\text{{Commit}} \\parallel \\text{{Diff}} \\parallel "
+                f"\\text{{Cmd}} \\parallel \\text{{Image}})$. No unapproved mutations execute.\n"
+                f"2. **Container Air-Gap Boundary**: Verification executes in Docker with strict "
+                f"`--network none`, `--read-only`, and non-root UID `1000:1000`.\n"
+                f"3. **Execution-Time Evidence**: The audit report records immutable execution "
+                f"evidence and rejects unsealed reports.\n\n"
+                f"*Patches are never verified without explicit human approval and sandboxing.*"
+            )
+        elif persona == "qa_lead":
+            answer = (
+                f"### 🧪 QA & Reliability Lead — Regression & Reproduction Verification\n\n"
+                f"I have detected a request to evaluate GitHub Issue{issue_num_str} "
+                f"under QA Lead verification.\n\n"
+                f"**QA & Reliability Invariants:**\n"
+                f"1. **Deterministic Baseline Reproduction**: Bug must fail reproducibly on clean "
+                f"baseline repository state before fix evaluation.\n"
+                f"2. **Zero Regressions (`new_failed_test_ids == 0`)**: Patched container must "
+                f"pass all existing tests without introducing new failures.\n"
+                f"3. **Delta Matrix Evidence**: Exit codes, test counts, and duration metrics "
+                f"must be validated before pull request export.\n\n"
+                f"*Verification reports enforce full before-and-after test suite delta validation.*"
+            )
+        else:
+            answer = (
+                f"### 🛡️ Verified Fix Agent — Issue Investigation\n\n"
+                f"I have detected a request to investigate GitHub Issue{issue_num_str}.\n\n"
+                f"RepoPilot Fix operates under our core evidence-first rule:\n"
+                f'> **"Don\'t just generate a fix. Prove what it fixes."**\n\n'
+                f"To safely investigate this issue:\n"
+                f"1. **Analyze Issue**: Use the **GitHub Issues** panel to select the issue and "
+                f"analyze relevant repository code.\n"
+                f"2. **Review Proposed Patch**: Inspect the deterministic unified diff.\n"
+                f"3. **Proof-of-Fix Verification**: Request verification in a secure Docker "
+                f"sandbox with explicit human approval.\n"
+                f"4. **Evidence Report**: Inspect dual sandbox execution metrics (Baseline vs "
+                f"Patched) to confirm the fix.\n\n"
+                f"*Patches are never applied or verified without explicit human approval and "
+                f"passing test evidence.*"
+            )
     else:
         # REPOSITORY mode: grounded retrieval and citation verification
         retrieval_query = _resolve_followup_query(question, history)

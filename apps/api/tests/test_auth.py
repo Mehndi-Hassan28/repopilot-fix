@@ -218,9 +218,12 @@ def test_csrf_requires_allowed_origin_and_session_token(test_session, monkeypatc
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
         context = AuthContext(user=user, session=session)
-        assert require_csrf(
-            request_for(method="POST", origin="http://localhost:3000", csrf=csrf), context
-        ) == context
+        assert (
+            require_csrf(
+                request_for(method="POST", origin="http://localhost:3000", csrf=csrf), context
+            )
+            == context
+        )
         with pytest.raises(HTTPException) as bad_token:
             require_csrf(
                 request_for(method="POST", origin="http://localhost:3000", csrf="wrong"),
@@ -234,9 +237,7 @@ def test_csrf_requires_allowed_origin_and_session_token(test_session, monkeypatc
     assert bad_token.value.status_code == bad_origin.value.status_code == 403
 
 
-def test_oauth_state_is_browser_bound_single_use_and_redirect_is_fixed(
-    test_session, monkeypatch
-):
+def test_oauth_state_is_browser_bound_single_use_and_redirect_is_fixed(test_session, monkeypatch):
     monkeypatch.setenv("GITHUB_CLIENT_ID", "client-id-test")
     monkeypatch.setenv("GITHUB_CLIENT_SECRET", "client-secret-test")
     monkeypatch.setenv(

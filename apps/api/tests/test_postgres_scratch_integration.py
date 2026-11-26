@@ -243,7 +243,9 @@ def pg_test_ctx(pg_session_factory):
                 db.execute(delete(IndexingJob).where(IndexingJob.id.in_(created_jobs)))
             if created_repos:
                 db.execute(
-                    delete(RepositoryAccess).where(RepositoryAccess.repository_id.in_(created_repos))
+                    delete(RepositoryAccess).where(
+                        RepositoryAccess.repository_id.in_(created_repos)
+                    )
                 )
                 db.execute(delete(Repository).where(Repository.id.in_(created_repos)))
             if created_users:
@@ -285,9 +287,9 @@ def test_pg_advisory_xact_lock_serialization(pg_session_factory):
         s1.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": lock_id})
         conn1_locked.set()
         conn2_proceed.wait()
-        assert (
-            conn2_result[0] is False
-        ), "Session 2 should NOT acquire advisory lock while held by 1"
+        assert conn2_result[0] is False, (
+            "Session 2 should NOT acquire advisory lock while held by 1"
+        )
         s1.commit()
 
     t2.join()
@@ -493,9 +495,7 @@ def test_pg_recovery_idempotency(pg_test_ctx):
 
         # Backdate lease to expired
         db.execute(
-            text(
-                "UPDATE verification_runs SET lease_expires_at = :past WHERE id = :id"
-            ),
+            text("UPDATE verification_runs SET lease_expires_at = :past WHERE id = :id"),
             {"past": datetime.now(UTC) - timedelta(seconds=15), "id": run_id},
         )
         db.commit()

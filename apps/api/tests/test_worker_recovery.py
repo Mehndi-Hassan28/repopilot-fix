@@ -233,16 +233,12 @@ def test_per_repo_concurrency_slot(test_session):
         VerificationJobManager.approve_verification(db, run2.id, user.id, auto_queue=True)
 
         # Claim 1 for repo
-        c1 = VerificationJobManager.claim_next_job(
-            db, worker_id="worker-1", max_repo_concurrent=1
-        )
+        c1 = VerificationJobManager.claim_next_job(db, worker_id="worker-1", max_repo_concurrent=1)
         assert c1 is not None
         assert c1.id == run1.id
 
         # Second job for same repo is held back
-        c2 = VerificationJobManager.claim_next_job(
-            db, worker_id="worker-2", max_repo_concurrent=1
-        )
+        c2 = VerificationJobManager.claim_next_job(db, worker_id="worker-2", max_repo_concurrent=1)
         assert c2 is None
 
 
@@ -414,9 +410,7 @@ async def test_cross_process_cancellation_fences_worker(test_session):
 
         payload = sample_create_payload()
         payload.auto_submit_approval = False
-        run, _ = VerificationJobManager.create_verification_request(
-            db, repo.id, user.id, payload
-        )
+        run, _ = VerificationJobManager.create_verification_request(db, repo.id, user.id, payload)
         VerificationJobManager.submit_for_approval(db, run.id, user.id)
         VerificationJobManager.approve_verification(db, run.id, user.id, auto_queue=True)
 
@@ -440,9 +434,7 @@ async def test_cross_process_cancellation_fences_worker(test_session):
         assert run_db.status == VerificationJobStatus.CANCELLED.value
 
         # No ProofReport should have been persisted for the cancelled job
-        report = db.scalar(
-            select(ProofReport).where(ProofReport.verification_run_id == run.id)
-        )
+        report = db.scalar(select(ProofReport).where(ProofReport.verification_run_id == run.id))
         assert report is None
 
 
@@ -534,8 +526,7 @@ def test_docker_runner_arguments_hardening():
     assert "--read-only" in args
     assert "--cap-drop" in args and args[args.index("--cap-drop") + 1] == "ALL"
     assert (
-        "--security-opt" in args
-        and args[args.index("--security-opt") + 1] == "no-new-privileges"
+        "--security-opt" in args and args[args.index("--security-opt") + 1] == "no-new-privileges"
     )
     assert "--memory" in args and args[args.index("--memory") + 1] == "256m"
     assert "--cpus" in args and args[args.index("--cpus") + 1] == "0.5"

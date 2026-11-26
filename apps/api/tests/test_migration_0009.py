@@ -10,12 +10,15 @@ Verifies:
 """
 
 import os
+from pathlib import Path
 from urllib.parse import urlparse
 
 import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
+
+ALEMBIC_INI_PATH = (Path(__file__).resolve().parents[1] / "alembic.ini").as_posix()
 
 
 def _get_scratch_url() -> str | None:
@@ -26,7 +29,9 @@ def _get_scratch_url() -> str | None:
                 raw_url = line.strip().split("=", 1)[1].strip("\"'")
                 break
     if not raw_url:
-        raw_url = "postgresql+psycopg://repopilot:hassansaladchef2028@localhost:5432/repopilot_scratch"
+        raw_url = (
+            "postgresql+psycopg://repopilot:hassansaladchef2028@localhost:5432/repopilot_scratch"
+        )
     try:
         parsed = urlparse(raw_url.replace("postgresql+psycopg://", "postgresql://"))
         db_name = parsed.path.lstrip("/")
@@ -60,7 +65,7 @@ def test_alembic_migration_0009_fresh_install():
 
     try:
         os.environ["DATABASE_URL"] = f"{SCRATCH_URL}?options=-csearch_path%3D{schema_name}"
-        cfg = Config("apps/api/alembic.ini")
+        cfg = Config(ALEMBIC_INI_PATH)
         command.upgrade(cfg, "head")
 
         with psycopg.connect(raw_conn_url) as conn:
@@ -98,7 +103,7 @@ def test_alembic_migration_0009_upgrade_from_0008_and_downgrade():
 
     try:
         os.environ["DATABASE_URL"] = f"{SCRATCH_URL}?options=-csearch_path%3D{schema_name}"
-        cfg = Config("apps/api/alembic.ini")
+        cfg = Config(ALEMBIC_INI_PATH)
 
         # 1. Upgrade to 0008
         command.upgrade(cfg, "0008_github_pull_requests")
@@ -185,7 +190,7 @@ def test_alembic_migration_0009_duplicate_detection_prevents_silent_data_loss():
 
     try:
         os.environ["DATABASE_URL"] = f"{SCRATCH_URL}?options=-csearch_path%3D{schema_name}"
-        cfg = Config("apps/api/alembic.ini")
+        cfg = Config(ALEMBIC_INI_PATH)
 
         # Upgrade to 0008
         command.upgrade(cfg, "0008_github_pull_requests")

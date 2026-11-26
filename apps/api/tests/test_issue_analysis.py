@@ -315,9 +315,7 @@ def test_issue_analysis_endpoint_handles_github_errors(test_session, monkeypatch
         monkeypatch.setattr(
             GitHubSource,
             "fetch_issue",
-            lambda self, o, r, n: (_ for _ in ()).throw(
-                RuntimeError("GitHub rate limit reached")
-            ),
+            lambda self, o, r, n: (_ for _ in ()).throw(RuntimeError("GitHub rate limit reached")),
         )
         with pytest.raises(HTTPException) as exc_429:
             main.analyze_issue(
@@ -377,40 +375,42 @@ def test_issue_analysis_cloud_provider_valid_response(test_session, monkeypatch)
     monkeypatch.setenv("CHAT_BASE_URL", "https://llm.example/v1")
     monkeypatch.setenv("CHAT_MODEL", "test-model")
 
-    model_output = json.dumps({
-        "summary": "Fix token validation in auth.py",
-        "root_cause_hypothesis": "Hypothesis: empty string is not handled correctly in auth.py.",
-        "relevant_files": [
-            {
-                "path": "src/auth.py",
-                "start_line": 1,
-                "end_line": 4,
-                "explanation": "Contains authenticate function",
-            }
-        ],
-        "proposed_fix": {
-            "explanation": "Add check for empty string in token validation.",
-            "patches": [
+    model_output = json.dumps(
+        {
+            "summary": "Fix token validation in auth.py",
+            "root_cause_hypothesis": "Hypothesis: empty string not handled in auth.py.",
+            "relevant_files": [
                 {
-                    "file_path": "src/auth.py",
-                    "explanation": "Update authenticate",
-                    "diff": (
-                        "--- a/src/auth.py\n"
-                        "+++ b/src/auth.py\n"
-                        "@@ -1,4 +1,4 @@\n"
-                        " def authenticate(token):\n"
-                        "-    if not token:\n"
-                        "+    if not token or token == '':\n"
-                        "         return False\n"
-                        "     return True\n"
-                    ),
+                    "path": "src/auth.py",
+                    "start_line": 1,
+                    "end_line": 4,
+                    "explanation": "Contains authenticate function",
                 }
             ],
-        },
-        "confidence": "high",
-        "confidence_reasoning": "Direct evidence supports root cause.",
-        "limitations": ["Requires running auth test suite."],
-    })
+            "proposed_fix": {
+                "explanation": "Add check for empty string in token validation.",
+                "patches": [
+                    {
+                        "file_path": "src/auth.py",
+                        "explanation": "Update authenticate",
+                        "diff": (
+                            "--- a/src/auth.py\n"
+                            "+++ b/src/auth.py\n"
+                            "@@ -1,4 +1,4 @@\n"
+                            " def authenticate(token):\n"
+                            "-    if not token:\n"
+                            "+    if not token or token == '':\n"
+                            "         return False\n"
+                            "     return True\n"
+                        ),
+                    }
+                ],
+            },
+            "confidence": "high",
+            "confidence_reasoning": "Direct evidence supports root cause.",
+            "limitations": ["Requires running auth test suite."],
+        }
+    )
 
     def fake_post(url, **kwargs):
         return httpx.Response(
@@ -531,31 +531,33 @@ def test_issue_analysis_prompt_injection_unknown_file_rejected(test_session, mon
     monkeypatch.setenv("CHAT_BASE_URL", "https://llm.example/v1")
     monkeypatch.setenv("CHAT_MODEL", "test-model")
 
-    injected_output = json.dumps({
-        "summary": "Attacker payload executed",
-        "root_cause_hypothesis": "Hypothesis: Read system files",
-        "relevant_files": [
-            {
-                "path": "/etc/passwd",
-                "start_line": 1,
-                "end_line": 2,
-                "explanation": "Malicious reference",
-            }
-        ],
-        "proposed_fix": {
-            "explanation": "Modify unauthorized file",
-            "patches": [
+    injected_output = json.dumps(
+        {
+            "summary": "Attacker payload executed",
+            "root_cause_hypothesis": "Hypothesis: Read system files",
+            "relevant_files": [
                 {
-                    "file_path": "/etc/passwd",
-                    "explanation": "Exfiltrate",
-                    "diff": "@@ -1,1 +1,1 @@\n-root\n+root",
+                    "path": "/etc/passwd",
+                    "start_line": 1,
+                    "end_line": 2,
+                    "explanation": "Malicious reference",
                 }
             ],
-        },
-        "confidence": "high",
-        "confidence_reasoning": "Injection succeeded",
-        "limitations": [],
-    })
+            "proposed_fix": {
+                "explanation": "Modify unauthorized file",
+                "patches": [
+                    {
+                        "file_path": "/etc/passwd",
+                        "explanation": "Exfiltrate",
+                        "diff": "@@ -1,1 +1,1 @@\n-root\n+root",
+                    }
+                ],
+            },
+            "confidence": "high",
+            "confidence_reasoning": "Injection succeeded",
+            "limitations": [],
+        }
+    )
 
     monkeypatch.setattr(
         "repopilot_api.chat.httpx.post",
@@ -643,31 +645,33 @@ def test_issue_analysis_rejects_malformed_patch_syntax(test_session, monkeypatch
     monkeypatch.setenv("CHAT_BASE_URL", "https://llm.example/v1")
     monkeypatch.setenv("CHAT_MODEL", "test-model")
 
-    bad_patch_output = json.dumps({
-        "summary": "Fix authenticate bug",
-        "root_cause_hypothesis": "Hypothesis: Bug in authenticate",
-        "relevant_files": [
-            {
-                "path": "src/auth.py",
-                "start_line": 1,
-                "end_line": 4,
-                "explanation": "Auth file",
-            }
-        ],
-        "proposed_fix": {
-            "explanation": "Update code",
-            "patches": [
+    bad_patch_output = json.dumps(
+        {
+            "summary": "Fix authenticate bug",
+            "root_cause_hypothesis": "Hypothesis: Bug in authenticate",
+            "relevant_files": [
                 {
-                    "file_path": "src/auth.py",
-                    "explanation": "Broken diff",
-                    "diff": "Just replace line 2 with something else",
+                    "path": "src/auth.py",
+                    "start_line": 1,
+                    "end_line": 4,
+                    "explanation": "Auth file",
                 }
             ],
-        },
-        "confidence": "medium",
-        "confidence_reasoning": "Reason",
-        "limitations": [],
-    })
+            "proposed_fix": {
+                "explanation": "Update code",
+                "patches": [
+                    {
+                        "file_path": "src/auth.py",
+                        "explanation": "Broken diff",
+                        "diff": "Just replace line 2 with something else",
+                    }
+                ],
+            },
+            "confidence": "medium",
+            "confidence_reasoning": "Reason",
+            "limitations": [],
+        }
+    )
 
     monkeypatch.setattr(
         "repopilot_api.chat.httpx.post",

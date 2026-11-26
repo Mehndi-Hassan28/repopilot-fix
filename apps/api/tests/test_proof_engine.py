@@ -897,8 +897,7 @@ def test_output_parser_zero_tests_discovered():
 
     # pytest with 0 items
     stdout_pytest = (
-        "collected 0 items\n\n"
-        "==================== no tests ran in 0.01s ====================\n"
+        "collected 0 items\n\n==================== no tests ran in 0.01s ====================\n"
     )
     metrics_p = TestOutputParser.parse(stdout_pytest, "", exit_code=0)
     assert metrics_p.total == 0

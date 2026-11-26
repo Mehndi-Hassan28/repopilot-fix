@@ -161,10 +161,10 @@ QUALITY_CASES = [
         {"apps/api/tests/test_repositories.py"},
     ),
     ("How are verified chat citations tested?", {"apps/api/tests/test_chat.py"}),
-        (
-            "Where are OAuth callback state tokens validated?",
-            {"apps/api/src/repopilot_api/oauth.py"},
-        ),
+    (
+        "Where are OAuth callback state tokens validated?",
+        {"apps/api/src/repopilot_api/oauth.py"},
+    ),
     ("Where does the app calculate cosine similarity for embeddings?", None),
     ("Which function creates and verifies JWT access tokens?", None),
     ("Where is the Redis background task queue configured?", None),

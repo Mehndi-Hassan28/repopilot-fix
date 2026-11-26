@@ -210,9 +210,7 @@ class GitHubSource:
                 "html_url", f"https://github.com/{owner}/{repo}/issues/{issue_number}"
             ),
             "author": (
-                data.get("user", {}).get("login", "")
-                if isinstance(data.get("user"), dict)
-                else ""
+                data.get("user", {}).get("login", "") if isinstance(data.get("user"), dict) else ""
             ),
             "labels": [
                 label["name"]

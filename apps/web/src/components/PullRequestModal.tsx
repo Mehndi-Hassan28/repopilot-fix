@@ -1,8 +1,9 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useState } from "react";
 import { ProofEvidence, ProofReportRead, VerificationRunRead } from "../lib/verification-types";
 import { createPullRequest } from "../lib/verification-api";
+import { useFocusTrap } from "../lib/useFocusTrap";
 
 interface PullRequestModalProps {
   isOpen: boolean;
@@ -34,16 +35,13 @@ export function PullRequestModal({
   const [error, setError] = useState<string | null>(null);
   const [successPr, setSuccessPr] = useState<{ url: string; number: number } | null>(null);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !isSubmitting) {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, isSubmitting, onClose]);
+  const modalRef = useFocusTrap({
+    isOpen,
+    onClose: () => {
+      if (!isSubmitting) onClose();
+    },
+    closeOnEscape: !isSubmitting,
+  });
 
   if (!isOpen) return null;
 
@@ -94,7 +92,10 @@ export function PullRequestModal({
       aria-labelledby="pr-modal-title"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
     >
-      <div className="relative w-full max-w-xl rounded-2xl border border-white/10 bg-[#0d1218] p-6 shadow-2xl flex flex-col">
+      <div
+        ref={modalRef}
+        className="relative w-full max-w-xl rounded-2xl border border-white/10 bg-[#0d1218] p-6 shadow-2xl flex flex-col"
+      >
         {/* Header */}
         <div className="flex items-start justify-between border-b border-white/10 pb-4">
           <div>

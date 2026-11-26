@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { Repository, IndexStatus, WorkspaceView, AuthUser } from "../lib/types";
+import { Repository, IndexStatus, WorkspaceView, AuthUser, PersonaType } from "../lib/types";
 import { countReadyIndexes, getIndexStatusBadge, isIndexActive } from "../lib/index-status";
 import { GithubIcon, PlusIcon } from "./Icons";
 
@@ -17,6 +17,8 @@ interface DashboardOverviewProps {
   onReindex: (repoId: number) => void;
   indexingId: number | null;
   onSignIn: () => void;
+  activePersona?: PersonaType;
+  onSelectPersona?: (persona: PersonaType) => void;
 }
 
 export function DashboardOverview({
@@ -31,6 +33,8 @@ export function DashboardOverview({
   onReindex,
   indexingId,
   onSignIn,
+  activePersona = "software_engineer",
+  onSelectPersona,
 }: DashboardOverviewProps) {
   const [importUrl, setImportUrl] = useState("");
   const [importing, setImporting] = useState(false);
@@ -453,16 +457,27 @@ export function DashboardOverview({
             </h3>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="rounded-xl border border-white/5 bg-[#0a0d12] p-4 space-y-2">
+            <div
+              className={`rounded-xl border p-4 space-y-2 transition-all ${
+                activePersona === "software_engineer"
+                  ? "border-lime-500/40 bg-lime-950/10 shadow-sm"
+                  : "border-white/5 bg-[#0a0d12]"
+              }`}
+            >
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-white font-mono">Software Engineer</span>
-                <span className="rounded bg-lime-500/10 text-[#BFFF00] border border-lime-500/20 px-1.5 py-0.5 text-[9px] font-mono">Fixer</span>
+                <span className="rounded bg-lime-500/10 text-[#BFFF00] border border-lime-500/20 px-1.5 py-0.5 text-[9px] font-mono">
+                  Fixer
+                </span>
               </div>
               <p className="text-[11px] text-zinc-400 leading-relaxed font-sans">
                 Inspect AST blast radius, review candidate unified diffs, and generate verifiable bug repairs backed by line-grounded evidence.
               </p>
               <button
-                onClick={() => onSelectView("demo")}
+                onClick={() => {
+                  onSelectPersona?.("software_engineer");
+                  onSelectView("demo");
+                }}
                 className="text-[11px] text-[#BFFF00] hover:underline font-mono inline-flex items-center gap-1 pt-1"
               >
                 <span>Launch Engineer Walkthrough</span>
@@ -470,16 +485,27 @@ export function DashboardOverview({
               </button>
             </div>
 
-            <div className="rounded-xl border border-white/5 bg-[#0a0d12] p-4 space-y-2">
+            <div
+              className={`rounded-xl border p-4 space-y-2 transition-all ${
+                activePersona === "security_auditor"
+                  ? "border-cyan-500/40 bg-cyan-950/10 shadow-sm"
+                  : "border-white/5 bg-[#0a0d12]"
+              }`}
+            >
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-white font-mono">Security Auditor</span>
-                <span className="rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 px-1.5 py-0.5 text-[9px] font-mono">Governance</span>
+                <span className="rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 px-1.5 py-0.5 text-[9px] font-mono">
+                  Governance
+                </span>
               </div>
               <p className="text-[11px] text-zinc-400 leading-relaxed font-sans">
                 Verify air-gapped dual containers (<code className="text-cyan-300 text-[10px]">--network none</code>, read-only, non-root), SHA-256 spec hashes, and cryptographic human authorization gates.
               </p>
               <button
-                onClick={() => onSelectView("verification")}
+                onClick={() => {
+                  onSelectPersona?.("security_auditor");
+                  onSelectView("verification");
+                }}
                 className="text-[11px] text-cyan-300 hover:underline font-mono inline-flex items-center gap-1 pt-1"
               >
                 <span>Inspect Audit Trail & Sandbox</span>
@@ -487,16 +513,27 @@ export function DashboardOverview({
               </button>
             </div>
 
-            <div className="rounded-xl border border-white/5 bg-[#0a0d12] p-4 space-y-2">
+            <div
+              className={`rounded-xl border p-4 space-y-2 transition-all ${
+                activePersona === "qa_lead"
+                  ? "border-purple-500/40 bg-purple-950/10 shadow-sm"
+                  : "border-white/5 bg-[#0a0d12]"
+              }`}
+            >
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-white font-mono">QA & Release Lead</span>
-                <span className="rounded bg-purple-500/10 text-purple-300 border border-purple-500/20 px-1.5 py-0.5 text-[9px] font-mono">Verification</span>
+                <span className="rounded bg-purple-500/10 text-purple-300 border border-purple-500/20 px-1.5 py-0.5 text-[9px] font-mono">
+                  Verification
+                </span>
               </div>
               <p className="text-[11px] text-zinc-400 leading-relaxed font-sans">
                 Validate delta test reproduction, require zero new regression failures, export signed patch files, and gate automated PR creation.
               </p>
               <button
-                onClick={() => onSelectView("issues")}
+                onClick={() => {
+                  onSelectPersona?.("qa_lead");
+                  onSelectView("issues");
+                }}
                 className="text-[11px] text-purple-300 hover:underline font-mono inline-flex items-center gap-1 pt-1"
               >
                 <span>Explore Regression Suites</span>

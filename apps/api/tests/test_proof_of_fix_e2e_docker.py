@@ -85,9 +85,7 @@ _has_docker, _docker_reason = _docker_is_available()
 # ==============================================================================
 
 
-def create_user_and_repo(
-    db, owner="repopilot", name="demo-repo", commit_sha=SAMPLE_COMMIT_SHA
-):
+def create_user_and_repo(db, owner="repopilot", name="demo-repo", commit_sha=SAMPLE_COMMIT_SHA):
     """Seed authenticated user, repository, and completed indexing job with demo fixture files."""
     user = User()
     db.add(user)
@@ -575,8 +573,7 @@ async def test_complete_end_to_end_workflow_integration(test_session, tmp_path):
             # Baseline fails
             (
                 1,
-                "FAIL: test_power_positive\n"
-                "AssertionError: 6 != 8\nFAILED (failures=1)\n",
+                "FAIL: test_power_positive\nAssertionError: 6 != 8\nFAILED (failures=1)\n",
                 "",
             ),
             # Patched succeeds
@@ -633,9 +630,7 @@ async def test_complete_end_to_end_workflow_integration(test_session, tmp_path):
 
     # Verify PR record saved in database
     db_pr = db.scalar(
-        select(GitHubPullRequest).where(
-            GitHubPullRequest.verification_run_id == approved_run.id
-        )
+        select(GitHubPullRequest).where(GitHubPullRequest.verification_run_id == approved_run.id)
     )
     assert db_pr is not None
     assert db_pr.pr_number == 101

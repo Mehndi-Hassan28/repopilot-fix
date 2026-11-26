@@ -221,9 +221,7 @@ def get_verification(
     """Get status and details of a specific verification run."""
     _require_repository_access(db, repository_id, auth.user.id)
     run = _get_run_or_404(db, repository_id, verification_id)
-    report = db.scalar(
-        select(ProofReport).where(ProofReport.verification_run_id == run.id)
-    )
+    report = db.scalar(select(ProofReport).where(ProofReport.verification_run_id == run.id))
     return _run_to_read(run, report)
 
 
@@ -441,9 +439,7 @@ async def execute_verification(
     _get_run_or_404(db, repository_id, verification_id)
 
     try:
-        result = await VerificationJobManager.execute_job(
-            db, verification_id, user_id=auth.user.id
-        )
+        result = await VerificationJobManager.execute_job(db, verification_id, user_id=auth.user.id)
         return result
     except VerificationSpecificationMismatchError as spec_err:
         raise HTTPException(status.HTTP_409_CONFLICT, str(spec_err)) from spec_err
@@ -482,9 +478,6 @@ def get_verification_report(
         ev_dict = json.loads(report.evidence_json)
     except Exception:
         ev_dict = {}
-
-    if run.approved_spec_hash and not ev_dict.get("approved_spec_hash"):
-        ev_dict["approved_spec_hash"] = run.approved_spec_hash
 
     return ProofReportRead(
         id=report.id,

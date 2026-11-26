@@ -12,9 +12,11 @@ import {
   AuthUser,
   OpenTab,
   FileContentResponse,
+  PersonaType,
 } from "../lib/types";
 import { isIndexCompleted, isIndexActive, isIndexFailed } from "../lib/index-status";
 import { apiRequest, getApiUrl } from "../lib/api";
+import { useFocusTrap } from "../lib/useFocusTrap";
 import { ToastProvider, useToast } from "../components/Toast";
 import { CommandPalette } from "../components/CommandPalette";
 import { NavigationRail } from "../components/NavigationRail";
@@ -58,22 +60,22 @@ function MainWorkspace() {
   const [isExplorerCollapsed, setIsExplorerCollapsed] = useState(false);
   const [isChatCollapsed, setIsChatCollapsed] = useState(false);
   const [isBottomExpanded, setIsBottomExpanded] = useState(false);
+  const [activePersona, setActivePersona] = useState<PersonaType>("software_engineer");
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [modalImportUrl, setModalImportUrl] = useState("");
   const [modalImporting, setModalImporting] = useState(false);
   const [modalImportError, setModalImportError] = useState("");
 
-  useEffect(() => {
-    if (!isImportModalOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !modalImporting) {
+  const importModalRef = useFocusTrap({
+    isOpen: isImportModalOpen,
+    onClose: () => {
+      if (!modalImporting) {
         setIsImportModalOpen(false);
         setModalImportError("");
       }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isImportModalOpen, modalImporting]);
+    },
+    closeOnEscape: !modalImporting,
+  });
 
   // Files & Code Viewer State
   const [indexedFiles, setIndexedFiles] = useState<IndexedFileItem[]>([]);
@@ -517,7 +519,11 @@ function MainWorkspace() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: text, mode: modeToUse === "auto" ? null : modeToUse }),
+          body: JSON.stringify({
+            question: text,
+            mode: modeToUse === "auto" ? null : modeToUse,
+            persona: activePersona,
+          }),
         },
         csrfToken.current
       );
@@ -636,6 +642,8 @@ function MainWorkspace() {
             currentUser={currentUser}
             activeRepoName={activeRepo?.full_name}
             backendStatus={backendStatus}
+            activePersona={activePersona}
+            onSelectPersona={setActivePersona}
             onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
             onOpenImportModal={() => setIsImportModalOpen(true)}
             isAiPanelOpen={!isChatCollapsed}
@@ -672,6 +680,8 @@ function MainWorkspace() {
                   repositories={repositories}
                   indexes={indexes}
                   loading={loadingRepos}
+                  activePersona={activePersona}
+                  onSelectPersona={setActivePersona}
                   onRefresh={() => void loadRepositories()}
                   onImportRepo={handleImportRepo}
                   onSelectRepo={(r) => {
@@ -815,6 +825,8 @@ function MainWorkspace() {
           onNewSession={handleNewSession}
           onDeleteSession={handleDeleteSession}
           onClearSessionHistory={handleClearSessionHistory}
+          activePersona={activePersona}
+          onSelectPersona={setActivePersona}
           chatMode={chatMode}
           onChangeMode={setChatMode}
           chatBusy={chatBusy}
@@ -867,7 +879,10 @@ function MainWorkspace() {
           aria-labelledby="import-modal-title"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
         >
-          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0e1117] p-6 shadow-2xl space-y-4">
+          <div
+            ref={importModalRef}
+            className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0e1117] p-6 shadow-2xl space-y-4"
+          >
             <div className="flex items-center justify-between">
               <h3 id="import-modal-title" className="text-sm font-semibold text-zinc-100">
                 Import Public GitHub Repository

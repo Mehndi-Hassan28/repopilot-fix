@@ -140,6 +140,7 @@ class WorkerLoop:
             try:
                 loop = asyncio.get_running_loop()
                 from repopilot_api.verification_service import signal_cancellation
+
                 loop.create_task(signal_cancellation(job_to_cancel))
             except RuntimeError:
                 pass
@@ -356,9 +357,7 @@ class WorkerLoop:
                 )
                 return None
 
-            indexed = db.scalars(
-                select(IndexedFile).where(IndexedFile.job_id == job.id)
-            ).all()
+            indexed = db.scalars(select(IndexedFile).where(IndexedFile.job_id == job.id)).all()
             if not indexed:
                 self._fail_security(
                     db,
@@ -738,9 +737,7 @@ class WorkerLoop:
                         # Targeted run was not available/claimable; terminate loop
                         break
                     try:
-                        await asyncio.wait_for(
-                            self._stop_event.wait(), timeout=self.poll_interval
-                        )
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=self.poll_interval)
                     except TimeoutError:
                         pass
         finally:
@@ -756,9 +753,7 @@ class WorkerLoop:
 
 def main():
     """Standalone CLI entrypoint for RepoPilot verification worker."""
-    parser = argparse.ArgumentParser(
-        description="RepoPilot Fix — Asynchronous Verification Worker"
-    )
+    parser = argparse.ArgumentParser(description="RepoPilot Fix — Asynchronous Verification Worker")
     parser.add_argument(
         "--poll-interval",
         type=float,
@@ -839,9 +834,7 @@ def main():
         if args.once:
             loop.run_until_complete(worker.run_once(target_run_id=args.run_id))
         else:
-            loop.run_until_complete(
-                worker.run(max_jobs=args.max_jobs, target_run_id=args.run_id)
-            )
+            loop.run_until_complete(worker.run(max_jobs=args.max_jobs, target_run_id=args.run_id))
     finally:
         loop.close()
 

@@ -91,6 +91,52 @@ export type AuthUser = {
   is_guest?: boolean;
 };
 
+export type PersonaType = "software_engineer" | "security_auditor" | "qa_lead";
+
+export type PersonaMetadata = {
+  id: PersonaType;
+  label: string;
+  badge: string;
+  role: string;
+  description: string;
+  accentColor: string;
+  borderColor: string;
+  bgColor: string;
+};
+
+export const PERSONAS: Record<PersonaType, PersonaMetadata> = {
+  software_engineer: {
+    id: "software_engineer",
+    label: "Software Engineer",
+    badge: "Fixer",
+    role: "Diagnosis & Code Repair",
+    description: "Inspect AST blast radius, review candidate unified diffs, and generate line-grounded fixes.",
+    accentColor: "#BFFF00",
+    borderColor: "border-lime-500/30",
+    bgColor: "bg-lime-500/10",
+  },
+  security_auditor: {
+    id: "security_auditor",
+    label: "Security Auditor",
+    badge: "Governance",
+    role: "Sandboxing & Cryptographic Gating",
+    description: "Verify air-gapped dual containers (--network none, read-only, non-root), SHA-256 spec hashes, and human gating.",
+    accentColor: "#00F0FF",
+    borderColor: "border-cyan-500/30",
+    bgColor: "bg-cyan-500/10",
+  },
+  qa_lead: {
+    id: "qa_lead",
+    label: "QA & Reliability Lead",
+    badge: "Verification",
+    role: "Delta Matrix & Reproduction",
+    description: "Validate delta test reproduction, require zero new regressions, and gate automated PR creation.",
+    accentColor: "#C084FC",
+    borderColor: "border-purple-500/30",
+    bgColor: "bg-purple-500/10",
+  },
+};
+
 export type FileCitation = {
   path: string;
   start_line: number;

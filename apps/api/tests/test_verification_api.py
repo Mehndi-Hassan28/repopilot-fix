@@ -162,16 +162,12 @@ def test_cross_user_repository_access_denied(test_session):
 
         resp = Response()
         # Owner succeeds
-        run_read = create_verification(
-            repo.id, sample_create_payload(), resp, None, db, owner_auth
-        )
+        run_read = create_verification(repo.id, sample_create_payload(), resp, None, db, owner_auth)
         assert run_read.id is not None
 
         # Stranger is denied with 404 (server-side authorization protection)
         with pytest.raises(HTTPException) as exc:
-            create_verification(
-                repo.id, sample_create_payload(), resp, None, db, stranger_auth
-            )
+            create_verification(repo.id, sample_create_payload(), resp, None, db, stranger_auth)
         assert exc.value.status_code == 404
 
         with pytest.raises(HTTPException) as exc:
@@ -197,9 +193,7 @@ def test_unauthorized_approval_denied(test_session):
 
         stranger_auth = make_auth(stranger)
         with pytest.raises(HTTPException) as exc:
-            approve_verification(
-                repo.id, run.id, VerificationApprovalRequest(), db, stranger_auth
-            )
+            approve_verification(repo.id, run.id, VerificationApprovalRequest(), db, stranger_auth)
         assert exc.value.status_code == 404
 
 
@@ -274,9 +268,7 @@ def test_tampered_specification_blocked_before_execution(test_session):
         with pytest.raises(VerificationSpecificationMismatchError):
             import asyncio
 
-            asyncio.run(
-                VerificationJobManager.execute_job(db, run.id, runner=MockSandboxRunner())
-            )
+            asyncio.run(VerificationJobManager.execute_job(db, run.id, runner=MockSandboxRunner()))
 
         db.refresh(run)
         assert run.status == VerificationJobStatus.FAILED.value
@@ -322,9 +314,7 @@ def test_idempotent_duplicate_submission(test_session):
         assert first.spec_hash == second.spec_hash
 
         total_runs = (
-            db.query(VerificationRun)
-            .filter(VerificationRun.repository_id == repo.id)
-            .count()
+            db.query(VerificationRun).filter(VerificationRun.repository_id == repo.id).count()
         )
         assert total_runs == 1
 
@@ -419,9 +409,7 @@ def test_cannot_execute_unapproved_verification(test_session):
         with pytest.raises(VerificationStateError):
             import asyncio
 
-            asyncio.run(
-                VerificationJobManager.execute_job(db, run.id, runner=MockSandboxRunner())
-            )
+            asyncio.run(VerificationJobManager.execute_job(db, run.id, runner=MockSandboxRunner()))
 
 
 # ==============================================================================
@@ -689,8 +677,13 @@ def test_rate_limiter_blocks_excessive_traffic():
     assert check_rate_limit(key, max_requests=5, window_seconds=10) is False
 
 
-def test_get_report_backfills_approved_spec_hash_when_missing_in_evidence(test_session):
-    """Regression test: /report endpoint ensures approved_spec_hash is populated from run."""
+def test_get_report_preserves_evidence_immutability_without_unsafe_backfill(test_session):
+    """Regression test: /report preserves evidence immutability and rejects unsealed PRs."""
+    from repopilot_api.github_pr_service import (
+        GitHubPullRequestService,
+        GitHubVerificationPrerequisiteError,
+    )
+
     with test_session() as db:
         user = make_user(db)
         repo = make_repo(db)
@@ -705,7 +698,7 @@ def test_get_report_backfills_approved_spec_hash_when_missing_in_evidence(test_s
         spec = run_appr.approved_spec_hash
         assert spec is not None
 
-        # Simulate legacy report with evidence lacking approved_spec_hash
+        # Simulate unsealed legacy report with evidence lacking approved_spec_hash
         report = ProofReport(
             verification_run_id=run.id,
             verdict="verified_fix",
@@ -714,10 +707,29 @@ def test_get_report_backfills_approved_spec_hash_when_missing_in_evidence(test_s
             baseline_summary="Failed",
             patched_summary="Passed",
             confidence="high",
-            evidence_json=json.dumps({"commit_sha": run.commit_sha, "patch_hash": "abc"}),
+            evidence_json=json.dumps({"commit_sha": run.commit_sha, "patch_hash": run.patch_hash}),
         )
         db.add(report)
         db.commit()
 
+        # 1. Verification report must preserve evidence immutability (no unsafe backfill)
         read_report = get_verification_report(repo.id, run.id, db, auth)
-        assert read_report.evidence.get("approved_spec_hash") == spec
+        assert read_report.evidence.get("approved_spec_hash") is None
+
+        # 2. PR creation strictly blocks mismatched evidence spec hash
+        db_run = db.get(VerificationRun, run.id)
+        db_run.status = VerificationJobStatus.COMPLETED.value
+        db_report = db.scalars(
+            select(ProofReport).where(ProofReport.verification_run_id == run.id)
+        ).one()
+        db_report.evidence_json = json.dumps(
+            {
+                "commit_sha": run.commit_sha,
+                "patch_hash": run.patch_hash,
+                "approved_spec_hash": "tampered_hash_value",
+            }
+        )
+        db.commit()
+        with pytest.raises(GitHubVerificationPrerequisiteError) as exc:
+            GitHubPullRequestService._validate_run_for_pr(db, repo.id, run.id)
+        assert "report approved specification hash does not match" in str(exc.value)

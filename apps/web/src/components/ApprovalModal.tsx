@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { VerificationRunRead } from "../lib/verification-types";
+import { useFocusTrap } from "../lib/useFocusTrap";
 
 interface ApprovalModalProps {
   run: VerificationRunRead;
@@ -26,16 +27,13 @@ export function ApprovalModal({
   const [rejectionReason, setRejectionReason] = useState("");
   const [isRejecting, setIsRejecting] = useState(false);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !isSubmitting) {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, isSubmitting, onClose]);
+  const modalRef = useFocusTrap({
+    isOpen,
+    onClose: () => {
+      if (!isSubmitting) onClose();
+    },
+    closeOnEscape: !isSubmitting,
+  });
 
   if (!isOpen) return null;
 
@@ -46,7 +44,10 @@ export function ApprovalModal({
       aria-labelledby="approval-modal-title"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm animate-in fade-in duration-200"
     >
-      <div className="relative w-full max-w-2xl rounded-2xl border border-[var(--line)] bg-[#0d141b] p-6 shadow-2xl">
+      <div
+        ref={modalRef}
+        className="relative w-full max-w-2xl rounded-2xl border border-[var(--line)] bg-[#0d141b] p-6 shadow-2xl"
+      >
         <div className="flex items-start justify-between border-b border-[var(--line)] pb-4">
           <div>
             <span className="text-xs font-semibold uppercase tracking-wider text-amber-400">

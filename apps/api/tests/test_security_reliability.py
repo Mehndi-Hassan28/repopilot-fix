@@ -137,7 +137,8 @@ def make_verification_run(
         spec_hash=spec_hash,
         approved_spec_hash=(
             spec_hash
-            if status in (
+            if status
+            in (
                 VerificationJobStatus.APPROVED.value,
                 VerificationJobStatus.COMPLETED.value,
             )
@@ -145,7 +146,8 @@ def make_verification_run(
         ),
         approved_by_user_id=(
             user.id
-            if status in (
+            if status
+            in (
                 VerificationJobStatus.APPROVED.value,
                 VerificationJobStatus.COMPLETED.value,
             )
@@ -494,9 +496,7 @@ def test_cloud_error_sanitization_removes_tokens():
         400,
         request=req,
         json={
-            "error": {
-                "message": "Invalid key: AIzaSyA123456789 and ghp_abcdefghijklmnopqrstuvwxyz"
-            }
+            "error": {"message": "Invalid key: AIzaSyA123456789 and ghp_abcdefghijklmnopqrstuvwxyz"}
         },
     )
     mock_exc = httpx.HTTPStatusError("Bad request", request=req, response=resp)

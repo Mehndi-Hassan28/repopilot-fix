@@ -232,8 +232,7 @@ SHOP_INVENTORY_SOURCE = (
 )
 
 SHOP_SHIPPING_SOURCE = (
-    "def calculate_shipping(weight_kg: float) -> float:\n"
-    "    return max(5.0, weight_kg * 2.5)\n"
+    "def calculate_shipping(weight_kg: float) -> float:\n    return max(5.0, weight_kg * 2.5)\n"
 )
 
 TEST_SHOP_PRICING_SOURCE = (

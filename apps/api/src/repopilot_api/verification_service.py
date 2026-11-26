@@ -208,7 +208,8 @@ def check_rate_limit(key: str, max_requests: int = 15, window_seconds: int = 60)
     # Evict expired keys if bucket dictionary exceeds threshold
     if len(_RATE_LIMIT_BUCKETS) > _MAX_RATE_LIMIT_KEYS:
         expired_keys = [
-            k for k, timestamps in _RATE_LIMIT_BUCKETS.items()
+            k
+            for k, timestamps in _RATE_LIMIT_BUCKETS.items()
             if not timestamps or timestamps[-1] <= cutoff
         ]
         for k in expired_keys:
@@ -338,9 +339,7 @@ class VerificationJobManager:
 
         # Extract patch proposals and compute cryptographic patch hash
         patches = (
-            payload.patches.patches
-            if isinstance(payload.patches, ProposedFix)
-            else payload.patches
+            payload.patches.patches if isinstance(payload.patches, ProposedFix) else payload.patches
         )
         patch_hash, combined_diff = compute_patch_hash(patches)
         patches_json = json.dumps([p.model_dump() for p in patches])
@@ -656,9 +655,7 @@ class VerificationJobManager:
             else MAX_GLOBAL_CONCURRENT_JOBS
         )
         max_repo = (
-            max_repo_concurrent
-            if max_repo_concurrent is not None
-            else MAX_REPO_CONCURRENT_JOBS
+            max_repo_concurrent if max_repo_concurrent is not None else MAX_REPO_CONCURRENT_JOBS
         )
         now = datetime.now(UTC)
 
@@ -685,8 +682,7 @@ class VerificationJobManager:
             ),
         )
         global_active = (
-            db.scalar(select(func.count(VerificationRun.id)).where(*active_running_filter))
-            or 0
+            db.scalar(select(func.count(VerificationRun.id)).where(*active_running_filter)) or 0
         )
         if global_active >= max_global:
             return None
@@ -707,9 +703,7 @@ class VerificationJobManager:
             filters.append(VerificationRun.id == target_run_id)
 
         query = (
-            select(VerificationRun.id)
-            .where(*filters)
-            .order_by(VerificationRun.created_at.asc())
+            select(VerificationRun.id).where(*filters).order_by(VerificationRun.created_at.asc())
         )
         if dialect_name == "postgresql":
             query = query.with_for_update(skip_locked=True)
@@ -957,23 +951,26 @@ class VerificationJobManager:
             )
 
         # Guard: Concurrency check
-        repo_running = db.scalar(
-            select(func.count(VerificationRun.id)).where(
-                VerificationRun.repository_id == run.repository_id,
-                VerificationRun.status == VerificationJobStatus.RUNNING.value,
-                VerificationRun.id != run.id,
+        repo_running = (
+            db.scalar(
+                select(func.count(VerificationRun.id)).where(
+                    VerificationRun.repository_id == run.repository_id,
+                    VerificationRun.status == VerificationJobStatus.RUNNING.value,
+                    VerificationRun.id != run.id,
+                )
             )
-        ) or 0
-        global_running = db.scalar(
-            select(func.count(VerificationRun.id)).where(
-                VerificationRun.status == VerificationJobStatus.RUNNING.value,
-                VerificationRun.id != run.id,
+            or 0
+        )
+        global_running = (
+            db.scalar(
+                select(func.count(VerificationRun.id)).where(
+                    VerificationRun.status == VerificationJobStatus.RUNNING.value,
+                    VerificationRun.id != run.id,
+                )
             )
-        ) or 0
-        if (
-            repo_running >= MAX_REPO_CONCURRENT_JOBS
-            or global_running >= MAX_GLOBAL_CONCURRENT_JOBS
-        ):
+            or 0
+        )
+        if repo_running >= MAX_REPO_CONCURRENT_JOBS or global_running >= MAX_GLOBAL_CONCURRENT_JOBS:
             run.status = VerificationJobStatus.QUEUED.value
             db.commit()
             raise VerificationConcurrencyError(
@@ -1013,9 +1010,7 @@ class VerificationJobManager:
         from repopilot_api.fixture_registry import ExecutionPolicyGuard, TrustedFixtureRegistry
 
         active_registry = (
-            fixture_registry
-            if isinstance(fixture_registry, TrustedFixtureRegistry)
-            else None
+            fixture_registry if isinstance(fixture_registry, TrustedFixtureRegistry) else None
         )
         ExecutionPolicyGuard.validate_all(
             db=db,

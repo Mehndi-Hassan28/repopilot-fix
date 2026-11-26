@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { VerificationRunRead } from "../lib/verification-types";
 import { exportPatch } from "../lib/verification-api";
+import { useFocusTrap } from "../lib/useFocusTrap";
 
 interface PatchExportModalProps {
   isOpen: boolean;
@@ -37,16 +38,13 @@ export function PatchExportModal({ isOpen, onClose, run }: PatchExportModalProps
       });
   }, [isOpen, run.repository_id, run.id]);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !loading) {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, loading, onClose]);
+  const modalRef = useFocusTrap({
+    isOpen,
+    onClose: () => {
+      if (!loading) onClose();
+    },
+    closeOnEscape: !loading,
+  });
 
   if (!isOpen) return null;
 
@@ -93,7 +91,10 @@ export function PatchExportModal({ isOpen, onClose, run }: PatchExportModalProps
       aria-labelledby="patch-modal-title"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
     >
-      <div className="relative w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0d1218] p-6 shadow-2xl max-h-[90vh] flex flex-col">
+      <div
+        ref={modalRef}
+        className="relative w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0d1218] p-6 shadow-2xl max-h-[90vh] flex flex-col"
+      >
         {/* Header */}
         <div className="flex items-start justify-between border-b border-white/10 pb-4">
           <div>

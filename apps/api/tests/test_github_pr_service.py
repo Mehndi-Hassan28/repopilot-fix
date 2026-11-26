@@ -153,6 +153,7 @@ class MockTransport(httpx.BaseTransport):
             return httpx.Response(201, json={"object": {"sha": "base12345678"}})
         if method == "GET" and "/contents/calc.py" in url_str:
             import base64
+
             content = "def add(a, b):\n    return a - b\n"
             b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
             return httpx.Response(200, json={"content": b64, "encoding": "base64"})
@@ -169,7 +170,10 @@ class MockTransport(httpx.BaseTransport):
         if method == "POST" and "/pulls" in url_str:
             return httpx.Response(
                 201,
-                json={"number": 101, "html_url": "https://github.com/test-owner/test-repo/pull/101"},
+                json={
+                    "number": 101,
+                    "html_url": "https://github.com/test-owner/test-repo/pull/101",
+                },
             )
 
         return httpx.Response(404, json={"message": "Not Found in Mock"})
@@ -647,4 +651,3 @@ def test_guest_user_cannot_create_real_github_pr(test_session):
                 payload=payload,
             )
         assert "Guest users cannot create external GitHub pull requests" in str(exc_info.value)
-

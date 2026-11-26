@@ -57,6 +57,70 @@ DEMO_FIXTURE_DESCRIPTION_PREFIX = "Deterministic Calculator Demo Fixture for Rep
 _DEMO_INIT_LOCK = threading.Lock()
 
 
+def _verify_demo_naming_and_user(repository: Repository | None, user_id: int | None) -> int | None:
+    if repository is None or repository.owner != "repopilot":
+        return None
+    if not repository.name.startswith("demo-calc-"):
+        return None
+    try:
+        repo_user_id = int(repository.name.removeprefix("demo-calc-"))
+    except ValueError:
+        return None
+    if user_id is not None and user_id != repo_user_id:
+        return None
+    return repo_user_id
+
+
+def _verify_demo_provenance(repository: Repository, repo_user_id: int) -> bool:
+    if repository.github_id != DEMO_GITHUB_BASE_ID + repo_user_id:
+        return False
+    expected_tag = f"{DEMO_PROVENANCE_TAG_PREFIX}{repo_user_id}:demo-calculator]"
+    if not repository.description or expected_tag not in repository.description:
+        return False
+    if not repository.description.startswith(DEMO_FIXTURE_DESCRIPTION_PREFIX):
+        return False
+    if repository.url != "https://github.com/repopilot/demo-calculator":
+        return False
+    return repository.default_branch == "main"
+
+
+def _verify_demo_access(db: Session, repository: Repository, repo_user_id: int) -> bool:
+    access = db.scalar(
+        select(RepositoryAccess).where(
+            RepositoryAccess.repository_id == repository.id,
+            RepositoryAccess.user_id == repo_user_id,
+            RepositoryAccess.role == "owner",
+        )
+    )
+    return access is not None
+
+
+def _verify_demo_content(db: Session, repository: Repository) -> bool:
+    job = db.scalar(
+        select(IndexingJob)
+        .where(
+            IndexingJob.repository_id == repository.id,
+            IndexingJob.status == "completed",
+        )
+        .order_by(IndexingJob.id.desc())
+    )
+    if job is None:
+        return False
+    files = db.scalars(select(IndexedFile).where(IndexedFile.job_id == job.id)).all()
+    file_map = {f.path: f.content for f in files}
+    if set(file_map.keys()) != set(DEMO_CALC_FILES.keys()):
+        return False
+    for path, canonical_content in DEMO_CALC_FILES.items():
+        actual = file_map.get(path)
+        if actual is None:
+            return False
+        actual_hash = hashlib.sha256(actual.encode("utf-8")).hexdigest()
+        canonical_hash = hashlib.sha256(canonical_content.encode("utf-8")).hexdigest()
+        if actual_hash != canonical_hash:
+            return False
+    return True
+
+
 def is_internal_demo_repository(
     db: Session,
     repository: Repository | None,
@@ -67,79 +131,16 @@ def is_internal_demo_repository(
 
     Ensures external repository imports cannot acquire internal demo provenance.
     """
-    if repository is None:
+    repo_user_id = _verify_demo_naming_and_user(repository, user_id)
+    if repo_user_id is None or repository is None:
         return False
-
-    # 1. Exact repository owner and name pattern
-    if repository.owner != "repopilot":
+    if not _verify_demo_provenance(repository, repo_user_id):
         return False
-    if not repository.name.startswith("demo-calc-"):
+    if not _verify_demo_access(db, repository, repo_user_id):
         return False
-
-    try:
-        repo_user_id = int(repository.name.removeprefix("demo-calc-"))
-    except ValueError:
+    if verify_content and not _verify_demo_content(db, repository):
         return False
-
-    # If user_id is provided, verify matching authenticated user
-    if user_id is not None and user_id != repo_user_id:
-        return False
-
-    # 2. Exact server-calculated github_id (exact arithmetic identity, not open range)
-    if repository.github_id != DEMO_GITHUB_BASE_ID + repo_user_id:
-        return False
-
-    # 3. Server-controlled fixture provenance in description and URL
-    expected_tag = f"{DEMO_PROVENANCE_TAG_PREFIX}{repo_user_id}:demo-calculator]"
-    if not repository.description or expected_tag not in repository.description:
-        return False
-    if not repository.description.startswith(DEMO_FIXTURE_DESCRIPTION_PREFIX):
-        return False
-    if repository.url != "https://github.com/repopilot/demo-calculator":
-        return False
-    if repository.default_branch != "main":
-        return False
-
-    # 4. Authenticated ownership in repository_accesses
-    access = db.scalar(
-        select(RepositoryAccess).where(
-            RepositoryAccess.repository_id == repository.id,
-            RepositoryAccess.user_id == repo_user_id,
-            RepositoryAccess.role == "owner",
-        )
-    )
-    if access is None:
-        return False
-
-    # 5. Canonical content validation if requested
-    if verify_content:
-        job = db.scalar(
-            select(IndexingJob)
-            .where(
-                IndexingJob.repository_id == repository.id,
-                IndexingJob.status == "completed",
-            )
-            .order_by(IndexingJob.id.desc())
-        )
-        if job is None:
-            return False
-        files = db.scalars(select(IndexedFile).where(IndexedFile.job_id == job.id)).all()
-        file_map = {f.path: f.content for f in files}
-        if set(file_map.keys()) != set(DEMO_CALC_FILES.keys()):
-            return False
-        for path, canonical_content in DEMO_CALC_FILES.items():
-            actual = file_map.get(path)
-            if actual is None:
-                return False
-            actual_hash = hashlib.sha256(actual.encode("utf-8")).hexdigest()
-            canonical_hash = hashlib.sha256(canonical_content.encode("utf-8")).hexdigest()
-            if actual_hash != canonical_hash:
-                return False
-
     return True
-
-
-
 
 
 # ==============================================================================

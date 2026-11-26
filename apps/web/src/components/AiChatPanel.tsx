@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useState, useRef, useEffect } from "react";
-import { ChatSession, Citation } from "../lib/types";
+import { ChatSession, Citation, PERSONAS, PersonaType } from "../lib/types";
 
 interface AiChatPanelProps {
   sessions: ChatSession[];
@@ -12,6 +12,8 @@ interface AiChatPanelProps {
   onClearSessionHistory: () => void;
   chatMode: "auto" | "general" | "coding" | "repository";
   onChangeMode: (mode: "auto" | "general" | "coding" | "repository") => void;
+  activePersona?: PersonaType;
+  onSelectPersona?: (persona: PersonaType) => void;
   chatBusy: boolean;
   chatError: string;
   onSendMessage: (text: string) => Promise<void>;
@@ -31,6 +33,8 @@ export function AiChatPanel({
   onClearSessionHistory,
   chatMode,
   onChangeMode,
+  activePersona = "software_engineer",
+  onSelectPersona,
   chatBusy,
   chatError,
   onSendMessage,
@@ -139,6 +143,38 @@ export function AiChatPanel({
               {mode}
             </button>
           ))}
+        </div>
+
+        {/* Persona Indicator & Quick Switcher */}
+        <div className="flex items-center justify-between pt-1 border-t border-white/5 text-[10px] font-mono">
+          <div className="flex items-center gap-1.5">
+            <span
+              className="size-1.5 rounded-full"
+              style={{ backgroundColor: PERSONAS[activePersona].accentColor }}
+              aria-hidden="true"
+            />
+            <span className="text-zinc-400">Persona:</span>
+            <span className="text-white font-semibold">
+              {PERSONAS[activePersona].label}
+            </span>
+          </div>
+          <div className="flex items-center gap-1">
+            {(["software_engineer", "security_auditor", "qa_lead"] as const).map((p) => (
+              <button
+                key={p}
+                onClick={() => onSelectPersona?.(p)}
+                className={`px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider transition-all ${
+                  activePersona === p
+                    ? `${PERSONAS[p].bgColor} ${PERSONAS[p].borderColor} border font-bold text-white`
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+                title={PERSONAS[p].description}
+                aria-pressed={activePersona === p}
+              >
+                {PERSONAS[p].badge}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

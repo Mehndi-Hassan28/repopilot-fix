@@ -91,26 +91,14 @@ def _owned_chat_session(db: Session, session_id: int, user_id: int):
     return session
 
 
-@app.post("/api/repositories/import", response_model=RepositoryRead, status_code=200)
-def import_repository(
-    payload: RepositoryImport,
-    db: Session = Depends(get_db),
-    auth: AuthContext = Depends(require_csrf),
-):
-    if not check_rate_limit(f"repo_import:{auth.user.id}", max_requests=10, window_seconds=60):
-        raise HTTPException(
-            429, "Too many repository import requests. Please wait a moment and try again."
-        )
-
-    if payload.url != payload.url.strip() or any(
-        c in payload.url for c in ("\n", "\r", "\t", "\0")
-    ):
+def _validate_and_parse_github_url(url: str) -> tuple[str, str]:
+    if url != url.strip() or any(c in url for c in ("\n", "\r", "\t", "\0")):
         raise HTTPException(
             status_code=422,
             detail="Repository URL contains invalid whitespace or control characters.",
         )
 
-    raw_url = payload.url.strip()
+    raw_url = url.strip()
     if not raw_url.startswith("https://github.com/"):
         raise HTTPException(
             status_code=422,
@@ -144,6 +132,22 @@ def import_repository(
                 "Demo repositories must be initialized via the demo workspace."
             ),
         )
+
+    return owner, name
+
+
+@app.post("/api/repositories/import", response_model=RepositoryRead, status_code=200)
+def import_repository(
+    payload: RepositoryImport,
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(require_csrf),
+):
+    if not check_rate_limit(f"repo_import:{auth.user.id}", max_requests=10, window_seconds=60):
+        raise HTTPException(
+            429, "Too many repository import requests. Please wait a moment and try again."
+        )
+
+    owner, name = _validate_and_parse_github_url(payload.url)
 
     try:
         with Client(timeout=httpx.Timeout(8.0), follow_redirects=False) as client:
@@ -840,7 +844,9 @@ def ask_chat(
         else:
             provider = get_provider(mode=payload.mode) if payload.mode else None
 
-        message = ask(db, session, payload.question, provider, mode=payload.mode)
+        message = ask(
+            db, session, payload.question, provider, mode=payload.mode, persona=payload.persona
+        )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except ProviderError as exc:
@@ -962,8 +968,7 @@ def analyze_issue(
     from repopilot_api.models import OAuthIdentity
 
     allow_public_ai = (
-        os.getenv("ALLOW_PUBLIC_AI", "false").lower() in ("true", "1")
-        or "pytest" in sys.modules
+        os.getenv("ALLOW_PUBLIC_AI", "false").lower() in ("true", "1") or "pytest" in sys.modules
     )
     is_guest = db.scalar(select(OAuthIdentity).where(OAuthIdentity.user_id == auth.user.id)) is None
 
